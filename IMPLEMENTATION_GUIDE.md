@@ -2,89 +2,9 @@
 
 ## Overview
 
-This guide outlines the technical implementation approach for building the Aiigo Desktop platform, focusing on UI/UX design, component architecture, and development workflow.
+This guide outlines the technical implementation approach for building the Aiigo Desktop platform, focusing on component architecture, and development workflow.
 
 ---
-
-## UI Design System
-
-### Design Foundation
-
-#### Color Palette
-
-**Primary Colors**
-```
-Primary Blue:     #1E40AF (for actions, links, highlights)
-Primary Dark:     #0F172A (for backgrounds, headers)
-Primary Light:    #3B82F6 (for hover states)
-
-Success Green:    #10B981 (for positive values, confirmations)
-Warning Orange:   #F59E0B (for alerts, pending states)
-Danger Red:       #EF4444 (for losses, errors, deletions)
-Neutral Gray:     #64748B (for secondary text, borders)
-```
-
-**Background Layers**
-```
-Level 0 (Base):   #0F172A (darkest - app background)
-Level 1 (Cards):  #1E293B (dark - cards, panels)
-Level 2 (Hover):  #334155 (medium - hover states)
-Level 3 (Active): #475569 (lighter - active states)
-```
-
-**Text Colors**
-```
-Primary Text:     #F8FAFC (white - main content)
-Secondary Text:   #CBD5E1 (light gray - descriptions)
-Tertiary Text:    #94A3B8 (gray - timestamps, labels)
-Disabled Text:    #64748B (dark gray - disabled states)
-```
-
-#### Typography
-
-**Font Stack**
-```css
---font-primary: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
---font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
-```
-
-**Type Scale**
-```css
---text-xs:    0.75rem  (12px)  /* Labels, captions */
---text-sm:    0.875rem (14px)  /* Secondary text */
---text-base:  1rem     (16px)  /* Body text */
---text-lg:    1.125rem (18px)  /* Emphasized text */
---text-xl:    1.25rem  (20px)  /* Card headers */
---text-2xl:   1.5rem   (24px)  /* Section headers */
---text-3xl:   1.875rem (30px)  /* Page headers */
---text-4xl:   2.25rem  (36px)  /* Dashboard values */
-```
-
-#### Spacing System
-
-```css
---space-1:  0.25rem  (4px)
---space-2:  0.5rem   (8px)
---space-3:  0.75rem  (12px)
---space-4:  1rem     (16px)
---space-5:  1.5rem   (24px)
---space-6:  2rem     (32px)
---space-8:  3rem     (48px)
---space-10: 4rem     (64px)
-```
-
-#### Border Radius
-
-```css
---radius-sm:  0.25rem  (4px)   /* Input fields */
---radius-md:  0.5rem   (8px)   /* Buttons, cards */
---radius-lg:  0.75rem  (12px)  /* Large panels */
---radius-xl:  1rem     (16px)  /* Modals */
---radius-full: 9999px          /* Pills, avatars */
-```
-
----
-
 ## Application Layout Structure
 
 ### Main Layout Architecture
@@ -116,8 +36,6 @@ Disabled Text:    #64748B (dark gray - disabled states)
 
 ```
 ┌──────────────────┐
-│  AIIGO           │  Logo & Brand
-├──────────────────┤
 │                  │
 │ 🏠 Dashboard     │  Main Navigation
 │ 💼 Portfolio     │  (Icon + Label)
