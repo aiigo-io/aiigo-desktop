@@ -23,7 +23,7 @@ const AppHeader: React.FC = () => {
   return (
     <header className='h-12 bg-foreground px-6 flex items-center justify-between text-primary-foreground select-none'>
       <div className="flex items-center gap-4">
-        <img className='w-9 h-9' src="/favicon.svg" alt="AIIGO" />
+        <img className='w-9 h-9' src="/favicon.png" alt="AIIGO" />
         <h1 className="text-xl font-bold">AIIGO Platform</h1>
       </div>
       
