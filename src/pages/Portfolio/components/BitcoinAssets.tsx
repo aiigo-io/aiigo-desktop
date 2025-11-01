@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
-import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download } from 'lucide-react';
+import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { shortAddress } from '@/lib/utils';
 
@@ -35,10 +35,18 @@ const BitcoinAssets: React.FC = () => {
   const [exportCopied, setExportCopied] = useState(false);
   const [addressCopied, setAddressCopied] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [refreshingBalance, setRefreshingBalance] = useState<string | null>(null);
+  const [btcPrice, setBtcPrice] = useState<number>(0);
 
   // Load wallets on mount
   useEffect(() => {
     loadWallets();
+    fetchBtcPrice();
+
+    // Refresh BTC price every 60 seconds
+    const priceInterval = setInterval(fetchBtcPrice, 60000);
+
+    return () => clearInterval(priceInterval);
   }, []);
 
   const loadWallets = async () => {
@@ -47,6 +55,24 @@ const BitcoinAssets: React.FC = () => {
       setWallets(result);
     } catch (error) {
       console.error('Error loading wallets:', error);
+    }
+  };
+
+  const fetchBtcPrice = async () => {
+    try {
+      // Using CoinGecko API (free, no auth required)
+      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+      const data = await response.json();
+
+      if (data?.bitcoin?.usd) {
+        setBtcPrice(data.bitcoin.usd);
+      }
+    } catch (error) {
+      console.error('Error fetching BTC price:', error);
+      // Fallback to a reasonable default if API fails
+      if (btcPrice === 0) {
+        setBtcPrice(50000); // Reasonable fallback
+      }
     }
   };
 
@@ -188,6 +214,19 @@ const BitcoinAssets: React.FC = () => {
       alert(`Error: ${error}`);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleRefreshBalance = async (walletId: string) => {
+    setRefreshingBalance(walletId);
+    try {
+      const updatedWallet = await invoke<WalletInfo>('bitcoin_get_wallet_with_balance', { walletId });
+      setWallets(wallets.map(w => w.id === walletId ? updatedWallet : w));
+    } catch (error) {
+      console.error('Error refreshing balance:', error);
+      alert(`Error refreshing balance: ${error}`);
+    } finally {
+      setRefreshingBalance(null);
     }
   };
 
@@ -514,9 +553,11 @@ const BitcoinAssets: React.FC = () => {
             <p className="text-sm text-gray-600 mb-1">Total Balance</p>
             <div className="flex items-baseline gap-2">
               <p className="text-3xl font-bold text-gray-900">{totalBalance.toFixed(4)} BTC</p>
-              <p className="text-gray-600">
-                ${(totalBalance * 42000).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </p>
+              {btcPrice > 0 && (
+                <p className="text-gray-600">
+                  ${(totalBalance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -573,12 +614,25 @@ const BitcoinAssets: React.FC = () => {
                       <p className="font-semibold text-lg text-gray-900">
                         {wallet.balance.toFixed(4)} BTC
                       </p>
-                      <p className="text-sm text-gray-500 mt-1">
-                        ${(wallet.balance * 42000).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </p>
+                      {btcPrice > 0 && (
+                        <p className="text-sm text-gray-500 mt-1">
+                          ${(wallet.balance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      )}
                     </div>
                     {/* Action Buttons */}
                     <div className="flex gap-1 flex-wrap justify-end">
+                      {/* Refresh Balance Button */}
+                      <button
+                        onClick={() => handleRefreshBalance(wallet.id)}
+                        className="px-2 py-1 text-xs bg-purple-50 text-purple-700 hover:bg-purple-100 rounded transition-colors flex items-center gap-1"
+                        title="Refresh balance from blockchain"
+                        disabled={refreshingBalance === wallet.id}
+                      >
+                        <RefreshCw className={`w-3 h-3 ${refreshingBalance === wallet.id ? 'animate-spin' : ''}`} />
+                        <span>{refreshingBalance === wallet.id ? 'Refreshing...' : 'Refresh'}</span>
+                      </button>
+
                       {/* Export Private Key Button */}
                       <button
                         onClick={() => handleExportPrivateKey(wallet.id)}
