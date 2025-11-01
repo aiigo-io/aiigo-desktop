@@ -214,7 +214,7 @@ impl Database {
             "SELECT id, label, wallet_type, address, balance, created_at, updated_at
              FROM bitcoin_wallets WHERE id = ?1",
         )?;
-        
+
         let result = stmt.query_row(params![wallet_id], |row| {
             Ok(WalletInfo {
                 id: row.get(0)?,
@@ -226,12 +226,24 @@ impl Database {
                 updated_at: row.get(6)?,
             })
         });
-        
+
         match result {
             Ok(wallet) => Ok(Some(wallet)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn update_bitcoin_wallet_balance(&self, wallet_id: &str, balance: f64) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "UPDATE bitcoin_wallets SET balance = ?1, updated_at = ?2 WHERE id = ?3",
+            params![balance, &now, wallet_id],
+        )?;
+
+        Ok(())
     }
     
     // EVM Wallet Methods

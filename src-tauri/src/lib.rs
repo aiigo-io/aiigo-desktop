@@ -67,6 +67,7 @@ pub fn run() {
             bitcoin_private_key::bitcoin_export_private_key,
             bitcoin_commands::bitcoin_get_wallets,
             bitcoin_commands::bitcoin_get_wallet,
+            bitcoin_commands::bitcoin_get_wallet_with_balance,
             bitcoin_commands::bitcoin_delete_wallet,
             // EVM handlers
             evm_mnemonic::evm_create_mnemonic,

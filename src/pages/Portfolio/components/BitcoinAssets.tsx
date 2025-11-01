@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
-import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download } from 'lucide-react';
+import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { shortAddress } from '@/lib/utils';
 
@@ -35,6 +35,7 @@ const BitcoinAssets: React.FC = () => {
   const [exportCopied, setExportCopied] = useState(false);
   const [addressCopied, setAddressCopied] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [refreshingBalance, setRefreshingBalance] = useState<string | null>(null);
 
   // Load wallets on mount
   useEffect(() => {
@@ -188,6 +189,19 @@ const BitcoinAssets: React.FC = () => {
       alert(`Error: ${error}`);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleRefreshBalance = async (walletId: string) => {
+    setRefreshingBalance(walletId);
+    try {
+      const updatedWallet = await invoke<WalletInfo>('bitcoin_get_wallet_with_balance', { walletId });
+      setWallets(wallets.map(w => w.id === walletId ? updatedWallet : w));
+    } catch (error) {
+      console.error('Error refreshing balance:', error);
+      alert(`Error refreshing balance: ${error}`);
+    } finally {
+      setRefreshingBalance(null);
     }
   };
 
@@ -579,6 +593,17 @@ const BitcoinAssets: React.FC = () => {
                     </div>
                     {/* Action Buttons */}
                     <div className="flex gap-1 flex-wrap justify-end">
+                      {/* Refresh Balance Button */}
+                      <button
+                        onClick={() => handleRefreshBalance(wallet.id)}
+                        className="px-2 py-1 text-xs bg-purple-50 text-purple-700 hover:bg-purple-100 rounded transition-colors flex items-center gap-1"
+                        title="Refresh balance from blockchain"
+                        disabled={refreshingBalance === wallet.id}
+                      >
+                        <RefreshCw className={`w-3 h-3 ${refreshingBalance === wallet.id ? 'animate-spin' : ''}`} />
+                        <span>{refreshingBalance === wallet.id ? 'Refreshing...' : 'Refresh'}</span>
+                      </button>
+
                       {/* Export Private Key Button */}
                       <button
                         onClick={() => handleExportPrivateKey(wallet.id)}
