@@ -114,6 +114,8 @@ pub struct EvmAssetBalance {
     pub asset: EvmAsset,
     pub balance: String, // Store as string to preserve precision
     pub balance_float: f64, // For UI display
+    pub usd_price: f64, // Current USD price
+    pub usd_value: f64, // Total value in USD (balance_float * usd_price)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

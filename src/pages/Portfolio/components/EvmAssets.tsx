@@ -26,6 +26,8 @@ interface EvmAssetBalance {
   asset: EvmAsset;
   balance: string;
   balance_float: number;
+  usd_price: number;
+  usd_value: number;
 }
 
 interface EvmChainAssets {
@@ -788,6 +790,11 @@ const EvmAssets: React.FC = () => {
                                     </div>
                                     <div className="text-right">
                                       <p className="font-mono text-sm text-gray-900">{assetBalance.balance_float.toFixed(6)} {assetBalance.asset.symbol}</p>
+                                      {assetBalance.usd_value > 0 && (
+                                        <p className="text-xs text-gray-500 mt-1">
+                                          ${assetBalance.usd_value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        </p>
+                                      )}
                                     </div>
                                   </div>
                                 ))}
