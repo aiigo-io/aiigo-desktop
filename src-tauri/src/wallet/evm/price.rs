@@ -149,8 +149,6 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
         ids
     );
 
-    println!("[DEBUG] Fetching prices from: {}", url);
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .user_agent("aiigo-desktop/0.1.0")
@@ -167,13 +165,11 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
         return Err(format!("HTTP error: {}", response.status()));
     }
 
-    // Get response text first for debugging
+    // Get response text for parsing
     let text = response
         .text()
         .await
         .map_err(|e| format!("Failed to read response: {}", e))?;
-
-    println!("[DEBUG] API Response: {}", text);
 
     // Parse as a map of coin_id -> price_data
     let parsed: HashMap<String, PriceData> = serde_json::from_str(&text)
@@ -193,6 +189,7 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
 }
 
 /// Fetch price for a single asset
+#[allow(dead_code)]
 pub async fn fetch_price(symbol: &str) -> Result<f64, String> {
     let prices = fetch_prices(vec![symbol.to_string()]).await?;
     prices
