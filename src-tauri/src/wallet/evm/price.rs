@@ -1,21 +1,31 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
 
 const RETRY_ATTEMPTS: u32 = 2;
-const INITIAL_RETRY_DELAY_MS: u64 = 500;
+const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const REQUEST_TIMEOUT_SECS: u64 = 10;
+const CACHE_DURATION_SECS: u64 = 60; // Cache prices for 60 seconds
 
 #[derive(Debug, Deserialize)]
-struct CoinGeckoResponse {
-    #[serde(flatten)]
-    prices: HashMap<String, CoinGeckoPriceData>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CoinGeckoPriceData {
+struct PriceData {
     usd: f64,
 }
+
+// Simple in-memory cache
+struct PriceCache {
+    prices: HashMap<String, f64>,
+    last_update: Option<Instant>,
+}
+
+static PRICE_CACHE: Lazy<Mutex<PriceCache>> = Lazy::new(|| {
+    Mutex::new(PriceCache {
+        prices: HashMap::new(),
+        last_update: None,
+    })
+});
 
 /// Map asset symbols to CoinGecko IDs
 fn get_coingecko_id(symbol: &str) -> Option<&'static str> {
@@ -32,6 +42,28 @@ fn get_coingecko_id(symbol: &str) -> Option<&'static str> {
 
 /// Fetch USD prices for multiple crypto assets
 pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, String> {
+    // Check cache first
+    {
+        let cache = PRICE_CACHE.lock().unwrap();
+        if let Some(last_update) = cache.last_update {
+            if last_update.elapsed().as_secs() < CACHE_DURATION_SECS {
+                // Cache is still valid
+                let mut result = HashMap::new();
+                for symbol in &symbols {
+                    if let Some(coingecko_id) = get_coingecko_id(symbol) {
+                        if let Some(&price) = cache.prices.get(coingecko_id) {
+                            result.insert(symbol.clone(), price);
+                        }
+                    }
+                }
+                if !result.is_empty() {
+                    println!("[INFO] Using cached prices (age: {}s)", last_update.elapsed().as_secs());
+                    return Ok(result);
+                }
+            }
+        }
+    }
+
     // Convert symbols to CoinGecko IDs
     let ids: Vec<String> = symbols
         .iter()
@@ -56,16 +88,24 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
 
     for attempt in 1..=RETRY_ATTEMPTS {
         match try_fetch_prices(&ids_param).await {
-            Ok(response) => {
+            Ok(response_map) => {
+                // Update cache
+                {
+                    let mut cache = PRICE_CACHE.lock().unwrap();
+                    cache.prices = response_map.clone();
+                    cache.last_update = Some(Instant::now());
+                }
+
                 // Map CoinGecko IDs back to symbols
                 let mut result = HashMap::new();
                 for symbol in &symbols {
                     if let Some(coingecko_id) = get_coingecko_id(symbol) {
-                        if let Some(price_data) = response.prices.get(coingecko_id) {
-                            result.insert(symbol.clone(), price_data.usd);
+                        if let Some(&price) = response_map.get(coingecko_id) {
+                            result.insert(symbol.clone(), price);
                         }
                     }
                 }
+                println!("[INFO] Fetched {} fresh prices from CoinGecko", result.len());
                 return Ok(result);
             }
             Err(e) => {
@@ -78,6 +118,20 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 } else {
                     eprintln!("[WARNING] Failed to fetch prices after all retries: {}", e);
+                    // Try to use stale cache as fallback
+                    let cache = PRICE_CACHE.lock().unwrap();
+                    if !cache.prices.is_empty() {
+                        eprintln!("[INFO] Using stale cache as fallback");
+                        let mut result = HashMap::new();
+                        for symbol in &symbols {
+                            if let Some(coingecko_id) = get_coingecko_id(symbol) {
+                                if let Some(&price) = cache.prices.get(coingecko_id) {
+                                    result.insert(symbol.clone(), price);
+                                }
+                            }
+                        }
+                        return Ok(result);
+                    }
                     // Return empty map instead of error to allow wallet queries to continue
                     return Ok(HashMap::new());
                 }
@@ -88,11 +142,13 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
     Ok(HashMap::new())
 }
 
-async fn try_fetch_prices(ids: &str) -> Result<CoinGeckoResponse, String> {
+async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
     let url = format!(
         "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd",
         ids
     );
+
+    println!("[DEBUG] Fetching prices from: {}", url);
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
@@ -110,12 +166,25 @@ async fn try_fetch_prices(ids: &str) -> Result<CoinGeckoResponse, String> {
         return Err(format!("HTTP error: {}", response.status()));
     }
 
-    let data: CoinGeckoResponse = response
-        .json()
+    // Get response text first for debugging
+    let text = response
+        .text()
         .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
+        .map_err(|e| format!("Failed to read response: {}", e))?;
 
-    Ok(data)
+    println!("[DEBUG] API Response: {}", text);
+
+    // Parse as a map of coin_id -> price_data
+    let parsed: HashMap<String, PriceData> = serde_json::from_str(&text)
+        .map_err(|e| format!("Failed to parse JSON: {}. Response was: {}", e, text))?;
+
+    // Extract just the USD prices
+    let mut result = HashMap::new();
+    for (coin_id, price_data) in parsed {
+        result.insert(coin_id, price_data.usd);
+    }
+
+    Ok(result)
 }
 
 /// Fetch price for a single asset

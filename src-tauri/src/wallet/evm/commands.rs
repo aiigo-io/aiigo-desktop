@@ -43,9 +43,7 @@ pub async fn evm_get_wallet_with_balances(wallet_id: String) -> Result<EvmWallet
     }
 
     // Fetch all prices at once
-    println!("[INFO] Fetching prices for {} assets: {:?}", all_symbols.len(), all_symbols);
     let prices = price::fetch_prices(all_symbols).await.unwrap_or_default();
-    println!("[INFO] Fetched {} prices", prices.len());
 
     for chain_config in get_all_chains() {
         // Query balances for this chain
