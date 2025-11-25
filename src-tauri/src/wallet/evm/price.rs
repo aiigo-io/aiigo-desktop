@@ -11,7 +11,8 @@ const CACHE_DURATION_SECS: u64 = 60; // Cache prices for 60 seconds
 
 #[derive(Debug, Deserialize)]
 struct PriceData {
-    usd: f64,
+    #[serde(default)]
+    usd: Option<f64>,
 }
 
 // Simple in-memory cache
@@ -178,10 +179,14 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
     let parsed: HashMap<String, PriceData> = serde_json::from_str(&text)
         .map_err(|e| format!("Failed to parse JSON: {}. Response was: {}", e, text))?;
 
-    // Extract just the USD prices
+    // Extract just the USD prices, skipping coins with missing data
     let mut result = HashMap::new();
     for (coin_id, price_data) in parsed {
-        result.insert(coin_id, price_data.usd);
+        if let Some(usd_price) = price_data.usd {
+            result.insert(coin_id, usd_price);
+        } else {
+            eprintln!("[WARNING] Missing USD price data for: {}", coin_id);
+        }
     }
 
     Ok(result)
