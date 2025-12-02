@@ -1,5 +1,6 @@
 use rusqlite::{Connection, Result as SqliteResult, params};
 use crate::wallet::types::WalletInfo;
+use crate::wallet::transaction_types::{BitcoinTransaction, EvmTransaction, TransactionStatus, TransactionType};
 use std::sync::Mutex;
 use uuid::Uuid;
 use chrono::Utc;
@@ -98,7 +99,57 @@ impl Database {
             )",
             [],
         )?;
-        
+
+        // Bitcoin transactions table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS bitcoin_transactions (
+                id TEXT PRIMARY KEY,
+                wallet_id TEXT NOT NULL,
+                tx_hash TEXT NOT NULL UNIQUE,
+                tx_type TEXT NOT NULL,
+                from_address TEXT NOT NULL,
+                to_address TEXT NOT NULL,
+                amount REAL NOT NULL,
+                fee REAL NOT NULL,
+                status TEXT NOT NULL,
+                confirmations INTEGER NOT NULL DEFAULT 0,
+                block_height INTEGER,
+                timestamp TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES bitcoin_wallets(id)
+            )",
+            [],
+        )?;
+
+        // EVM transactions table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS evm_transactions (
+                id TEXT PRIMARY KEY,
+                wallet_id TEXT NOT NULL,
+                tx_hash TEXT NOT NULL,
+                tx_type TEXT NOT NULL,
+                from_address TEXT NOT NULL,
+                to_address TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                amount_float REAL NOT NULL,
+                asset_symbol TEXT NOT NULL,
+                asset_name TEXT NOT NULL,
+                contract_address TEXT,
+                chain TEXT NOT NULL,
+                chain_id INTEGER NOT NULL,
+                gas_used TEXT NOT NULL,
+                gas_price TEXT NOT NULL,
+                fee REAL NOT NULL,
+                status TEXT NOT NULL,
+                block_number INTEGER,
+                timestamp TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES evm_wallets(id),
+                UNIQUE(wallet_id, tx_hash, chain)
+            )",
+            [],
+        )?;
+
         Ok(())
     }
     
@@ -451,12 +502,227 @@ impl Database {
 
     pub fn clear_evm_asset_balances(&self, wallet_id: &str) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
-        
+
         conn.execute(
             "DELETE FROM evm_asset_balances WHERE wallet_id = ?1",
             params![wallet_id],
         )?;
-        
+
         Ok(())
+    }
+
+    // Bitcoin Transaction Methods
+    pub fn add_bitcoin_transaction(&self, tx: &BitcoinTransaction) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO bitcoin_transactions
+             (id, wallet_id, tx_hash, tx_type, from_address, to_address, amount, fee, status, confirmations, block_height, timestamp, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                &tx.id,
+                &tx.wallet_id,
+                &tx.tx_hash,
+                tx.tx_type.as_str(),
+                &tx.from_address,
+                &tx.to_address,
+                tx.amount,
+                tx.fee,
+                tx.status.as_str(),
+                tx.confirmations,
+                tx.block_height,
+                &tx.timestamp,
+                &tx.created_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_bitcoin_transactions(&self, wallet_id: &str) -> SqliteResult<Vec<BitcoinTransaction>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, wallet_id, tx_hash, tx_type, from_address, to_address, amount, fee, status, confirmations, block_height, timestamp, created_at
+             FROM bitcoin_transactions
+             WHERE wallet_id = ?1
+             ORDER BY timestamp DESC",
+        )?;
+
+        let transactions = stmt.query_map(params![wallet_id], |row| {
+            Ok(BitcoinTransaction {
+                id: row.get(0)?,
+                wallet_id: row.get(1)?,
+                tx_hash: row.get(2)?,
+                tx_type: TransactionType::from_str(&row.get::<_, String>(3)?),
+                from_address: row.get(4)?,
+                to_address: row.get(5)?,
+                amount: row.get(6)?,
+                fee: row.get(7)?,
+                status: TransactionStatus::from_str(&row.get::<_, String>(8)?),
+                confirmations: row.get(9)?,
+                block_height: row.get(10)?,
+                timestamp: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for tx in transactions {
+            result.push(tx?);
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_all_bitcoin_transactions(&self) -> SqliteResult<Vec<BitcoinTransaction>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, wallet_id, tx_hash, tx_type, from_address, to_address, amount, fee, status, confirmations, block_height, timestamp, created_at
+             FROM bitcoin_transactions
+             ORDER BY timestamp DESC",
+        )?;
+
+        let transactions = stmt.query_map([], |row| {
+            Ok(BitcoinTransaction {
+                id: row.get(0)?,
+                wallet_id: row.get(1)?,
+                tx_hash: row.get(2)?,
+                tx_type: TransactionType::from_str(&row.get::<_, String>(3)?),
+                from_address: row.get(4)?,
+                to_address: row.get(5)?,
+                amount: row.get(6)?,
+                fee: row.get(7)?,
+                status: TransactionStatus::from_str(&row.get::<_, String>(8)?),
+                confirmations: row.get(9)?,
+                block_height: row.get(10)?,
+                timestamp: row.get(11)?,
+                created_at: row.get(12)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for tx in transactions {
+            result.push(tx?);
+        }
+
+        Ok(result)
+    }
+
+    // EVM Transaction Methods
+    pub fn add_evm_transaction(&self, tx: &EvmTransaction) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT OR REPLACE INTO evm_transactions
+             (id, wallet_id, tx_hash, tx_type, from_address, to_address, amount, amount_float, asset_symbol, asset_name, contract_address, chain, chain_id, gas_used, gas_price, fee, status, block_number, timestamp, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                &tx.id,
+                &tx.wallet_id,
+                &tx.tx_hash,
+                tx.tx_type.as_str(),
+                &tx.from_address,
+                &tx.to_address,
+                &tx.amount,
+                tx.amount_float,
+                &tx.asset_symbol,
+                &tx.asset_name,
+                &tx.contract_address,
+                &tx.chain,
+                tx.chain_id,
+                &tx.gas_used,
+                &tx.gas_price,
+                tx.fee,
+                tx.status.as_str(),
+                tx.block_number,
+                &tx.timestamp,
+                &tx.created_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn get_evm_transactions(&self, wallet_id: &str) -> SqliteResult<Vec<EvmTransaction>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, wallet_id, tx_hash, tx_type, from_address, to_address, amount, amount_float, asset_symbol, asset_name, contract_address, chain, chain_id, gas_used, gas_price, fee, status, block_number, timestamp, created_at
+             FROM evm_transactions
+             WHERE wallet_id = ?1
+             ORDER BY timestamp DESC",
+        )?;
+
+        let transactions = stmt.query_map(params![wallet_id], |row| {
+            Ok(EvmTransaction {
+                id: row.get(0)?,
+                wallet_id: row.get(1)?,
+                tx_hash: row.get(2)?,
+                tx_type: TransactionType::from_str(&row.get::<_, String>(3)?),
+                from_address: row.get(4)?,
+                to_address: row.get(5)?,
+                amount: row.get(6)?,
+                amount_float: row.get(7)?,
+                asset_symbol: row.get(8)?,
+                asset_name: row.get(9)?,
+                contract_address: row.get(10)?,
+                chain: row.get(11)?,
+                chain_id: row.get(12)?,
+                gas_used: row.get(13)?,
+                gas_price: row.get(14)?,
+                fee: row.get(15)?,
+                status: TransactionStatus::from_str(&row.get::<_, String>(16)?),
+                block_number: row.get(17)?,
+                timestamp: row.get(18)?,
+                created_at: row.get(19)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for tx in transactions {
+            result.push(tx?);
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_all_evm_transactions(&self) -> SqliteResult<Vec<EvmTransaction>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, wallet_id, tx_hash, tx_type, from_address, to_address, amount, amount_float, asset_symbol, asset_name, contract_address, chain, chain_id, gas_used, gas_price, fee, status, block_number, timestamp, created_at
+             FROM evm_transactions
+             ORDER BY timestamp DESC",
+        )?;
+
+        let transactions = stmt.query_map([], |row| {
+            Ok(EvmTransaction {
+                id: row.get(0)?,
+                wallet_id: row.get(1)?,
+                tx_hash: row.get(2)?,
+                tx_type: TransactionType::from_str(&row.get::<_, String>(3)?),
+                from_address: row.get(4)?,
+                to_address: row.get(5)?,
+                amount: row.get(6)?,
+                amount_float: row.get(7)?,
+                asset_symbol: row.get(8)?,
+                asset_name: row.get(9)?,
+                contract_address: row.get(10)?,
+                chain: row.get(11)?,
+                chain_id: row.get(12)?,
+                gas_used: row.get(13)?,
+                gas_price: row.get(14)?,
+                fee: row.get(15)?,
+                status: TransactionStatus::from_str(&row.get::<_, String>(16)?),
+                block_number: row.get(17)?,
+                timestamp: row.get(18)?,
+                created_at: row.get(19)?,
+            })
+        })?;
+
+        let mut result = Vec::new();
+        for tx in transactions {
+            result.push(tx?);
+        }
+
+        Ok(result)
     }
 }

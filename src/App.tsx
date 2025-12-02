@@ -3,6 +3,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import Dashboard from './pages/Dashboard';
 import Portfolio from './pages/Portfolio';
+import Transactions from './pages/Transactions';
 import NotFound from './pages/NotFound';
 
 const router = createBrowserRouter([
@@ -12,6 +13,7 @@ const router = createBrowserRouter([
     children: [
       { path: '/', element: <Dashboard /> },
       { path: '/portfolio', element: <Portfolio /> },
+      { path: '/transactions', element: <Transactions /> },
       { path: '/*', element: <NotFound /> },
     ],
   },

@@ -3,6 +3,7 @@ mod db;
 
 use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
 use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
+use wallet::transaction_commands;
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
@@ -80,6 +81,15 @@ pub fn run() {
             evm_commands::evm_get_wallet,
             evm_commands::evm_get_wallet_with_balances,
             evm_commands::evm_delete_wallet,
+            // Transaction handlers
+            transaction_commands::send_bitcoin,
+            transaction_commands::get_bitcoin_transactions,
+            transaction_commands::get_all_bitcoin_transactions,
+            transaction_commands::fetch_bitcoin_history,
+            transaction_commands::send_evm,
+            transaction_commands::get_evm_transactions,
+            transaction_commands::get_all_evm_transactions,
+            transaction_commands::fetch_evm_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
