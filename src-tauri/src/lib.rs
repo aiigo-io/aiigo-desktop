@@ -1,5 +1,6 @@
 mod wallet;
 mod db;
+mod dashboard;
 
 use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
 use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
@@ -80,6 +81,7 @@ pub fn run() {
             evm_commands::evm_get_wallets,
             evm_commands::evm_get_wallet,
             evm_commands::evm_get_wallet_with_balances,
+            evm_commands::evm_get_wallet_with_balances,
             evm_commands::evm_delete_wallet,
             // Transaction handlers
             transaction_commands::send_bitcoin,
@@ -90,6 +92,12 @@ pub fn run() {
             transaction_commands::get_evm_transactions,
             transaction_commands::get_all_evm_transactions,
             transaction_commands::fetch_evm_history,
+            // Dashboard handlers
+            dashboard::commands::get_dashboard_stats,
+            dashboard::commands::refresh_dashboard_stats,
+            dashboard::commands::get_portfolio_history,
+            dashboard::commands::get_asset_allocation,
+            dashboard::commands::get_top_movers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

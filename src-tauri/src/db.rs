@@ -150,6 +150,29 @@ impl Database {
             [],
         )?;
 
+        // Dashboard stats table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dashboard_stats (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                total_balance_usd REAL NOT NULL DEFAULT 0,
+                total_balance_btc REAL NOT NULL DEFAULT 0,
+                change_24h_amount REAL NOT NULL DEFAULT 0,
+                change_24h_percentage REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Portfolio history table - stores daily snapshots
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS portfolio_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL UNIQUE,
+                total_balance_usd REAL NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?
         Ok(())
     }
     
@@ -723,6 +746,92 @@ impl Database {
             result.push(tx?);
         }
 
+        Ok(result)
+    }
+
+    // Dashboard Methods
+    pub fn get_dashboard_stats(&self) -> SqliteResult<Option<(f64, f64, f64, f64, String)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, updated_at 
+             FROM dashboard_stats WHERE id = 1",
+        )?;
+        
+        let result = stmt.query_row([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        });
+        
+        match result {
+            Ok(stats) => Ok(Some(stats)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn update_dashboard_stats(
+        &self, 
+        total_usd: f64, 
+        total_btc: f64, 
+        change_amount: f64, 
+        change_pct: f64
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO dashboard_stats (id, total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            params![total_usd, total_btc, change_amount, change_pct, &now],
+        )?;
+        
+        Ok(())
+    }
+
+    // Portfolio History Methods
+    pub fn save_portfolio_snapshot(&self, total_usd: f64) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now();
+        let date = now.format("%Y-%m-%d").to_string();
+        let created_at = now.to_rfc3339();
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO portfolio_history (date, total_balance_usd, created_at)
+             VALUES (?1, ?2, ?3)",
+            params![&date, total_usd, &created_at],
+        )?;
+        
+        Ok(())
+    }
+
+    pub fn get_portfolio_history(&self, days: i64) -> SqliteResult<Vec<(String, f64)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT date, total_balance_usd 
+             FROM portfolio_history 
+             ORDER BY date DESC 
+             LIMIT ?1",
+        )?;
+        
+        let history = stmt.query_map(params![days], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+            ))
+        })?;
+        
+        let mut result = Vec::new();
+        for item in history {
+            result.push(item?);
+        }
+        
+        // Reverse to get chronological order (oldest first)
+        result.reverse();
         Ok(result)
     }
 }
