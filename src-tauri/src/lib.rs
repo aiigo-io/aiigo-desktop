@@ -1,11 +1,18 @@
-mod wallet;
 mod db;
+mod wallet;
 
-use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
-use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
-use tauri_plugin_window_state::Builder as WindowStatePlugin;
-use std::sync::Mutex;
+use dotenvy::dotenv;
 use once_cell::sync::Lazy;
+use std::sync::Mutex;
+use tauri_plugin_window_state::Builder as WindowStatePlugin;
+use wallet::bitcoin::{
+    commands as bitcoin_commands, mnemonic as bitcoin_mnemonic, private_key as bitcoin_private_key,
+    wallet as bitcoin_wallet,
+};
+use wallet::evm::{
+    commands as evm_commands, mnemonic as evm_mnemonic, private_key as evm_private_key,
+    wallet as evm_wallet,
+};
 
 pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
     let db_path = if cfg!(debug_assertions) {
@@ -19,7 +26,7 @@ pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
                 std::path::PathBuf::from(".")
             }
         };
-        
+
         #[cfg(target_os = "windows")]
         let data_dir = {
             if let Ok(app_data) = std::env::var("APPDATA") {
@@ -28,7 +35,7 @@ pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
                 std::path::PathBuf::from(".")
             }
         };
-        
+
         #[cfg(target_os = "linux")]
         let data_dir = {
             if let Ok(home) = std::env::var("HOME") {
@@ -37,12 +44,12 @@ pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
                 std::path::PathBuf::from(".")
             }
         };
-        
+
         let db_path = data_dir.join("aiigo_desktop").join("wallets.db");
         std::fs::create_dir_all(&db_path.parent().unwrap()).ok();
         db_path.to_str().unwrap().to_string()
     };
-    
+
     match db::Database::new(&db_path) {
         Ok(db) => Mutex::new(db),
         Err(e) => panic!("Failed to initialize database: {}", e),
@@ -51,9 +58,12 @@ pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load environment variables from .env so runtime config (RPC URLs, WSS settings) is honored.
+    let _ = dotenv();
+
     // Initialize database
     let _ = &*DB;
-    
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(WindowStatePlugin::default().build())

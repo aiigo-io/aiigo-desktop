@@ -1,7 +1,8 @@
-pub mod mnemonic;
-pub mod wallet;
-pub mod private_key;
+pub mod balance;
 pub mod commands;
 pub mod config;
-pub mod balance;
+pub mod mnemonic;
 pub mod price;
+pub mod private_key;
+pub mod provider;
+pub mod wallet;

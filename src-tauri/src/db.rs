@@ -1,11 +1,26 @@
-use rusqlite::{Connection, Result as SqliteResult, params};
 use crate::wallet::types::WalletInfo;
+use chrono::Utc;
+use rusqlite::{params, Connection, Result as SqliteResult};
 use std::sync::Mutex;
 use uuid::Uuid;
-use chrono::Utc;
 
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssetBalanceData {
+    pub wallet_id: String,
+    pub chain: String,
+    pub chain_id: u64,
+    pub symbol: String,
+    pub name: String,
+    pub decimals: u8,
+    pub contract_address: Option<String>,
+    pub balance: String,
+    pub balance_float: f64,
+    pub usd_price: f64,
+    pub usd_value: f64,
 }
 
 impl Database {
@@ -15,18 +30,18 @@ impl Database {
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;",
         )?;
-        
+
         let db = Database {
             conn: Mutex::new(conn),
         };
-        
+
         db.init_tables()?;
         Ok(db)
     }
-    
+
     fn init_tables(&self) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
-        
+
         // Bitcoin wallets table - stores only address, not private key
         conn.execute(
             "CREATE TABLE IF NOT EXISTS bitcoin_wallets (
@@ -40,7 +55,7 @@ impl Database {
             )",
             [],
         )?;
-        
+
         // Bitcoin wallet secrets table - stores encrypted mnemonic/private key
         conn.execute(
             "CREATE TABLE IF NOT EXISTS bitcoin_wallet_secrets (
@@ -51,7 +66,7 @@ impl Database {
             )",
             [],
         )?;
-        
+
         // EVM wallets table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS evm_wallets (
@@ -65,7 +80,7 @@ impl Database {
             )",
             [],
         )?;
-        
+
         // EVM wallet secrets table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS evm_wallet_secrets (
@@ -76,7 +91,7 @@ impl Database {
             )",
             [],
         )?;
-        
+
         // EVM asset balances table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS evm_asset_balances (
@@ -98,10 +113,10 @@ impl Database {
             )",
             [],
         )?;
-        
+
         Ok(())
     }
-    
+
     pub fn add_bitcoin_wallet(
         &self,
         label: String,
@@ -111,13 +126,13 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT INTO bitcoin_wallets (id, label, wallet_type, address, balance, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![&id, &label, &wallet_type, &address, 0.0, &now, &now],
         )?;
-        
+
         Ok(WalletInfo {
             id,
             label,
@@ -128,7 +143,7 @@ impl Database {
             updated_at: now,
         })
     }
-    
+
     pub fn add_wallet_secret(
         &self,
         wallet_id: String,
@@ -136,13 +151,13 @@ impl Database {
         secret_type: String,
     ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO bitcoin_wallet_secrets (wallet_id, secret_data, secret_type)
              VALUES (?1, ?2, ?3)",
             params![&wallet_id, &secret_data, &secret_type],
         )?;
-        
+
         Ok(())
     }
 
@@ -151,11 +166,11 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT secret_data, secret_type FROM bitcoin_wallet_secrets WHERE wallet_id = ?1",
         )?;
-        
+
         let result = stmt.query_row(params![wallet_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         });
-        
+
         match result {
             Ok(secret) => Ok(Some(secret)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -165,29 +180,29 @@ impl Database {
 
     pub fn delete_bitcoin_wallet(&self, wallet_id: &str) -> SqliteResult<bool> {
         let conn = self.conn.lock().unwrap();
-        
+
         // Delete wallet secret first
         conn.execute(
             "DELETE FROM bitcoin_wallet_secrets WHERE wallet_id = ?1",
             params![wallet_id],
         )?;
-        
+
         // Delete wallet
         let rows_affected = conn.execute(
             "DELETE FROM bitcoin_wallets WHERE id = ?1",
             params![wallet_id],
         )?;
-        
+
         Ok(rows_affected > 0)
     }
-    
+
     pub fn get_bitcoin_wallets(&self) -> SqliteResult<Vec<WalletInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, label, wallet_type, address, balance, created_at, updated_at
              FROM bitcoin_wallets ORDER BY created_at DESC",
         )?;
-        
+
         let wallets = stmt.query_map([], |row| {
             Ok(WalletInfo {
                 id: row.get(0)?,
@@ -199,15 +214,15 @@ impl Database {
                 updated_at: row.get(6)?,
             })
         })?;
-        
+
         let mut result = Vec::new();
         for wallet in wallets {
             result.push(wallet?);
         }
-        
+
         Ok(result)
     }
-    
+
     pub fn get_bitcoin_wallet(&self, wallet_id: &str) -> SqliteResult<Option<WalletInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -245,7 +260,7 @@ impl Database {
 
         Ok(())
     }
-    
+
     // EVM Wallet Methods
     pub fn add_evm_wallet(
         &self,
@@ -256,13 +271,13 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT INTO evm_wallets (id, label, wallet_type, address, balance, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![&id, &label, &wallet_type, &address, 0.0, &now, &now],
         )?;
-        
+
         Ok(WalletInfo {
             id,
             label,
@@ -273,7 +288,7 @@ impl Database {
             updated_at: now,
         })
     }
-    
+
     pub fn add_evm_wallet_secret(
         &self,
         wallet_id: String,
@@ -281,13 +296,13 @@ impl Database {
         secret_type: String,
     ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO evm_wallet_secrets (wallet_id, secret_data, secret_type)
              VALUES (?1, ?2, ?3)",
             params![&wallet_id, &secret_data, &secret_type],
         )?;
-        
+
         Ok(())
     }
 
@@ -296,11 +311,11 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT secret_data, secret_type FROM evm_wallet_secrets WHERE wallet_id = ?1",
         )?;
-        
+
         let result = stmt.query_row(params![wallet_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         });
-        
+
         match result {
             Ok(secret) => Ok(Some(secret)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -310,35 +325,33 @@ impl Database {
 
     pub fn delete_evm_wallet(&self, wallet_id: &str) -> SqliteResult<bool> {
         let conn = self.conn.lock().unwrap();
-        
+
         // Delete asset balances first (to satisfy foreign key constraints)
         conn.execute(
             "DELETE FROM evm_asset_balances WHERE wallet_id = ?1",
             params![wallet_id],
         )?;
-        
+
         // Delete wallet secret
         conn.execute(
             "DELETE FROM evm_wallet_secrets WHERE wallet_id = ?1",
             params![wallet_id],
         )?;
-        
+
         // Delete wallet
-        let rows_affected = conn.execute(
-            "DELETE FROM evm_wallets WHERE id = ?1",
-            params![wallet_id],
-        )?;
-        
+        let rows_affected =
+            conn.execute("DELETE FROM evm_wallets WHERE id = ?1", params![wallet_id])?;
+
         Ok(rows_affected > 0)
     }
-    
+
     pub fn get_evm_wallets(&self) -> SqliteResult<Vec<WalletInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, label, wallet_type, address, balance, created_at, updated_at
              FROM evm_wallets ORDER BY created_at DESC",
         )?;
-        
+
         let wallets = stmt.query_map([], |row| {
             Ok(WalletInfo {
                 id: row.get(0)?,
@@ -350,22 +363,22 @@ impl Database {
                 updated_at: row.get(6)?,
             })
         })?;
-        
+
         let mut result = Vec::new();
         for wallet in wallets {
             result.push(wallet?);
         }
-        
+
         Ok(result)
     }
-    
+
     pub fn get_evm_wallet(&self, wallet_id: &str) -> SqliteResult<Option<WalletInfo>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, label, wallet_type, address, balance, created_at, updated_at
              FROM evm_wallets WHERE id = ?1",
         )?;
-        
+
         let result = stmt.query_row(params![wallet_id], |row| {
             Ok(WalletInfo {
                 id: row.get(0)?,
@@ -377,7 +390,7 @@ impl Database {
                 updated_at: row.get(6)?,
             })
         });
-        
+
         match result {
             Ok(wallet) => Ok(Some(wallet)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -403,21 +416,76 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO evm_asset_balances 
              (id, wallet_id, chain, chain_id, asset_symbol, asset_name, asset_decimals, contract_address, balance, balance_float, usd_price, usd_value, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
-                &id, &wallet_id, &chain, chain_id, &asset_symbol, &asset_name, 
+                &id, &wallet_id, &chain, chain_id, &asset_symbol, &asset_name,
                 asset_decimals, &contract_address, &balance, balance_float, usd_price, usd_value, &now
             ],
         )?;
-        
+
         Ok(())
     }
 
-    pub fn get_evm_asset_balances(&self, wallet_id: &str) -> SqliteResult<Vec<(String, String, u64, String, Option<String>, u8, String, f64, f64, f64)>> {
+    pub fn batch_save_evm_asset_balances(&self, assets: &[AssetBalanceData]) -> SqliteResult<()> {
+        if assets.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+
+        for asset in assets {
+            let id = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT OR REPLACE INTO evm_asset_balances (
+                    id, wallet_id, chain, chain_id, asset_symbol, asset_name,
+                    asset_decimals, contract_address, balance, balance_float,
+                    usd_price, usd_value, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    &id,
+                    &asset.wallet_id,
+                    &asset.chain,
+                    asset.chain_id,
+                    &asset.symbol,
+                    &asset.name,
+                    asset.decimals,
+                    &asset.contract_address,
+                    &asset.balance,
+                    asset.balance_float,
+                    asset.usd_price,
+                    asset.usd_value,
+                    &now,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_evm_asset_balances(
+        &self,
+        wallet_id: &str,
+    ) -> SqliteResult<
+        Vec<(
+            String,
+            String,
+            u64,
+            String,
+            Option<String>,
+            u8,
+            String,
+            f64,
+            f64,
+            f64,
+        )>,
+    > {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT chain, asset_symbol, chain_id, asset_name, contract_address, asset_decimals, balance, balance_float, usd_price, usd_value
@@ -425,38 +493,38 @@ impl Database {
              WHERE wallet_id = ?1 
              ORDER BY chain, asset_symbol",
         )?;
-        
+
         let balances = stmt.query_map(params![wallet_id], |row| {
             Ok((
-                row.get::<_, String>(0)?,  // chain
-                row.get::<_, String>(1)?,  // asset_symbol
-                row.get::<_, u64>(2)?,     // chain_id
-                row.get::<_, String>(3)?,  // asset_name
-                row.get::<_, Option<String>>(4)?,  // contract_address
-                row.get::<_, u8>(5)?,      // asset_decimals
-                row.get::<_, String>(6)?,  // balance
-                row.get::<_, f64>(7)?,     // balance_float
-                row.get::<_, f64>(8)?,     // usd_price
-                row.get::<_, f64>(9)?,     // usd_value
+                row.get::<_, String>(0)?,         // chain
+                row.get::<_, String>(1)?,         // asset_symbol
+                row.get::<_, u64>(2)?,            // chain_id
+                row.get::<_, String>(3)?,         // asset_name
+                row.get::<_, Option<String>>(4)?, // contract_address
+                row.get::<_, u8>(5)?,             // asset_decimals
+                row.get::<_, String>(6)?,         // balance
+                row.get::<_, f64>(7)?,            // balance_float
+                row.get::<_, f64>(8)?,            // usd_price
+                row.get::<_, f64>(9)?,            // usd_value
             ))
         })?;
-        
+
         let mut result = Vec::new();
         for balance in balances {
             result.push(balance?);
         }
-        
+
         Ok(result)
     }
 
     pub fn clear_evm_asset_balances(&self, wallet_id: &str) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
-        
+
         conn.execute(
             "DELETE FROM evm_asset_balances WHERE wallet_id = ?1",
             params![wallet_id],
         )?;
-        
+
         Ok(())
     }
 }

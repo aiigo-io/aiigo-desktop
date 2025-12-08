@@ -1,8 +1,8 @@
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
+use std::time::{Duration, Instant};
 
 const RETRY_ATTEMPTS: u32 = 2;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
@@ -58,7 +58,10 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
                     }
                 }
                 if !result.is_empty() {
-                    println!("[INFO] Using cached prices (age: {}s)", last_update.elapsed().as_secs());
+                    println!(
+                        "[INFO] Using cached prices (age: {}s)",
+                        last_update.elapsed().as_secs()
+                    );
                     return Ok(result);
                 }
             }
@@ -68,9 +71,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
     // Convert symbols to CoinGecko IDs
     let ids: Vec<String> = symbols
         .iter()
-        .filter_map(|symbol| {
-            get_coingecko_id(symbol).map(|id| id.to_string())
-        })
+        .filter_map(|symbol| get_coingecko_id(symbol).map(|id| id.to_string()))
         .collect();
 
     if ids.is_empty() {
@@ -88,6 +89,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
     let ids_param = unique_ids.join(",");
 
     for attempt in 1..=RETRY_ATTEMPTS {
+        let attempt_start = Instant::now();
         match try_fetch_prices(&ids_param).await {
             Ok(response_map) => {
                 // Update cache
@@ -106,7 +108,12 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
                         }
                     }
                 }
-                println!("[INFO] Fetched {} fresh prices from CoinGecko", result.len());
+                let duration_ms = attempt_start.elapsed().as_millis();
+                println!(
+                    "[INFO] Fetched {} fresh prices from CoinGecko in {}ms",
+                    result.len(),
+                    duration_ms
+                );
                 return Ok(result);
             }
             Err(e) => {
