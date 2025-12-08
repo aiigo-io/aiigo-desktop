@@ -172,7 +172,7 @@ impl Database {
                 created_at TEXT NOT NULL
             )",
             [],
-        )?
+        )?;
         Ok(())
     }
     

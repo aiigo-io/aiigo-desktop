@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { ArrowUpRight, ArrowDownLeft, RefreshCw, Send } from 'lucide-react';
+import { ArrowUpRight, ArrowDownLeft, RefreshCw, Send, ExternalLink } from 'lucide-react';
 import { cn, shortAddress } from '@/lib/utils';
 
 interface BitcoinTransaction {
@@ -50,6 +51,7 @@ const Transactions: React.FC = () => {
   const [bitcoinTransactions, setBitcoinTransactions] = useState<BitcoinTransaction[]>([]);
   const [evmTransactions, setEvmTransactions] = useState<EvmTransaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
 
   useEffect(() => {
@@ -63,13 +65,68 @@ const Transactions: React.FC = () => {
         invoke<BitcoinTransaction[]>('get_all_bitcoin_transactions'),
         invoke<EvmTransaction[]>('get_all_evm_transactions'),
       ]);
-
-      setBitcoinTransactions(btcTxs);
-      setEvmTransactions(evmTxs);
+      // Filter out failed transactions
+      setBitcoinTransactions(btcTxs.filter(tx => tx.status !== 'failed'));
+      setEvmTransactions(evmTxs.filter(tx => tx.status !== 'failed'));
     } catch (error) {
       console.error('Failed to fetch transactions:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const syncTransactionsFromBlockchain = async () => {
+    setSyncing(true);
+    try {
+      // Get all wallets
+      const [btcWallets, evmWallets] = await Promise.all([
+        invoke<any[]>('bitcoin_get_wallets'),
+        invoke<any[]>('evm_get_wallets'),
+      ]);
+
+      // Sync Bitcoin transactions
+      const btcSyncPromises = btcWallets.map(wallet =>
+        invoke('fetch_bitcoin_history', {
+          walletId: wallet.id,
+          address: wallet.address,
+        }).catch(err => {
+          console.error(`Failed to sync Bitcoin wallet ${wallet.id}:`, err);
+          return [];
+        })
+      );
+
+      // Supported EVM chains
+      const evmChains = [
+        { name: 'Ethereum', chainId: 1 },
+        { name: 'BSC', chainId: 56 },
+        { name: 'Polygon', chainId: 137 },
+        { name: 'Arbitrum', chainId: 42161 },
+        { name: 'Optimism', chainId: 10 },
+      ];
+
+      // Sync EVM transactions for all chains
+      const evmSyncPromises = evmWallets.flatMap(wallet =>
+        evmChains.map(chain =>
+          invoke('fetch_evm_history', {
+            walletId: wallet.id,
+            address: wallet.address,
+            chain: chain.name,
+            chainId: chain.chainId,
+          }).catch(err => {
+            console.error(`Failed to sync ${chain.name} for wallet ${wallet.id}:`, err);
+            return [];
+          })
+        )
+      );
+
+      await Promise.all([...btcSyncPromises, ...evmSyncPromises]);
+
+      // Refresh transactions after sync
+      await fetchTransactions();
+    } catch (error) {
+      console.error('Failed to sync transactions:', error);
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -94,6 +151,30 @@ const Transactions: React.FC = () => {
         return 'bg-red-500/10 text-red-500 border-red-500/20';
       default:
         return 'bg-gray-500/10 text-gray-500 border-gray-500/20';
+    }
+  };
+
+  const getBitcoinExplorerUrl = (txHash: string) => {
+    return `https://blockstream.info/tx/${txHash}`;
+  };
+
+  const getEvmExplorerUrl = (txHash: string, chainId: number) => {
+    const explorers: Record<number, string> = {
+      1: 'https://etherscan.io/tx/',
+      56: 'https://bscscan.com/tx/',
+      137: 'https://polygonscan.com/tx/',
+      42161: 'https://arbiscan.io/tx/',
+      10: 'https://optimistic.etherscan.io/tx/',
+    };
+    const baseUrl = explorers[chainId] || explorers[1];
+    return `${baseUrl}${txHash}`;
+  };
+
+  const openExternalLink = async (url: string) => {
+    try {
+      await openUrl(url);
+    } catch (error) {
+      console.error('Failed to open URL:', error);
     }
   };
 
@@ -140,6 +221,15 @@ const Transactions: React.FC = () => {
               Fee: {tx.fee.toFixed(8)} BTC
             </div>
           </div>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => openExternalLink(getBitcoinExplorerUrl(tx.tx_hash))}
+            className="ml-2"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </Button>
         </div>
       </div>
     );
@@ -191,6 +281,15 @@ const Transactions: React.FC = () => {
               Fee: {tx.fee.toFixed(6)} ETH
             </div>
           </div>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => openExternalLink(getEvmExplorerUrl(tx.tx_hash, tx.chain_id))}
+            className="ml-2"
+          >
+            <ExternalLink className="w-4 h-4" />
+          </Button>
         </div>
       </div>
     );
@@ -208,10 +307,16 @@ const Transactions: React.FC = () => {
           <h1 className="text-3xl font-bold">Transactions</h1>
           <p className="text-muted-foreground mt-1">View and manage your transaction history</p>
         </div>
-        <Button onClick={fetchTransactions} disabled={loading} variant="outline" size="sm">
-          <RefreshCw className={cn("w-4 h-4 mr-2", loading && "animate-spin")} />
-          Refresh
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={syncTransactionsFromBlockchain} disabled={syncing} variant="outline" size="sm">
+            <RefreshCw className={cn("w-4 h-4 mr-2", syncing && "animate-spin")} />
+            Sync from Blockchain
+          </Button>
+          <Button onClick={fetchTransactions} disabled={loading} variant="outline" size="sm">
+            <RefreshCw className={cn("w-4 h-4 mr-2", loading && "animate-spin")} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       <Card>

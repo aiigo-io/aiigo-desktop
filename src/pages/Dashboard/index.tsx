@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
 import { ArrowUpRight, ArrowDownLeft, Activity, Wallet, TrendingUp, Clock } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { shortAddress } from '@/lib/utils';
 
 interface DashboardStats {
   total_balance_usd: string;
@@ -31,7 +33,58 @@ interface TopMover {
   is_positive: boolean;
 }
 
+interface BitcoinTransaction {
+  id: string;
+  wallet_id: string;
+  tx_hash: string;
+  tx_type: 'send' | 'receive';
+  from_address: string;
+  to_address: string;
+  amount: number;
+  fee: number;
+  status: 'pending' | 'confirmed' | 'failed';
+  confirmations: number;
+  block_height: number | null;
+  timestamp: string;
+  created_at: string;
+}
+
+interface EvmTransaction {
+  id: string;
+  wallet_id: string;
+  tx_hash: string;
+  tx_type: 'send' | 'receive';
+  from_address: string;
+  to_address: string;
+  amount: string;
+  amount_float: number;
+  asset_symbol: string;
+  asset_name: string;
+  contract_address: string | null;
+  chain: string;
+  chain_id: number;
+  gas_used: string;
+  gas_price: string;
+  fee: number;
+  status: 'pending' | 'confirmed' | 'failed';
+  block_number: number | null;
+  timestamp: string;
+  created_at: string;
+}
+
+type UnifiedTransaction = {
+  id: string;
+  type: 'bitcoin' | 'evm';
+  tx_type: 'send' | 'receive';
+  tx_hash: string;
+  asset_symbol: string;
+  amount: string;
+  timestamp: string;
+}
+
 const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
+  
   // Stats state
   const [stats, setStats] = useState<DashboardStats>({
     total_balance_usd: '$0.00',
@@ -48,6 +101,9 @@ const Dashboard: React.FC = () => {
 
   // Top movers state
   const [topMovers, setTopMovers] = useState<TopMover[]>([]);
+  
+  // Transactions state
+  const [recentTransactions, setRecentTransactions] = useState<UnifiedTransaction[]>([]);
 
   useEffect(() => {
     const loadData = async () => {
@@ -75,11 +131,14 @@ const Dashboard: React.FC = () => {
         const allocationData = await invoke<AssetAllocation[]>('get_asset_allocation');
         setAllocation(allocationData);
 
-        // 4. Refresh data in background
+        // 4. Load recent transactions
+        await loadRecentTransactions();
+
+        // 5. Refresh data in background
         const freshStats = await invoke<DashboardStats>('refresh_dashboard_stats');
         setStats(freshStats);
 
-        // 5. Reload chart after refresh
+        // 6. Reload chart after refresh
         const updatedHistory = await invoke<PortfolioHistoryPoint[]>('get_portfolio_history');
         if (updatedHistory && updatedHistory.length > 0) {
           const formattedData = updatedHistory.map(point => {
@@ -93,11 +152,11 @@ const Dashboard: React.FC = () => {
           setChartData(formattedData);
         }
 
-        // 6. Reload asset allocation after refresh
+        // 7. Reload asset allocation after refresh
         const updatedAllocation = await invoke<AssetAllocation[]>('get_asset_allocation');
         setAllocation(updatedAllocation);
 
-        // 7. Load top movers (token price changes)
+        // 8. Load top movers (token price changes)
         const moversData = await invoke<TopMover[]>('get_top_movers');
         setTopMovers(moversData);
       } catch (error) {
@@ -107,6 +166,65 @@ const Dashboard: React.FC = () => {
 
     loadData();
   }, []);
+
+  const loadRecentTransactions = async () => {
+    try {
+      const [btcTxs, evmTxs] = await Promise.all([
+        invoke<BitcoinTransaction[]>('get_all_bitcoin_transactions'),
+        invoke<EvmTransaction[]>('get_all_evm_transactions'),
+      ]);
+
+      // Filter out failed transactions and convert to unified format
+      const unifiedBtcTxs: UnifiedTransaction[] = btcTxs
+        .filter(tx => tx.status !== 'failed')
+        .map(tx => ({
+          id: tx.id,
+          type: 'bitcoin' as const,
+          tx_type: tx.tx_type,
+          tx_hash: tx.tx_hash,
+          asset_symbol: 'BTC',
+          amount: tx.amount.toFixed(8),
+          timestamp: tx.timestamp,
+        }));
+
+      const unifiedEvmTxs: UnifiedTransaction[] = evmTxs
+        .filter(tx => tx.status !== 'failed')
+        .map(tx => ({
+          id: tx.id,
+          type: 'evm' as const,
+          tx_type: tx.tx_type,
+          tx_hash: tx.tx_hash,
+          asset_symbol: tx.asset_symbol,
+          amount: tx.amount_float.toFixed(6),
+          timestamp: tx.timestamp,
+        }));
+
+      // Merge and sort by timestamp (most recent first)
+      const allTxs = [...unifiedBtcTxs, ...unifiedEvmTxs].sort(
+        (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+      );
+
+      // Take only the 5 most recent transactions
+      setRecentTransactions(allTxs.slice(0, 5));
+    } catch (error) {
+      console.error('Failed to load recent transactions:', error);
+    }
+  };
+
+  const formatTimeAgo = (timestamp: string) => {
+    const now = new Date();
+    const txDate = new Date(timestamp);
+    const diffMs = now.getTime() - txDate.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    return txDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
 
   const maxValue = chartData.length > 0 ? Math.max(...chartData.map(d => d.value)) : 0;
   const minValue = chartData.length > 0 ? Math.min(...chartData.map(d => d.value)) : 0;
@@ -118,13 +236,6 @@ const Dashboard: React.FC = () => {
   const padding = valueRange > 0 ? valueRange * 0.1 : baseValue * 0.2;
   const chartMinValue = Math.max(0, minValue - padding);
   const chartMaxValue = maxValue + padding;
-
-
-
-  const recentTransactions = [
-    { type: 'sent', asset: 'BTC', amount: '-0.05 BTC', time: '2 hours ago', hash: '0x3a...8f21' },
-    { type: 'received', asset: 'ETH', amount: '+1.2 ETH', time: '5 hours ago', hash: '0x7b...9c44' }
-  ];
 
   // Generate 7-day labels
   const getDayLabels = () => {
@@ -369,44 +480,58 @@ const Dashboard: React.FC = () => {
               <Clock className="w-5 h-5 text-slate-400" />
               Recent Transactions
             </h3>
-            <a href="#" className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors">View All</a>
+            <button 
+              onClick={() => navigate('/transactions')}
+              className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors hover:underline"
+            >
+              View All
+            </button>
           </div>
 
           <div className="space-y-3">
-            {recentTransactions.map((tx, index) => (
-              <div
-                key={index}
-                className="flex items-center justify-between p-4 bg-white/50 border border-slate-100 rounded-xl hover:bg-white/80 hover:shadow-md transition-all cursor-pointer group"
-              >
-                <div className="flex items-center gap-4">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${tx.type === 'sent'
-                    ? 'bg-red-50 text-red-500 border border-red-100'
-                    : 'bg-emerald-50 text-emerald-500 border border-emerald-100'
-                    }`}>
-                    {tx.type === 'sent' ? (
-                      <ArrowUpRight className="w-5 h-5" />
-                    ) : (
-                      <ArrowDownLeft className="w-5 h-5" />
-                    )}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium text-slate-700">
-                        {tx.type === 'sent' ? 'Sent' : 'Received'} {tx.asset}
-                      </p>
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-mono border border-slate-200">
-                        {tx.hash}
-                      </span>
+            {recentTransactions.length > 0 ? (
+              recentTransactions.map((tx) => {
+                const isSend = tx.tx_type === 'send';
+                return (
+                  <div
+                    key={tx.id}
+                    className="flex items-center justify-between p-4 bg-white/50 border border-slate-100 rounded-xl hover:bg-white/80 hover:shadow-md transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isSend
+                        ? 'bg-red-50 text-red-500 border border-red-100'
+                        : 'bg-emerald-50 text-emerald-500 border border-emerald-100'
+                        }`}>
+                        {isSend ? (
+                          <ArrowUpRight className="w-5 h-5" />
+                        ) : (
+                          <ArrowDownLeft className="w-5 h-5" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-slate-700">
+                            {isSend ? 'Sent' : 'Received'} {tx.asset_symbol}
+                          </p>
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-mono border border-slate-200">
+                            {shortAddress(tx.tx_hash)}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-500">{formatTimeAgo(tx.timestamp)}</p>
+                      </div>
                     </div>
-                    <p className="text-sm text-slate-500">{tx.time}</p>
+                    <p className={`font-mono font-medium ${isSend ? 'text-red-500' : 'text-emerald-600'
+                      }`}>
+                      {isSend ? '-' : '+'}{tx.amount} {tx.asset_symbol}
+                    </p>
                   </div>
-                </div>
-                <p className={`font-mono font-medium ${tx.type === 'sent' ? 'text-red-500' : 'text-emerald-600'
-                  }`}>
-                  {tx.amount}
-                </p>
+                );
+              })
+            ) : (
+              <div className="text-center py-8 text-slate-400">
+                <p className="text-sm">No recent transactions</p>
               </div>
-            ))}
+            )}
           </div>
         </Card>
       </div>

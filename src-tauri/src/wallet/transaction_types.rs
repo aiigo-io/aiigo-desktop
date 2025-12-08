@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Transaction status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum TransactionStatus {
     Pending,
     Confirmed,
@@ -29,6 +30,7 @@ impl TransactionStatus {
 
 /// Transaction type (send or receive)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum TransactionType {
     Send,
     Receive,

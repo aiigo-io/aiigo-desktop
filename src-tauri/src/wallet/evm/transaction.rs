@@ -11,52 +11,263 @@ use ethers::types::{Address as EthAddress, TransactionReceipt, H256, U256};
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
+use serde::{Deserialize, Serialize};
 
-/// Fetch EVM transaction history from the blockchain
+const ETHERSCAN_API_KEY: &str = "TKG5YYYPSX97W8HG7ZHA319UXKWMXFKKG6";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
+struct EtherscanTransaction {
+    #[serde(rename = "blockNumber")]
+    block_number: String,
+    #[serde(rename = "timeStamp")]
+    timestamp: String,
+    hash: String,
+    from: String,
+    to: String,
+    value: String,
+    #[serde(default)]
+    gas: String,
+    #[serde(rename = "gasPrice", default)]
+    gas_price: String,
+    #[serde(rename = "gasUsed", default)]
+    gas_used: String,
+    #[serde(rename = "isError", default)]
+    is_error: String,
+    #[serde(rename = "contractAddress", default)]
+    contract_address: String,
+    #[serde(rename = "tokenName")]
+    token_name: Option<String>,
+    #[serde(rename = "tokenSymbol")]
+    token_symbol: Option<String>,
+    #[serde(rename = "tokenDecimal")]
+    token_decimal: Option<String>,
+}
+
+impl Default for EtherscanTransaction {
+    fn default() -> Self {
+        Self {
+            block_number: String::new(),
+            timestamp: String::new(),
+            hash: String::new(),
+            from: String::new(),
+            to: String::new(),
+            value: String::new(),
+            gas: String::new(),
+            gas_price: String::new(),
+            gas_used: String::new(),
+            is_error: "0".to_string(),
+            contract_address: String::new(),
+            token_name: None,
+            token_symbol: None,
+            token_decimal: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EtherscanResponse {
+    status: String,
+    message: String,
+    result: serde_json::Value,
+}
+
+fn get_etherscan_api_url(chain_id: u64) -> Option<String> {
+    match chain_id {
+        1 => Some("https://api.etherscan.io/v2/api".to_string()),
+        56 => Some("https://api.bscscan.com/v2/api".to_string()),
+        137 => Some("https://api.polygonscan.com/v2/api".to_string()),
+        42161 => Some("https://api.arbiscan.io/v2/api".to_string()),
+        10 => Some("https://api-optimistic.etherscan.io/v2/api".to_string()),
+        _ => None,
+    }
+}
+
+/// Fetch EVM transaction history from the blockchain using Etherscan API
 pub async fn fetch_evm_transaction_history(
-    _wallet_id: String,
+    wallet_id: String,
     address: String,
-    _chain: String,
+    chain: String,
     chain_id: u64,
 ) -> Result<Vec<EvmTransaction>, String> {
-    // Get chain config
+    let api_url = get_etherscan_api_url(chain_id)
+        .ok_or_else(|| format!("Chain ID {} not supported for Etherscan API", chain_id))?;
+
     let chain_config = get_chain_by_id(chain_id)
         .ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
 
-    // Create provider
-    let provider = Provider::<Http>::try_from(chain_config.rpc_url())
-        .map_err(|e| format!("Failed to create provider: {}", e))?;
+    let mut all_transactions = Vec::new();
 
-    let eth_address = EthAddress::from_str(&address)
-        .map_err(|e| format!("Invalid address: {}", e))?;
+    // Fetch normal transactions
+    let normal_txs = fetch_normal_transactions(&api_url, &address, chain_id).await?;
+    all_transactions.extend(normal_txs);
 
-    // Get current block number
-    let current_block = provider
-        .get_block_number()
+    // Fetch ERC20 token transfers
+    let token_txs = fetch_token_transactions(&api_url, &address, chain_id).await?;
+    all_transactions.extend(token_txs);
+
+    // Convert to EvmTransaction and save to database
+    let mut result = Vec::new();
+    let native_symbol = chain_config.assets().first()
+        .map(|a| a.symbol.clone())
+        .unwrap_or_else(|| "ETH".to_string());
+
+    for tx in all_transactions {
+        let tx_type = if tx.from.to_lowercase() == address.to_lowercase() {
+            TransactionType::Send
+        } else {
+            TransactionType::Receive
+        };
+
+        let status = if tx.is_error == "0" {
+            TransactionStatus::Confirmed
+        } else {
+            TransactionStatus::Failed
+        };
+
+        let block_number = tx.block_number.parse::<u64>().ok();
+        
+        let timestamp_secs = tx.timestamp.parse::<i64>()
+            .unwrap_or_else(|_| Utc::now().timestamp());
+        let timestamp = chrono::DateTime::from_timestamp(timestamp_secs, 0)
+            .unwrap_or_else(|| Utc::now())
+            .to_rfc3339();
+
+        // Determine if it's a token transfer or native transfer
+        let (asset_symbol, asset_name, contract_address, decimals) = if !tx.contract_address.is_empty() {
+            // ERC20 token transfer
+            let symbol = tx.token_symbol.clone().unwrap_or_else(|| "UNKNOWN".to_string());
+            let name = tx.token_name.clone().unwrap_or_else(|| "Unknown Token".to_string());
+            let decimals = tx.token_decimal.as_ref()
+                .and_then(|d| d.parse::<u8>().ok())
+                .unwrap_or(18);
+            (symbol, name, Some(tx.contract_address.clone()), decimals)
+        } else {
+            // Native token transfer
+            (native_symbol.clone(), native_symbol.clone(), None, 18)
+        };
+
+        // Calculate amount
+        let value_u256 = U256::from_dec_str(&tx.value).unwrap_or_default();
+        let amount_float = if decimals > 0 {
+            let divisor = 10_u128.pow(decimals as u32);
+            value_u256.as_u128() as f64 / divisor as f64
+        } else {
+            value_u256.as_u128() as f64
+        };
+
+        // Calculate fee (only for transactions sent by this wallet)
+        let fee = if tx_type == TransactionType::Send {
+            let gas_used_u256 = U256::from_dec_str(&tx.gas_used).unwrap_or_default();
+            let gas_price_u256 = U256::from_dec_str(&tx.gas_price).unwrap_or_default();
+            let fee_wei = gas_used_u256 * gas_price_u256;
+            fee_wei.as_u128() as f64 / 1e18
+        } else {
+            0.0
+        };
+
+        let evm_tx = EvmTransaction {
+            id: Uuid::new_v4().to_string(),
+            wallet_id: wallet_id.clone(),
+            tx_hash: tx.hash.clone(),
+            tx_type,
+            from_address: tx.from.clone(),
+            to_address: tx.to.clone(),
+            amount: tx.value.clone(),
+            amount_float,
+            asset_symbol,
+            asset_name,
+            contract_address,
+            chain: chain.clone(),
+            chain_id,
+            gas_used: tx.gas_used.clone(),
+            gas_price: tx.gas_price.clone(),
+            fee,
+            status,
+            block_number,
+            timestamp: timestamp.clone(),
+            created_at: timestamp,
+        };
+
+        // Save to database
+        {
+            let db = DB.lock().unwrap();
+            db.add_evm_transaction(&evm_tx)
+                .map_err(|e| format!("Failed to save transaction: {}", e))?;
+        }
+
+        result.push(evm_tx);
+    }
+
+    Ok(result)
+}
+
+async fn fetch_normal_transactions(
+    api_url: &str,
+    address: &str,
+    chain_id: u64,
+) -> Result<Vec<EtherscanTransaction>, String> {
+    let url = format!(
+        "{}?chainid={}&module=account&action=txlist&address={}&startblock=0&endblock=99999999&sort=desc&apikey={}",
+        api_url, chain_id, address, ETHERSCAN_API_KEY
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
         .await
-        .map_err(|e| format!("Failed to get block number: {}", e))?;
+        .map_err(|e| format!("Failed to fetch transactions: {}", e))?;
 
-    // Fetch transactions (last 1000 blocks or less)
-    let from_block = current_block.saturating_sub(1000u64.into());
+    let etherscan_response: EtherscanResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-    // Get transaction history using eth_getLogs (for incoming transactions)
-    // Note: This is a simplified version. For production, you'd want to use
-    // an indexer service like Etherscan API or The Graph
+    if etherscan_response.status != "1" {
+        if etherscan_response.message.contains("No transactions found") {
+            return Ok(Vec::new());
+        }
+        return Err(format!("Etherscan API error: {}", etherscan_response.message));
+    }
 
-    let _filter = Filter::new()
-        .address(eth_address)
-        .from_block(from_block)
-        .to_block(current_block);
+    let transactions: Vec<EtherscanTransaction> = serde_json::from_value(etherscan_response.result.clone())
+        .map_err(|e| format!("Failed to parse normal transactions: {}", e))?;
 
-    // For now, we'll return an empty list and implement a basic version
-    // In production, you'd integrate with Etherscan API or similar service
-    let transactions = Vec::new();
+    Ok(transactions)
+}
 
-    // This is a placeholder - in production you'd want to:
-    // 1. Use Etherscan API or similar service
-    // 2. Query both incoming and outgoing transactions
-    // 3. Handle ERC20 token transfers
-    // 4. Parse transaction data properly
+async fn fetch_token_transactions(
+    api_url: &str,
+    address: &str,
+    chain_id: u64,
+) -> Result<Vec<EtherscanTransaction>, String> {
+    let url = format!(
+        "{}?chainid={}&module=account&action=tokentx&address={}&startblock=0&endblock=99999999&sort=desc&apikey={}",
+        api_url, chain_id, address, ETHERSCAN_API_KEY
+    );
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch token transactions: {}", e))?;
+
+    let etherscan_response: EtherscanResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+    if etherscan_response.status != "1" {
+        if etherscan_response.message.contains("No transactions found") {
+            return Ok(Vec::new());
+        }
+        return Err(format!("Etherscan API error: {}", etherscan_response.message));
+    }
+
+    let transactions: Vec<EtherscanTransaction> = serde_json::from_value(etherscan_response.result.clone())
+        .map_err(|e| format!("Failed to parse token transactions: {}", e))?;
 
     Ok(transactions)
 }
