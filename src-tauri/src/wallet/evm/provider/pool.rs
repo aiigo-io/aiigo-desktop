@@ -27,22 +27,11 @@ impl WssConnectionPool {
         for i in 0..pool_size {
             match Self::connect(&wss_url, config.connect_timeout_secs).await {
                 Ok(provider) => {
-                    println!(
-                        "[WSS][{}] Established connection {}/{}",
-                        chain_name,
-                        i + 1,
-                        pool_size
-                    );
+                    tracing::info!(chain=%chain_name, connection=%(i + 1), pool_size=%pool_size, "Established WSS connection");
                     connections.push(provider);
                 }
                 Err(err) => {
-                    eprintln!(
-                        "[WSS][{}] Failed to connect ({}/{}): {}",
-                        chain_name,
-                        i + 1,
-                        pool_size,
-                        err
-                    );
+                    tracing::warn!(chain=%chain_name, connection=%(i + 1), pool_size=%pool_size, error=%err.to_string(), "Failed to establish WSS connection");
                     if connections.is_empty() {
                         return Err(err);
                     } else {

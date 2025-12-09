@@ -13,6 +13,7 @@ use wallet::evm::{
     commands as evm_commands, mnemonic as evm_mnemonic, private_key as evm_private_key,
     wallet as evm_wallet,
 };
+use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 
 pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
     let db_path = if cfg!(debug_assertions) {
@@ -56,12 +57,19 @@ pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
     }
 });
 
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer().with_target(false).with_file(true).with_line_number(true))
+        .init();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load environment variables from .env so runtime config (RPC URLs, WSS settings) is honored.
     let _ = dotenv();
+    init_tracing();
 
-    // Initialize database
     let _ = &*DB;
 
     tauri::Builder::default()

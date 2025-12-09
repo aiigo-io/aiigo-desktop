@@ -57,16 +57,8 @@ pub async fn get_chain_balances(
     while let Some(res) = set.join_next().await {
         match res {
             Ok(Ok(tuple)) => balances.push(tuple),
-            Ok(Err(err)) => eprintln!(
-                "[WARNING] Asset balance query failed on {}: {}",
-                chain_config.name(),
-                err
-            ),
-            Err(join_err) => eprintln!(
-                "[ERROR] Asset balance task panicked on {}: {:?}",
-                chain_config.name(),
-                join_err
-            ),
+            Ok(Err(err)) => tracing::warn!(chain=%chain_config.name(), error=%err, "Asset balance query failed"),
+            Err(join_err) => tracing::error!(chain=%chain_config.name(), join_err=?join_err, "Asset balance task panicked"),
         }
     }
 
@@ -119,10 +111,7 @@ async fn handle_retry(label: &str, attempt: u32, err: ProviderError) -> Result<(
     }
 
     let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-    eprintln!(
-        "[RETRY] {} balance attempt {} failed: {}. Retrying in {}ms...",
-        label, attempt, err, delay_ms
-    );
+    tracing::warn!(label=%label, attempt=%attempt, delay_ms=%delay_ms, error=%err.to_string(), "Retrying balance query");
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     Ok(())
 }

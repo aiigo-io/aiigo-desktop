@@ -39,17 +39,14 @@ impl HealthMonitor {
             let needs_reconnect = match self.check_once().await {
                 Ok(_) => false,
                 Err(err) => {
-                    eprintln!("[HEALTH][{}] Health check failed: {}", self.chain_name, err);
+                    tracing::error!(chain=%self.chain_name, error=%err.to_string(), "Health check failed");
                     true
                 }
             };
 
             if needs_reconnect {
                 if let Err(err) = self.reconnect().await {
-                    eprintln!(
-                        "[HEALTH][{}] Reconnect attempts exhausted: {}",
-                        self.chain_name, err
-                    );
+                    tracing::error!(chain=%self.chain_name, error=%err.to_string(), "Reconnect attempts exhausted");
                 }
             }
         }
@@ -84,10 +81,7 @@ impl HealthMonitor {
         for attempt in 1..=attempts {
             let exponent = (attempt - 1).min(10);
             let backoff_ms = 1_000 * 2_u64.pow(exponent);
-            println!(
-                "[HEALTH][{}] Reconnect attempt {}/{} (waiting {}ms)",
-                self.chain_name, attempt, attempts, backoff_ms
-            );
+            tracing::info!(chain=%self.chain_name, attempt=%attempt, attempts=%attempts, backoff_ms=%backoff_ms, "Reconnect attempt");
 
             sleep(Duration::from_millis(backoff_ms)).await;
 
@@ -95,17 +89,11 @@ impl HealthMonitor {
                 Ok(pool) => {
                     let mut guard = self.pool_handle.write().await;
                     *guard = Some(Arc::new(pool));
-                    println!(
-                        "[HEALTH][{}] Reconnected WSS pool on attempt {}/{}",
-                        self.chain_name, attempt, attempts
-                    );
+                    tracing::info!(chain=%self.chain_name, attempt=%attempt, attempts=%attempts, "Reconnected WSS pool");
                     return Ok(());
                 }
                 Err(err) => {
-                    eprintln!(
-                        "[HEALTH][{}] Reconnect attempt {}/{} failed: {}",
-                        self.chain_name, attempt, attempts, err
-                    );
+                    tracing::warn!(chain=%self.chain_name, attempt=%attempt, attempts=%attempts, error=%err.to_string(), "Reconnect attempt failed");
                 }
             }
         }

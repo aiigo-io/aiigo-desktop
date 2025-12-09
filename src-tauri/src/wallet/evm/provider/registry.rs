@@ -19,17 +19,9 @@ impl ProviderRegistry {
 
         let config = chain.provider_config();
         if config.wss_enabled() {
-            println!(
-                "[PROVIDER] Bootstrapping {} provider (WSS enabled, pool={} timeout={}s)",
-                chain.name(),
-                config.pool_size,
-                config.connect_timeout_secs
-            );
+            tracing::info!(chain=%chain.name(), pool_size=%config.pool_size, timeout_secs=%config.connect_timeout_secs, "Bootstrapping provider with WSS");
         } else {
-            println!(
-                "[PROVIDER] Bootstrapping {} provider (HTTP only)",
-                chain.name()
-            );
+            tracing::info!(chain=%chain.name(), "Bootstrapping provider (HTTP only)");
         }
 
         let provider = Arc::new(HybridProvider::new(config, chain.name()).await?);

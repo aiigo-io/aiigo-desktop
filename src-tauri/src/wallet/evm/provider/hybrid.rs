@@ -37,10 +37,7 @@ impl HybridProvider {
                     *guard = Some(Arc::new(pool));
                 }
                 Err(err) => {
-                    eprintln!(
-                        "[WSS][{}] Failed to build pool (falling back to HTTP): {}",
-                        chain_name, err
-                    );
+                    tracing::warn!(chain=%chain_name, error=%err.to_string(), "WSS pool build failed, falling back to HTTP");
                 }
             }
 
@@ -74,19 +71,12 @@ impl HybridProvider {
                 match provider.get_balance(address, None).await {
                     Ok(balance) => {
                         self.metrics.record_wss_query(start.elapsed(), true);
-                        println!(
-                            "[WSS][{}] Balance query succeeded in {}ms",
-                            self.chain_name,
-                            start.elapsed().as_millis()
-                        );
+                        tracing::info!(chain=%self.chain_name, elapsed_ms=%start.elapsed().as_millis(), "WSS balance query succeeded");
                         return Ok(balance);
                     }
                     Err(err) => {
                         self.metrics.record_wss_query(start.elapsed(), false);
-                        eprintln!(
-                            "[WSS][{}] Balance query failed, falling back to HTTP: {}",
-                            self.chain_name, err
-                        );
+                        tracing::warn!(chain=%self.chain_name, error=%err.to_string(), "WSS balance query failed, falling back to HTTP");
                     }
                 }
             }
@@ -98,11 +88,7 @@ impl HybridProvider {
             .await
             .map(|balance| {
                 self.metrics.record_http_query(start.elapsed(), true);
-                println!(
-                    "[HTTP][{}] Balance query succeeded in {}ms",
-                    self.chain_name,
-                    start.elapsed().as_millis()
-                );
+                tracing::info!(chain=%self.chain_name, elapsed_ms=%start.elapsed().as_millis(), "HTTP balance query succeeded");
                 balance
             })
             .map_err(|e| {
@@ -121,19 +107,12 @@ impl HybridProvider {
                 match provider.call(tx, None).await {
                     Ok(result) => {
                         self.metrics.record_wss_query(start.elapsed(), true);
-                        println!(
-                            "[WSS][{}] Contract call succeeded in {}ms",
-                            self.chain_name,
-                            start.elapsed().as_millis()
-                        );
+                        tracing::info!(chain=%self.chain_name, elapsed_ms=%start.elapsed().as_millis(), "WSS contract call succeeded");
                         return Ok(result);
                     }
                     Err(err) => {
                         self.metrics.record_wss_query(start.elapsed(), false);
-                        eprintln!(
-                            "[WSS][{}] Contract call failed, falling back to HTTP: {}",
-                            self.chain_name, err
-                        );
+                        tracing::warn!(chain=%self.chain_name, error=%err.to_string(), "WSS contract call failed, falling back to HTTP");
                     }
                 }
             }
@@ -145,11 +124,7 @@ impl HybridProvider {
             .await
             .map(|result| {
                 self.metrics.record_http_query(start.elapsed(), true);
-                println!(
-                    "[HTTP][{}] Contract call succeeded in {}ms",
-                    self.chain_name,
-                    start.elapsed().as_millis()
-                );
+                tracing::info!(chain=%self.chain_name, elapsed_ms=%start.elapsed().as_millis(), "HTTP contract call succeeded");
                 result
             })
             .map_err(|e| {

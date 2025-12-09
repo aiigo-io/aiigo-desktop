@@ -49,25 +49,16 @@ pub async fn query_btc_balance(address: &str) -> Result<f64, String> {
         for attempt in 1..=RETRY_ATTEMPTS {
             match try_query_from_api(api_name, url).await {
                 Ok(balance) => {
-                    println!(
-                        "[SUCCESS] Retrieved balance from {}: {} BTC",
-                        api_name, balance
-                    );
+                    tracing::info!(api=%api_name, balance=%balance, "Retrieved BTC balance");
                     return Ok(balance);
                 }
                 Err(e) => {
                     if attempt < RETRY_ATTEMPTS {
                         let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                        eprintln!(
-                            "[RETRY] Balance query attempt {} to {} failed: {}. Retrying in {}ms...",
-                            attempt, api_name, e, delay_ms
-                        );
+                        tracing::warn!(attempt=%attempt, api=%api_name, delay_ms=%delay_ms, error=%e.to_string(), "Retrying BTC balance query");
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     } else {
-                        eprintln!(
-                            "[WARNING] All attempts to {} failed. Trying next API...",
-                            api_name
-                        );
+                        tracing::warn!(api=%api_name, "All attempts failed; trying next API");
                     }
                 }
             }
