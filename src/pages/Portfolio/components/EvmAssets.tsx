@@ -53,6 +53,9 @@ interface CreateWalletResponse {
   wallet: WalletInfo;
 }
 
+const REFRESH_CACHE_TTL_MS = 60_000; // Align with backend price cache duration
+type RefreshScope = 'single' | 'all';
+
 const EvmAssets: React.FC = () => {
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [walletsWithBalances, setWalletsWithBalances] = useState<Map<string, EvmWalletInfo>>(new Map());
@@ -78,6 +81,67 @@ const EvmAssets: React.FC = () => {
   useEffect(() => {
     loadWallets();
   }, []);
+
+  const isCacheHit = (walletId: string) => {
+    const lastRefresh = lastRefreshTime.get(walletId);
+    if (!lastRefresh) return false;
+    return Date.now() - lastRefresh.getTime() < REFRESH_CACHE_TTL_MS;
+  };
+
+  const logRefreshMetrics = ({
+    walletId,
+    scope,
+    cacheHit,
+    durationMs,
+    error,
+  }: {
+    walletId: string;
+    scope: RefreshScope;
+    cacheHit: boolean;
+    durationMs: number;
+    error?: unknown;
+  }) => {
+    const payload = {
+      walletId,
+      scope,
+      cacheHit,
+      durationMs: Number(durationMs.toFixed(2)),
+      timestamp: new Date().toISOString(),
+    };
+
+    if (error) {
+      console.error('[EVM Refresh]', payload, error);
+    } else {
+      console.info('[EVM Refresh]', payload);
+    }
+  };
+
+  const fetchWalletWithMetrics = async (
+    walletId: string,
+    scope: RefreshScope
+  ): Promise<EvmWalletInfo> => {
+    const cacheHit = isCacheHit(walletId);
+    const start = performance.now();
+    try {
+      const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', { walletId });
+      logRefreshMetrics({
+        walletId,
+        scope,
+        cacheHit,
+        durationMs: performance.now() - start,
+      });
+      return walletWithBalances;
+    } catch (error) {
+      logRefreshMetrics({
+        walletId,
+        scope,
+        cacheHit,
+        durationMs: performance.now() - start,
+        error,
+      });
+      throw error;
+    }
+  };
 
   const loadWallets = async () => {
     try {
@@ -107,8 +171,7 @@ const EvmAssets: React.FC = () => {
       if (walletId) {
         // Refresh specific wallet
         setRefreshingWalletId(walletId);
-        const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', { walletId });
-        console.log('ccc', walletWithBalances)
+        const walletWithBalances = await fetchWalletWithMetrics(walletId, 'single');
         setWalletsWithBalances(prev => new Map(prev).set(walletId, walletWithBalances));
         setLastRefreshTime(prev => new Map(prev).set(walletId, new Date()));
       } else {
@@ -117,7 +180,7 @@ const EvmAssets: React.FC = () => {
         const refreshTimes = new Map<string, Date>();
         for (const wallet of wallets) {
           try {
-            const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', { walletId: wallet.id });
+            const walletWithBalances = await fetchWalletWithMetrics(wallet.id, 'all');
             balances.set(wallet.id, walletWithBalances);
             refreshTimes.set(wallet.id, new Date());
           } catch (error) {

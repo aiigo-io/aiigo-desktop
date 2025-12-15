@@ -32,7 +32,7 @@ impl EvmChain {
             EvmChain::Arbitrum => "arbitrum",
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
@@ -41,7 +41,7 @@ impl EvmChain {
             _ => None,
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn chain_id(&self) -> u64 {
         match self {
@@ -49,7 +49,7 @@ impl EvmChain {
             EvmChain::Arbitrum => 42161,
         }
     }
-    
+
     #[allow(dead_code)]
     pub fn rpc_url(&self) -> &str {
         match self {
@@ -81,28 +81,44 @@ impl EvmAsset {
     pub fn eth() -> Self {
         Self::new("ETH", "Ethereum", 18, None)
     }
-    
+
     pub fn usdt() -> Self {
-        Self::new("USDT", "Tether USD", 6, Some("0xdAC17F958D2ee523a2206206994597C13D831ec7"))
+        Self::new(
+            "USDT",
+            "Tether USD",
+            6,
+            Some("0xdAC17F958D2ee523a2206206994597C13D831ec7"),
+        )
     }
-    
+
     pub fn usdc() -> Self {
-        Self::new("USDC", "USD Coin", 6, Some("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"))
+        Self::new(
+            "USDC",
+            "USD Coin",
+            6,
+            Some("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"),
+        )
     }
-    
+
     /// Get assets for a specific chain (deprecated - use config module instead)
     /// This is kept for backward compatibility
     #[allow(dead_code)]
     pub fn get_assets_for_chain(chain: &EvmChain) -> Vec<EvmAsset> {
         match chain {
-            EvmChain::Ethereum => vec![
-                EvmAsset::eth(),
-                EvmAsset::usdt(),
-                EvmAsset::usdc(),
-            ],
+            EvmChain::Ethereum => vec![EvmAsset::eth(), EvmAsset::usdt(), EvmAsset::usdc()],
             EvmChain::Arbitrum => vec![
-                Self::new("USDT", "Tether USD", 6, Some("0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9")),
-                Self::new("USDC", "USD Coin", 6, Some("0xff970a61a04b1ca14834a43f5de4533ebddb5cc8")),
+                Self::new(
+                    "USDT",
+                    "Tether USD",
+                    6,
+                    Some("0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"),
+                ),
+                Self::new(
+                    "USDC",
+                    "USD Coin",
+                    6,
+                    Some("0xff970a61a04b1ca14834a43f5de4533ebddb5cc8"),
+                ),
             ],
         }
     }
@@ -112,10 +128,10 @@ impl EvmAsset {
 pub struct EvmAssetBalance {
     pub chain: String,
     pub asset: EvmAsset,
-    pub balance: String, // Store as string to preserve precision
+    pub balance: String,    // Store as string to preserve precision
     pub balance_float: f64, // For UI display
-    pub usd_price: f64, // Current USD price
-    pub usd_value: f64, // Total value in USD (balance_float * usd_price)
+    pub usd_price: f64,     // Current USD price
+    pub usd_value: f64,     // Total value in USD (balance_float * usd_price)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,109 +1,123 @@
 use crate::wallet::evm::config::EvmChainConfig;
+use crate::wallet::evm::provider::{HybridProvider, ProviderError, ProviderRegistry};
 use ethers::prelude::*;
+use ethers::types::transaction::eip2718::TypedTransaction;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinSet;
 
 const RETRY_ATTEMPTS: u32 = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
-const REQUEST_DELAY_MS: u64 = 100;  // Delay between requests to avoid rate limiting
 
-/// Query ETH balance for an address with retry logic
-pub async fn query_eth_balance(
+/// Get all balances for a wallet on a specific chain.
+pub async fn get_chain_balances(
     chain_config: EvmChainConfig,
-    address: &str,
-) -> Result<String, String> {
-    let address: Address = address.parse()
-        .map_err(|_| "Invalid address format".to_string())?;
-    
-    let rpc_url = chain_config.rpc_url();
-    
-    for attempt in 1..=RETRY_ATTEMPTS {
-        match try_query_eth_balance(&rpc_url, address).await {
-            Ok(balance) => return Ok(balance),
-            Err(e) => {
-                if attempt < RETRY_ATTEMPTS {
-                    let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                    eprintln!("[RETRY] ETH balance query attempt {} failed: {}. Retrying in {}ms...", attempt, e, delay_ms);
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-    }
-    
-    Err("Failed to query balance after all retries".to_string())
-}
-
-async fn try_query_eth_balance(rpc_url: &str, address: Address) -> Result<String, String> {
-    let provider = Provider::<Http>::try_from(rpc_url)
-        .map_err(|e| format!("Failed to connect to RPC: {}", e))?;
-    
-    let balance = provider
-        .get_balance(address, None)
-        .await
-        .map_err(|e| format!("Failed to query balance: {}", e))?;
-    
-    Ok(balance.to_string())
-}
-
-/// Query ERC20 token balance for an address with retry logic
-pub async fn query_erc20_balance(
-    chain_config: EvmChainConfig,
-    token_address: &str,
     wallet_address: &str,
-) -> Result<String, String> {
-    let token_addr: Address = token_address.parse()
-        .map_err(|_| "Invalid token address".to_string())?;
-    
-    let wallet_addr: Address = wallet_address.parse()
+) -> Result<Vec<(String, String, f64)>, String> {
+    let wallet_addr: Address = wallet_address
+        .parse()
         .map_err(|_| "Invalid wallet address".to_string())?;
-    
-    let rpc_url = chain_config.rpc_url();
-    
-    for attempt in 1..=RETRY_ATTEMPTS {
-        match try_query_erc20_balance(&rpc_url, chain_config.name(), token_addr, wallet_addr).await {
-            Ok(balance) => return Ok(balance),
-            Err(e) => {
-                if attempt < RETRY_ATTEMPTS {
-                    let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                    eprintln!("[RETRY] ERC20 balance query attempt {} failed: {}. Retrying in {}ms...", attempt, e, delay_ms);
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                } else {
-                    return Err(e);
-                }
-            }
+
+    let provider = ProviderRegistry::get_or_init(chain_config)
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to initialize provider for {}: {}",
+                chain_config.name(),
+                e
+            )
+        })?;
+
+    let mut set = JoinSet::new();
+
+    for asset in chain_config.assets() {
+        let provider = provider.clone();
+        let symbol = asset.symbol.clone();
+        let decimals = asset.decimals;
+        if let Some(contract_address) = asset.contract_address.clone() {
+            set.spawn(async move {
+                let token_addr: Address = contract_address
+                    .parse()
+                    .map_err(|_| format!("Invalid token address: {}", contract_address))?;
+
+                query_erc20_with_retry(provider, token_addr, wallet_addr, decimals)
+                    .await
+                    .map(|(balance_str, balance_float)| (symbol, balance_str, balance_float))
+            });
+        } else {
+            set.spawn(async move {
+                query_native_with_retry(provider, wallet_addr, decimals)
+                    .await
+                    .map(|(balance_str, balance_float)| (symbol, balance_str, balance_float))
+            });
         }
     }
-    
-    Err("Failed to query balance after all retries".to_string())
+
+    let mut balances = Vec::new();
+    while let Some(res) = set.join_next().await {
+        match res {
+            Ok(Ok(tuple)) => balances.push(tuple),
+            Ok(Err(err)) => tracing::warn!(chain=%chain_config.name(), error=%err, "Asset balance query failed"),
+            Err(join_err) => tracing::error!(chain=%chain_config.name(), join_err=?join_err, "Asset balance task panicked"),
+        }
+    }
+
+    Ok(balances)
 }
 
-async fn try_query_erc20_balance(rpc_url: &str, chain_name: &str, token_addr: Address, wallet_addr: Address) -> Result<String, String> {
-    let provider = Provider::<Http>::try_from(rpc_url)
-        .map_err(|e| format!("Failed to connect to RPC {}: {}", rpc_url, e))?;
-    
-    // Simple ERC20 balanceOf call using eth_call
-    // balanceOf(address) = 0x70a08231
-    let call_data = encode_balance_of_call(wallet_addr);
-    
-    let tx = TransactionRequest::new()
-        .to(token_addr)
-        .data(call_data);
-    
-    let result = provider
-        .call(&tx.into(), None)
-        .await
-        .map_err(|e| format!("Failed to call balanceOf on {} for token {}: {}", chain_name, token_addr, e))?;
-    
-    // Decode the result as U256
-    let balance = U256::from_big_endian(&result);
-    Ok(balance.to_string())
+async fn query_native_with_retry(
+    provider: Arc<HybridProvider>,
+    wallet_addr: Address,
+    decimals: u8,
+) -> Result<(String, f64), String> {
+    for attempt in 1..=RETRY_ATTEMPTS {
+        match provider.get_balance(wallet_addr).await {
+            Ok(balance) => return Ok(convert_balance(balance, decimals)),
+            Err(err) => handle_retry("native", attempt, err).await?,
+        }
+    }
+
+    Err("Failed to query native balance after retries".to_string())
 }
 
-/// Encode a balanceOf(address) call for ERC20 tokens
+async fn query_erc20_with_retry(
+    provider: Arc<HybridProvider>,
+    token_addr: Address,
+    wallet_addr: Address,
+    decimals: u8,
+) -> Result<(String, f64), String> {
+    for attempt in 1..=RETRY_ATTEMPTS {
+        let call_data = encode_balance_of_call(wallet_addr);
+        let tx: TypedTransaction = TransactionRequest::new()
+            .to(token_addr)
+            .data(call_data)
+            .into();
+
+        match provider.call_contract(&tx).await {
+            Ok(result) => {
+                let balance = U256::from_big_endian(result.as_ref());
+                return Ok(convert_balance(balance, decimals));
+            }
+            Err(err) => handle_retry("erc20", attempt, err).await?,
+        }
+    }
+
+    Err("Failed to query ERC20 balance after retries".to_string())
+}
+
+async fn handle_retry(label: &str, attempt: u32, err: ProviderError) -> Result<(), String> {
+    if attempt >= RETRY_ATTEMPTS {
+        return Err(format!("{} balance query failed: {}", label, err));
+    }
+
+    let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
+    tracing::warn!(label=%label, attempt=%attempt, delay_ms=%delay_ms, error=%err.to_string(), "Retrying balance query");
+    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    Ok(())
+}
+
+/// Encode a balanceOf(address) call for ERC20 tokens.
 fn encode_balance_of_call(address: Address) -> Bytes {
-    // balanceOf function selector (4 bytes): 0x70a08231
-    // address parameter (32 bytes, padded)
     let mut data = vec![0x70, 0xa0, 0x82, 0x31];
     let mut addr_bytes = [0u8; 32];
     addr_bytes[12..].copy_from_slice(&address.to_fixed_bytes());
@@ -111,47 +125,28 @@ fn encode_balance_of_call(address: Address) -> Bytes {
     Bytes::from(data)
 }
 
-/// Get all balances for a wallet on a specific chain
-pub async fn get_chain_balances(
-    chain_config: EvmChainConfig,
-    wallet_address: &str,
-) -> Result<Vec<(String, String, f64)>, String> {
-    let mut balances = Vec::new();
-    let assets = chain_config.assets();
-    
-    for asset in assets {
-        // Add delay between requests to avoid rate limiting
-        tokio::time::sleep(Duration::from_millis(REQUEST_DELAY_MS)).await;
-        
-        let balance_str = if asset.contract_address.is_none() {
-            // Native token (ETH)
-            query_eth_balance(chain_config, wallet_address).await?
-        } else {
-            // ERC20 token
-            query_erc20_balance(
-                chain_config,
-                &asset.contract_address.clone().unwrap(),
-                wallet_address,
-            )
-            .await?
-        };
-        
-        // Convert balance string to float with decimals
-        let balance_u256 = U256::from_dec_str(&balance_str)
-            .unwrap_or(U256::zero());
-        
-        let divisor = U256::from(10).pow(U256::from(asset.decimals));
-        let balance_float = if divisor > U256::zero() {
-            let whole = balance_u256 / divisor;
-            let remainder = balance_u256 % divisor;
-            let remainder_f64 = remainder.as_u64() as f64 / divisor.as_u64() as f64;
-            whole.as_u64() as f64 + remainder_f64
-        } else {
-            0.0
-        };
-        
-        balances.push((asset.symbol.clone(), balance_str, balance_float));
+fn convert_balance(balance: U256, decimals: u8) -> (String, f64) {
+    let balance_str = balance.to_string();
+
+    if decimals == 0 {
+        return (balance_str, balance.as_u64() as f64);
     }
-    
-    Ok(balances)
+
+    let divisor = U256::from(10u64).pow(U256::from(decimals));
+    if divisor.is_zero() {
+        return (balance_str, 0.0);
+    }
+
+    let whole = balance / divisor;
+    let remainder = balance % divisor;
+
+    let remainder_divisor = divisor.as_u64();
+    let remainder_f64 = if remainder_divisor > 0 {
+        remainder.as_u64() as f64 / remainder_divisor as f64
+    } else {
+        0.0
+    };
+
+    let balance_float = whole.as_u64() as f64 + remainder_f64;
+    (balance_str, balance_float)
 }

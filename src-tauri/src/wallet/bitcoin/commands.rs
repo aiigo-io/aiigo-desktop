@@ -1,5 +1,5 @@
-use crate::wallet::types::WalletInfo;
 use crate::wallet::bitcoin::balance;
+use crate::wallet::types::WalletInfo;
 use crate::DB;
 
 #[tauri::command]

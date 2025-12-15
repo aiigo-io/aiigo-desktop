@@ -1,8 +1,8 @@
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use std::sync::Mutex;
-use once_cell::sync::Lazy;
+use std::time::{Duration, Instant};
 
 const RETRY_ATTEMPTS: u32 = 2;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
@@ -58,7 +58,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
                     }
                 }
                 if !result.is_empty() {
-                    println!("[INFO] Using cached prices (age: {}s)", last_update.elapsed().as_secs());
+                    tracing::info!(age_seconds=%last_update.elapsed().as_secs(), "Using cached prices");
                     return Ok(result);
                 }
             }
@@ -68,9 +68,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
     // Convert symbols to CoinGecko IDs
     let ids: Vec<String> = symbols
         .iter()
-        .filter_map(|symbol| {
-            get_coingecko_id(symbol).map(|id| id.to_string())
-        })
+        .filter_map(|symbol| get_coingecko_id(symbol).map(|id| id.to_string()))
         .collect();
 
     if ids.is_empty() {
@@ -88,6 +86,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
     let ids_param = unique_ids.join(",");
 
     for attempt in 1..=RETRY_ATTEMPTS {
+        let attempt_start = Instant::now();
         match try_fetch_prices(&ids_param).await {
             Ok(response_map) => {
                 // Update cache
@@ -106,23 +105,21 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
                         }
                     }
                 }
-                println!("[INFO] Fetched {} fresh prices from CoinGecko", result.len());
+                let duration_ms = attempt_start.elapsed().as_millis();
+                tracing::info!(count=%result.len(), duration_ms=%duration_ms, "Fetched fresh prices from CoinGecko");
                 return Ok(result);
             }
             Err(e) => {
                 if attempt < RETRY_ATTEMPTS {
                     let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                    eprintln!(
-                        "[RETRY] Price query attempt {} failed: {}. Retrying in {}ms...",
-                        attempt, e, delay_ms
-                    );
+                    tracing::warn!(attempt=%attempt, delay_ms=%delay_ms, error=%e.to_string(), "Price query attempt failed; retrying");
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 } else {
-                    eprintln!("[WARNING] Failed to fetch prices after all retries: {}", e);
+                    tracing::warn!(error=%e.to_string(), "Failed to fetch prices after all retries");
                     // Try to use stale cache as fallback
                     let cache = PRICE_CACHE.lock().unwrap();
                     if !cache.prices.is_empty() {
-                        eprintln!("[INFO] Using stale cache as fallback");
+                        tracing::info!("Using stale cache as fallback");
                         let mut result = HashMap::new();
                         for symbol in &symbols {
                             if let Some(coingecko_id) = get_coingecko_id(symbol) {
@@ -181,7 +178,7 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
         if let Some(usd_price) = price_data.usd {
             result.insert(coin_id, usd_price);
         } else {
-            eprintln!("[WARNING] Missing USD price data for: {}", coin_id);
+            tracing::warn!(coin_id=%coin_id, "Missing USD price data");
         }
     }
 
