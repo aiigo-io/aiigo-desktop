@@ -1,6 +1,5 @@
 mod db;
 mod wallet;
-mod db;
 mod dashboard;
 
 use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
@@ -10,14 +9,7 @@ use dotenvy::dotenv;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
-use wallet::bitcoin::{
-    commands as bitcoin_commands, mnemonic as bitcoin_mnemonic, private_key as bitcoin_private_key,
-    wallet as bitcoin_wallet,
-};
-use wallet::evm::{
-    commands as evm_commands, mnemonic as evm_mnemonic, private_key as evm_private_key,
-    wallet as evm_wallet,
-};
+
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 
 pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
@@ -101,7 +93,6 @@ pub fn run() {
             evm_private_key::evm_export_private_key,
             evm_commands::evm_get_wallets,
             evm_commands::evm_get_wallet,
-            evm_commands::evm_get_wallet_with_balances,
             evm_commands::evm_get_wallet_with_balances,
             evm_commands::evm_delete_wallet,
             // Transaction handlers
