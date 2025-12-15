@@ -8,12 +8,15 @@ const REQUEST_TIMEOUT_SECS: u64 = 10;
 #[derive(Debug, Deserialize)]
 struct BlockchainInfoResponse {
     final_balance: u64,
+    #[allow(dead_code)]
     n_tx: u64,
+    #[allow(dead_code)]
     total_received: u64,
 }
 
 #[derive(Debug, Deserialize)]
 struct BlockstreamResponse {
+    #[allow(dead_code)]
     address: String,
     chain_stats: ChainStats,
     mempool_stats: MempoolStats,
