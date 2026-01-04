@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "aiigo-desktop",
-        "width": 1400,
-        "height": 1000
+        "width": 800,
+        "height": 600
       }
     ],
     "security": {

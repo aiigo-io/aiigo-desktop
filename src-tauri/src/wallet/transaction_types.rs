@@ -125,3 +125,15 @@ pub struct SendTransactionResponse {
     pub tx_hash: String,
     pub message: String,
 }
+
+/// Request to send a raw EVM transaction (for OpenOcean swaps)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawTransactionRequest {
+    pub wallet_id: String,
+    pub chain_id: u64,
+    pub to: String,
+    pub data: String,
+    pub value: String,
+    pub gas_limit: String,
+    pub gas_price: String,
+}

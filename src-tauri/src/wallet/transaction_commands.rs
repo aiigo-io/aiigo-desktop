@@ -65,3 +65,67 @@ pub async fn fetch_evm_history(
 ) -> Result<Vec<EvmTransaction>, String> {
     evm_transaction::fetch_evm_transaction_history(wallet_id, address, chain, chain_id).await
 }
+
+#[tauri::command]
+pub async fn evm_send_transaction(
+    wallet_id: String,
+    chain_id: u64,
+    transaction: serde_json::Value,
+) -> Result<String, String> {
+    // Parse the transaction object
+    let to = transaction.get("to")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'to' field".to_string())?
+        .to_string();
+    
+    let data = transaction.get("data")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'data' field".to_string())?
+        .to_string();
+    
+    let value = transaction.get("value")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'value' field".to_string())?
+        .to_string();
+    
+    let gas_limit = transaction.get("gasLimit")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'gasLimit' field".to_string())?
+        .to_string();
+    
+    let gas_price = transaction.get("gasPrice")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing 'gasPrice' field".to_string())?
+        .to_string();
+
+    let request = crate::wallet::transaction_types::RawTransactionRequest {
+        wallet_id,
+        chain_id,
+        to,
+        data,
+        value,
+        gas_limit,
+        gas_price,
+    };
+
+    let response = evm_transaction::send_raw_evm_transaction(request).await?;
+    Ok(response.tx_hash)
+}
+
+#[tauri::command]
+pub async fn evm_approve_token(
+    wallet_id: String,
+    chain_id: u64,
+    token_address: String,
+    spender_address: String,
+    amount: String,
+) -> Result<String, String> {
+    let response = evm_transaction::approve_erc20_token(
+        wallet_id,
+        chain_id,
+        token_address,
+        spender_address,
+        amount,
+    ).await?;
+    Ok(response.tx_hash)
+}

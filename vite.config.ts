@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import path from "path";
 
 const host = process.env.TAURI_DEV_HOST ?? "localhost";
@@ -10,6 +11,15 @@ export default defineConfig(async () => ({
   plugins: [
     react(),
     tailwindcss(),
+    nodePolyfills({
+      // Enable polyfills for process and other Node.js globals
+      globals: {
+        process: true,
+        Buffer: true,
+      },
+      // Enable polyfills for Node.js built-in modules
+      protocolImports: true,
+    }),
   ],
 
   resolve: {
@@ -29,10 +39,10 @@ export default defineConfig(async () => ({
     host: host || false,
     hmr: host
       ? {
-          protocol: "ws",
-          host,
-          port: 1421,
-        }
+        protocol: "ws",
+        host,
+        port: 1421,
+      }
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`

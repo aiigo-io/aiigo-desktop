@@ -9,6 +9,7 @@ use dotenvy::dotenv;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
+use tauri::Manager;
 
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 
@@ -72,6 +73,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(WindowStatePlugin::default().build())
+        .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+                    width: 800.0,
+                    height: 600.0,
+                }));
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Bitcoin handlers
             bitcoin_mnemonic::bitcoin_create_mnemonic,
@@ -104,6 +114,8 @@ pub fn run() {
             transaction_commands::get_evm_transactions,
             transaction_commands::get_all_evm_transactions,
             transaction_commands::fetch_evm_history,
+            transaction_commands::evm_send_transaction,
+            transaction_commands::evm_approve_token,
             // Dashboard handlers
             dashboard::commands::get_dashboard_stats,
             dashboard::commands::refresh_dashboard_stats,

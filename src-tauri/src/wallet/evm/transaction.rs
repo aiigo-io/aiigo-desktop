@@ -475,3 +475,176 @@ pub async fn get_transaction_receipt(
 
     Ok(receipt)
 }
+
+/// Send a raw EVM transaction (for OpenOcean swaps and other contract interactions)
+pub async fn send_raw_evm_transaction(
+    request: crate::wallet::transaction_types::RawTransactionRequest,
+) -> Result<SendTransactionResponse, String> {
+    // Get wallet secret
+    let (secret_data, _secret_type) = {
+        let db = DB.lock().unwrap();
+        db.get_evm_wallet_secret(&request.wallet_id)
+            .map_err(|e| format!("Failed to get wallet secret: {}", e))?
+            .ok_or_else(|| "Wallet secret not found".to_string())?
+    };
+
+    // Get wallet info
+    let wallet_info = {
+        let db = DB.lock().unwrap();
+        db.get_evm_wallet(&request.wallet_id)
+            .map_err(|e| format!("Failed to get wallet info: {}", e))?
+            .ok_or_else(|| "Wallet not found".to_string())?
+    };
+
+    // Get chain config
+    let chain_config = get_chain_by_id(request.chain_id)
+        .ok_or_else(|| format!("Chain ID {} not supported", request.chain_id))?;
+
+    // Create provider
+    let provider = Provider::<Http>::try_from(chain_config.rpc_url())
+        .map_err(|e| format!("Failed to create provider: {}", e))?;
+    let provider = Arc::new(provider);
+
+    // Create wallet from private key
+    let wallet = secret_data
+        .parse::<LocalWallet>()
+        .map_err(|e| format!("Failed to parse private key: {}", e))?
+        .with_chain_id(request.chain_id);
+
+    let client = SignerMiddleware::new(provider.clone(), wallet);
+
+    // Parse recipient address
+    let to_address = EthAddress::from_str(&request.to)
+        .map_err(|e| format!("Invalid recipient address: {}", e))?;
+
+    // Parse value (amount of native token to send)
+    let value = U256::from_dec_str(&request.value)
+        .map_err(|e| format!("Invalid value: {}", e))?;
+
+    // Parse gas limit
+    let gas_limit = U256::from_dec_str(&request.gas_limit)
+        .map_err(|e| format!("Invalid gas limit: {}", e))?;
+
+    // Parse gas price (in wei)
+    let gas_price = U256::from_dec_str(&request.gas_price)
+        .map_err(|e| format!("Invalid gas price: {}", e))?;
+
+    // Parse data (hex string)
+    let data = if request.data.starts_with("0x") {
+        hex::decode(&request.data[2..])
+            .map_err(|e| format!("Invalid data hex: {}", e))?
+    } else {
+        hex::decode(&request.data)
+            .map_err(|e| format!("Invalid data hex: {}", e))?
+    };
+
+    // Build transaction
+    let tx = TransactionRequest::new()
+        .to(to_address)
+        .value(value)
+        .data(data)
+        .gas(gas_limit)
+        .gas_price(gas_price);
+
+    // Send transaction
+    let pending_tx = client
+        .send_transaction(tx, None)
+        .await
+        .map_err(|e| format!("Failed to send transaction: {}", e))?;
+
+    let tx_hash = *pending_tx;
+    let tx_hash_str = format!("{:?}", tx_hash);
+
+    // Don't wait for confirmation, return immediately
+    // The frontend can track the transaction status separately
+
+    Ok(SendTransactionResponse {
+        tx_hash: tx_hash_str,
+        message: "Transaction sent successfully".to_string(),
+    })
+}
+
+/// Approve ERC20 token spending (for swaps and other contract interactions)
+pub async fn approve_erc20_token(
+    wallet_id: String,
+    chain_id: u64,
+    token_address: String,
+    spender_address: String,
+    amount: String,
+) -> Result<SendTransactionResponse, String> {
+    // Get wallet secret
+    let (secret_data, _secret_type) = {
+        let db = DB.lock().unwrap();
+        db.get_evm_wallet_secret(&wallet_id)
+            .map_err(|e| format!("Failed to get wallet secret: {}", e))?
+            .ok_or_else(|| "Wallet secret not found".to_string())?
+    };
+
+    // Get chain config
+    let chain_config = get_chain_by_id(chain_id)
+        .ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
+
+    // Create provider
+    let provider = Provider::<Http>::try_from(chain_config.rpc_url())
+        .map_err(|e| format!("Failed to create provider: {}", e))?;
+    let provider = Arc::new(provider);
+
+    // Create wallet from private key
+    let wallet = secret_data
+        .parse::<LocalWallet>()
+        .map_err(|e| format!("Failed to parse private key: {}", e))?
+        .with_chain_id(chain_id);
+
+    let client = SignerMiddleware::new(provider.clone(), wallet);
+
+    // Parse token contract address
+    let contract_address = EthAddress::from_str(&token_address)
+        .map_err(|e| format!("Invalid token address: {}", e))?;
+
+    // Parse amount to approve (handle both hex and decimal formats)
+    let approve_amount = if amount.starts_with("0x") || amount.starts_with("0X") {
+        // Hex format (e.g., "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        U256::from_str_radix(&amount[2..], 16)
+            .map_err(|e| format!("Invalid hex amount: {}", e))?
+    } else {
+        // Decimal format
+        U256::from_dec_str(&amount)
+            .map_err(|e| format!("Invalid decimal amount: {}", e))?
+    };
+
+    // ERC20 ABI for approve function
+    let abi = ethers::abi::parse_abi(&[
+        "function approve(address spender, uint256 amount) returns (bool)",
+    ])
+    .map_err(|e| format!("Failed to parse ABI: {}", e))?;
+
+    let contract = Contract::new(contract_address, abi, Arc::new(client.clone()));
+
+    // Parse spender address from parameter (OpenOcean router address)
+    let spender = EthAddress::from_str(&spender_address)
+        .map_err(|e| format!("Invalid spender address: {}", e))?;
+
+    // Call approve function
+    let call = contract
+        .method::<_, bool>("approve", (spender, approve_amount))
+        .map_err(|e| format!("Failed to create approve call: {}", e))?;
+
+    let pending_tx = call
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send approval transaction: {}", e))?;
+
+    let tx_hash = *pending_tx;
+    let tx_hash_str = format!("{:?}", tx_hash);
+
+    // Wait for confirmation
+    let _receipt = pending_tx
+        .await
+        .map_err(|e| format!("Failed to get receipt: {}", e))?
+        .ok_or_else(|| "Approval transaction failed".to_string())?;
+
+    Ok(SendTransactionResponse {
+        tx_hash: tx_hash_str,
+        message: "Token approved successfully".to_string(),
+    })
+}

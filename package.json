@@ -60,6 +60,7 @@
     "tailwind-merge": "^3.3.1",
     "tailwindcss": "^4.1.15",
     "vaul": "^1.1.2",
+    "vite-plugin-node-polyfills": "^0.24.0",
     "zod": "^4.1.12",
     "zustand": "^5.0.8"
   },
