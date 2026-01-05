@@ -16,20 +16,20 @@ const SWAP: React.FC = () => {
   const [selectedWallet, setSelectedWallet] = useState<WalletInfo | null>(null);
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
+    <div className="min-h-screen p-6 font-sans">
       {/* Background Effects */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-200/20 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-200/20 rounded-full blur-[120px]" />
+        <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-primary/5 rounded-full blur-[150px]" />
+        <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] bg-purple-500/5 rounded-full blur-[150px]" />
       </div>
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <div>
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-slate-900 to-slate-600 bg-clip-text text-transparent">
+        <div className="text-center md:text-left">
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">
             Token Swap
           </h1>
-          <p className="text-slate-500 mt-1">
+          <p className="text-muted-foreground mt-1 text-sm">
             Swap tokens across multiple chains with the best rates
           </p>
         </div>
@@ -46,8 +46,8 @@ const SWAP: React.FC = () => {
 
         {/* Wallet Info Display */}
         {selectedWallet && (
-          <div className="max-w-[480px] mx-auto text-center text-xs text-slate-400">
-            Using wallet: {selectedWallet.label}
+          <div className="max-w-[480px] mx-auto text-center text-xs text-muted-foreground/50 font-mono">
+            Active: {selectedWallet.label}
           </div>
         )}
       </div>

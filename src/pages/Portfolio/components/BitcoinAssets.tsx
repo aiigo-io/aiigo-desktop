@@ -233,15 +233,17 @@ const BitcoinAssets: React.FC = () => {
   const totalBalance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
 
   return (
-    <Card className="p-6 select-none">
+    <Card className="p-6 select-none glass-card">
       <div className="space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <img src="/images/assets/bitcoin.png" alt="Bitcoin" className="w-8 h-8" />
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-gradient-to-br from-orange-400 to-orange-600 rounded-2xl shadow-lg shadow-orange-500/20">
+              <img src="/images/assets/bitcoin.png" alt="Bitcoin" className="w-8 h-8" />
+            </div>
             <div>
-              <h3 className="text-2xl font-semibold">Bitcoin</h3>
-              <p className="text-sm text-gray-500">{wallets.length} wallet{wallets.length !== 1 ? 's' : ''}</p>
+              <h3 className="text-xl font-semibold text-foreground">Bitcoin</h3>
+              <p className="text-xs text-muted-foreground font-medium">{wallets.length} wallet{wallets.length !== 1 ? 's' : ''}</p>
             </div>
           </div>
           <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
@@ -264,7 +266,7 @@ const BitcoinAssets: React.FC = () => {
                 
                 {/* Create New Wallet */}
                 <TabsContent value="create" className="space-y-4 mt-4">
-                  <p className="text-sm text-gray-600">
+                  <p className="text-sm text-muted-foreground">
                     Create a new wallet with a secure mnemonic phrase.
                   </p>
                   <div className="space-y-2">
@@ -306,7 +308,7 @@ const BitcoinAssets: React.FC = () => {
                       rows={4}
                       className="font-mono text-sm"
                     />
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-muted-foreground">
                       Words should be separated by spaces
                     </p>
                   </div>
@@ -340,7 +342,7 @@ const BitcoinAssets: React.FC = () => {
                       rows={3}
                       className="font-mono text-sm"
                     />
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-muted-foreground">
                       Support WIF format (e.g., K...) or 64-character hex string
                     </p>
                   </div>
@@ -388,16 +390,16 @@ const BitcoinAssets: React.FC = () => {
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <div className="space-y-2">
                     <div>
-                      <p className="text-sm text-gray-600">Wallet Label</p>
-                      <p className="font-medium text-gray-900">{generatedMnemonic.wallet.label}</p>
+                      <p className="text-sm text-muted-foreground">Wallet Label</p>
+                      <p className="font-medium text-white">{generatedMnemonic.wallet.label}</p>
                     </div>
                     <div>
-                      <p className="text-sm text-gray-600">Wallet Address</p>
+                      <p className="text-sm text-muted-foreground">Wallet Address</p>
                       <div className="flex items-center gap-2 mt-1">
-                        <p className="font-mono text-sm text-gray-900 break-all">{generatedMnemonic.wallet.address}</p>
+                        <p className="font-mono text-sm text-white break-all">{generatedMnemonic.wallet.address}</p>
                         <button
                           onClick={() => handleCopyAddress(generatedMnemonic.wallet.address)}
-                          className="text-gray-400 hover:text-gray-600 flex-shrink-0 transition-colors"
+                          className="text-gray-400 hover:text-muted-foreground flex-shrink-0 transition-colors"
                           title="Copy address"
                         >
                           {addressCopied === generatedMnemonic.wallet.address ? (
@@ -414,18 +416,18 @@ const BitcoinAssets: React.FC = () => {
                 {/* Mnemonic Phrase */}
                 <div className="space-y-2">
                   <Label>Your Mnemonic Phrase</Label>
-                  <div className="bg-gray-900 rounded-lg p-4 space-y-3">
+                  <div className="bg-muted rounded-lg p-4 space-y-3">
                     <div className="grid grid-cols-3 gap-2">
                       {generatedMnemonic.mnemonic.split(' ').map((word, index) => (
                         <div key={index} className="flex items-center gap-2">
-                          <span className="text-gray-500 text-xs font-mono w-6">{index + 1}.</span>
+                          <span className="text-muted-foreground text-xs font-mono w-6">{index + 1}.</span>
                           <span className="text-yellow-400 font-mono text-sm">{word}</span>
                         </div>
                       ))}
                     </div>
                     <button
                       onClick={() => handleCopyMnemonic(generatedMnemonic.mnemonic)}
-                      className="w-full mt-2 px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded text-sm transition-colors flex items-center justify-center gap-2"
+                      className="w-full mt-2 px-3 py-2 bg-muted/80 hover:bg-muted/70 text-gray-200 rounded text-sm transition-colors flex items-center justify-center gap-2"
                     >
                       {mnemonicCopied ? (
                         <>
@@ -503,12 +505,12 @@ const BitcoinAssets: React.FC = () => {
                   <Label>
                     {exportedSecretType === 'mnemonic' ? 'Mnemonic Phrase' : 'Private Key'}
                   </Label>
-                  <div className="bg-gray-900 rounded-lg p-4">
+                  <div className="bg-muted rounded-lg p-4">
                     {exportedSecretType === 'mnemonic' ? (
                       <div className="grid grid-cols-3 gap-2 mb-3">
                         {exportedSecret.split(' ').map((word, index) => (
                           <div key={index} className="flex items-center gap-2">
-                            <span className="text-gray-500 text-xs font-mono w-6">{index + 1}.</span>
+                            <span className="text-muted-foreground text-xs font-mono w-6">{index + 1}.</span>
                             <span className="text-yellow-400 font-mono text-sm break-all">{word}</span>
                           </div>
                         ))}
@@ -518,7 +520,7 @@ const BitcoinAssets: React.FC = () => {
                     )}
                     <button
                       onClick={() => handleCopyExportedSecret(exportedSecret)}
-                      className="w-full mt-3 px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded text-sm transition-colors flex items-center justify-center gap-2"
+                      className="w-full mt-3 px-3 py-2 bg-muted/80 hover:bg-muted/70 text-gray-200 rounded text-sm transition-colors flex items-center justify-center gap-2"
                     >
                       {exportCopied ? (
                         <>
@@ -549,12 +551,14 @@ const BitcoinAssets: React.FC = () => {
 
         {/* Total Balance */}
         {wallets.length > 0 && (
-          <div className="bg-gradient-to-br from-orange-50 to-yellow-50 rounded-lg p-4 border border-orange-200">
-            <p className="text-sm text-gray-600 mb-1">Total Balance</p>
-            <div className="flex items-baseline gap-2">
-              <p className="text-3xl font-bold text-gray-900">{totalBalance.toFixed(4)} BTC</p>
+          <div className="bg-muted/30 rounded-lg p-4 border border-border/50">
+            <p className="text-xs text-muted-foreground font-medium mb-2 uppercase tracking-wide">Total Balance</p>
+            <div className="flex items-baseline gap-3">
+              <p className="text-3xl font-light tracking-tight text-foreground font-mono">
+                {totalBalance.toFixed(4)} BTC
+              </p>
               {btcPrice > 0 && (
-                <p className="text-gray-600">
+                <p className="text-sm text-muted-foreground font-mono">
                   ${(totalBalance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </p>
               )}
@@ -566,7 +570,7 @@ const BitcoinAssets: React.FC = () => {
         <div className="space-y-3">
           {wallets.length === 0 ? (
             <div className="text-center py-8">
-              <p className="text-gray-500 mb-4">No wallets yet</p>
+              <p className="text-muted-foreground mb-4 text-sm">No wallets yet</p>
               <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
                 <DialogTrigger asChild>
                   <Button variant="outline" className="gap-2">
@@ -578,29 +582,29 @@ const BitcoinAssets: React.FC = () => {
             </div>
           ) : (
             wallets.map((wallet) => (
-              <div
-                key={wallet.id}
-                className="border rounded-lg p-4 hover:bg-gray-50 transition-colors space-y-3"
-              >
+                <div
+                  key={wallet.id}
+                  className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors space-y-3"
+                >
                 <div className="flex items-start justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium text-gray-900">
-                        {wallet.label}
-                      </p>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-foreground text-sm">
+                          {wallet.label}
+                        </p>
                       <Badge variant="secondary" className="text-xs">
                         {wallet.wallet_type === 'mnemonic' ? 'Mnemonic' : 'Private Key'}
                       </Badge>
                     </div>
-                    <div className="flex items-center gap-2 mt-2">
-                      <p className="font-mono text-sm text-gray-600 truncate">
-                        {shortAddress(wallet.address)}
-                      </p>
-                      <button
-                        onClick={() => handleCopyAddress(wallet.address)}
-                        className="text-gray-400 hover:text-gray-600 transition-colors flex-shrink-0"
-                        title="Copy address"
-                      >
+                      <div className="flex items-center gap-2 mt-2">
+                        <p className="font-mono text-xs text-muted-foreground truncate">
+                          {shortAddress(wallet.address)}
+                        </p>
+                        <button
+                          onClick={() => handleCopyAddress(wallet.address)}
+                          className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                          title="Copy address"
+                        >
                         {addressCopied === wallet.address ? (
                           <CheckCircle2 className="w-4 h-4 text-green-600" />
                         ) : (
@@ -609,16 +613,16 @@ const BitcoinAssets: React.FC = () => {
                       </button>
                     </div>
                   </div>
-                  <div className="text-right ml-4 flex flex-col items-end gap-2">
-                    <div>
-                      <p className="font-semibold text-lg text-gray-900">
-                        {wallet.balance.toFixed(4)} BTC
-                      </p>
-                      {btcPrice > 0 && (
-                        <p className="text-sm text-gray-500 mt-1">
-                          ${(wallet.balance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    <div className="text-right ml-4 flex flex-col items-end gap-2">
+                      <div>
+                        <p className="font-semibold text-base text-foreground font-mono">
+                          {wallet.balance.toFixed(4)} BTC
                         </p>
-                      )}
+                        {btcPrice > 0 && (
+                          <p className="text-xs text-muted-foreground mt-1 font-mono">
+                            ${(wallet.balance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </p>
+                        )}
                     </div>
                     {/* Action Buttons */}
                     <div className="flex gap-1 flex-wrap justify-end">
@@ -662,7 +666,7 @@ const BitcoinAssets: React.FC = () => {
                         <>
                           <button
                             onClick={() => setDeleteConfirm(null)}
-                            className="px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 rounded"
+                            className="px-2 py-1 text-xs text-muted-foreground hover:bg-muted rounded"
                           >
                             Cancel
                           </button>

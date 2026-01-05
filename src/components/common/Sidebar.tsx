@@ -5,7 +5,6 @@ import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
-  Briefcase,
   ArrowRightLeft,
   LineChart,
   RefreshCw,
@@ -13,13 +12,21 @@ import {
   FolderOpen,
   Coins,
   Settings,
-  User
+  User,
+  Wallet,
+  Cpu,
+  ChevronDown
 } from 'lucide-react';
 
 interface NavItem {
   icon: React.ElementType;
   label: string;
   href?: string;
+  children?: {
+    label: string;
+    href: string;
+    icon?: React.ElementType;
+  }[];
 }
 
 const Sidebar: React.FC = () => {
@@ -28,15 +35,20 @@ const Sidebar: React.FC = () => {
 
   const mainNavItems: NavItem[] = [
     { icon: LayoutDashboard, label: 'Dashboard', href: '/' },
-    { icon: Briefcase, label: 'Portfolio', href: '/portfolio' },
+    { icon: Wallet, label: 'Portfolio', href: '/portfolio' },
     { icon: ArrowRightLeft, label: 'Transactions', href: '/transactions' },
-    { icon: LineChart, label: 'Markets', href: '/markets' },
     { icon: RefreshCw, label: 'Swap', href: '/swap' },
   ];
 
   const secondaryNavItems: NavItem[] = [
     { icon: Rocket, label: 'VC Platform', href: '/vc-platform' },
-    { icon: FolderOpen, label: 'Projects', href: '/projects' },
+    {
+      icon: FolderOpen,
+      label: 'Projects',
+      children: [
+        { label: 'Computing Power', href: '/projects/computing-power', icon: Cpu },
+      ]
+    },
     { icon: Coins, label: 'Investments', href: '/investments' },
   ];
 
@@ -47,34 +59,76 @@ const Sidebar: React.FC = () => {
 
   const isActive = (href: string) => {
     if (href === '/' && location.pathname !== '/') return false;
-    return location.pathname.startsWith(href || '');
+    return location.pathname === href || location.pathname.startsWith(href + '/');
   };
 
-  const NavItemComponent: React.FC<{ item: NavItem }> = ({ item }) => {
+  const NavItemComponent: React.FC<{ item: NavItem; isChild?: boolean }> = ({ item, isChild = false }) => {
     const Icon = item.icon;
+    const active = item.href ? isActive(item.href) : false;
+    const hasChildren = item.children && item.children.length > 0;
+
+    const handleClick = () => {
+      if (item.href) {
+        navigate(item.href);
+      }
+    };
+
     return (
-      <Button
-        variant="ghost"
-        className={cn(
-          "w-full justify-start gap-3 h-10 px-3 text-left font-normal transition-all duration-200",
-          isActive(item.href || '')
-            ? "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
-            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+      <div className="space-y-0.5">
+        <Button
+          variant="ghost"
+          className={cn(
+            "w-full justify-start gap-3 h-9 px-3 text-left font-normal transition-all duration-200 group relative overflow-hidden rounded-md",
+            active
+              ? "bg-sidebar-accent text-sidebar-primary"
+              : "text-sidebar-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-primary",
+            isChild && "h-8 text-xs"
+          )}
+          onClick={handleClick}
+        >
+          {active && !isChild && (
+            <div className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-sidebar-primary rounded-full" />
+          )}
+          {Icon && (
+            <Icon className={cn(
+              "w-4 h-4 transition-colors shrink-0",
+              active ? "text-sidebar-primary" : "text-sidebar-foreground/70 group-hover:text-sidebar-primary",
+              isChild && "w-3.5 h-3.5"
+            )} />
+          )}
+          <span className={cn("flex-1 text-sm font-medium tracking-tight truncate", isChild && "text-xs")}>
+            {item.label}
+          </span>
+          {hasChildren && (
+            <ChevronDown className="w-3.5 h-3.5 text-sidebar-foreground/50 transition-colors group-hover:text-sidebar-primary" />
+          )}
+        </Button>
+
+        {hasChildren && (
+          <div className="space-y-0.5 mt-0.5 ml-5 pl-4 border-l border-sidebar-border/50">
+            {item.children?.map((child, idx) => (
+              <NavItemComponent
+                key={idx}
+                item={{
+                  label: child.label,
+                  href: child.href,
+                  icon: child.icon || FolderOpen
+                }}
+                isChild
+              />
+            ))}
+          </div>
         )}
-        onClick={() => navigate(item.href || '')}
-      >
-        <Icon className="w-5 h-5" />
-        <span className="text-sm font-medium">{item.label}</span>
-      </Button>
+      </div>
     );
   };
 
   return (
-    <div className="w-64 bg-card/50 backdrop-blur-xl border-r border-border h-full flex flex-col pt-4">
+    <div className="w-60 bg-sidebar border-r border-sidebar-border h-full flex flex-col pt-4 overflow-y-auto no-scrollbar">
       {/* Main Navigation */}
-      <div className="px-3 py-2 space-y-1">
-        <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground/50 uppercase tracking-wider">
-          Menu
+      <div className="px-2 py-2 space-y-0.5">
+        <div className="px-3 mb-2 text-[10px] font-bold text-sidebar-foreground/60 uppercase tracking-widest font-mono">
+          Platform
         </div>
         {mainNavItems.map((item, index) => (
           <NavItemComponent key={index} item={item} />
@@ -82,8 +136,8 @@ const Sidebar: React.FC = () => {
       </div>
 
       {/* Secondary Navigation */}
-      <div className="px-3 py-2 space-y-1 mt-2">
-        <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground/50 uppercase tracking-wider">
+      <div className="px-2 py-2 space-y-0.5 mt-4">
+        <div className="px-3 mb-2 text-[10px] font-bold text-sidebar-foreground/60 uppercase tracking-widest font-mono">
           Ventures
         </div>
         {secondaryNavItems.map((item, index) => (
@@ -91,16 +145,19 @@ const Sidebar: React.FC = () => {
         ))}
       </div>
 
-      {/* Spacer to push footer to bottom */}
+      {/* Spacer */}
       <div className="flex-1" />
 
       {/* Divider */}
-      <div className="px-6 my-2">
-        <Separator className="bg-border/50" />
+      <div className="px-4 my-2">
+        <Separator className="bg-sidebar-border" />
       </div>
 
       {/* Footer Navigation */}
-      <div className="px-3 pb-6 space-y-1">
+      <div className="px-2 pb-6 space-y-0.5">
+        <div className="px-3 mb-2 text-[10px] font-bold text-sidebar-foreground/60 uppercase tracking-widest font-mono">
+          System
+        </div>
         {footerNavItems.map((item, index) => (
           <NavItemComponent key={index} item={item} />
         ))}

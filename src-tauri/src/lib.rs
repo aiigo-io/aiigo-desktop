@@ -74,12 +74,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(WindowStatePlugin::default().build())
         .setup(|app| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-                    width: 800.0,
-                    height: 600.0,
-                }));
-            }
+            // if let Some(window) = app.get_webview_window("main") {
+            //     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+            //         width: 1000.0,
+            //         height: 800.0,
+            //     }));
+            // }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

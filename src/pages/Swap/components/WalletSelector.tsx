@@ -35,7 +35,7 @@ export const WalletSelector: React.FC<WalletSelectorProps> = ({ onWalletChange }
     try {
       const result = await invoke<WalletInfo[]>('evm_get_wallets');
       setWallets(result);
-      
+
       // Auto-select first wallet if available
       if (result.length > 0 && !selectedWallet) {
         setSelectedWallet(result[0]);
@@ -56,8 +56,8 @@ export const WalletSelector: React.FC<WalletSelectorProps> = ({ onWalletChange }
 
   if (isLoading) {
     return (
-      <Card className="p-4 bg-white/70 backdrop-blur-sm border-slate-200/50">
-        <div className="flex items-center gap-2 text-slate-500">
+      <Card className="p-4 bg-muted/30 backdrop-blur-sm border-border/50">
+        <div className="flex items-center gap-2 text-muted-foreground">
           <Wallet className="size-4" />
           <span className="text-sm">Loading wallets...</span>
         </div>
@@ -67,14 +67,14 @@ export const WalletSelector: React.FC<WalletSelectorProps> = ({ onWalletChange }
 
   if (wallets.length === 0) {
     return (
-      <Card className="p-4 bg-white/70 backdrop-blur-sm border-slate-200/50">
+      <Card className="p-4 bg-muted/30 backdrop-blur-sm border-border/50">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-slate-500">
+          <div className="flex items-center gap-2 text-muted-foreground">
             <Wallet className="size-4" />
             <span className="text-sm">No wallets found</span>
           </div>
-          <Button 
-            size="sm" 
+          <Button
+            size="sm"
             variant="outline"
             className="gap-2"
             onClick={() => {
@@ -91,18 +91,18 @@ export const WalletSelector: React.FC<WalletSelectorProps> = ({ onWalletChange }
   }
 
   return (
-    <Card className="p-4 bg-white/70 backdrop-blur-sm border-slate-200/50">
+    <Card className="p-4 bg-muted/30 backdrop-blur-sm border-border/50">
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2 text-slate-700">
+        <div className="flex items-center gap-2 text-foreground">
           <Wallet className="size-4" />
           <span className="text-sm font-medium">Wallet:</span>
         </div>
-        
+
         <Select
           value={selectedWallet?.id || ''}
           onValueChange={handleWalletChange}
         >
-          <SelectTrigger className="flex-1 h-9 bg-white">
+          <SelectTrigger className="flex-1 h-9 bg-card border-border">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -110,7 +110,7 @@ export const WalletSelector: React.FC<WalletSelectorProps> = ({ onWalletChange }
               <SelectItem key={wallet.id} value={wallet.id}>
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{wallet.label}</span>
-                  <span className="text-slate-500 font-mono text-xs">
+                  <span className="text-muted-foreground font-mono text-xs">
                     {shortAddress(wallet.address)}
                   </span>
                   <Badge variant="secondary" className="text-xs">
@@ -122,12 +122,12 @@ export const WalletSelector: React.FC<WalletSelectorProps> = ({ onWalletChange }
           </SelectContent>
         </Select>
       </div>
-      
+
       {selectedWallet && (
-        <div className="mt-3 pt-3 border-t border-slate-100">
+        <div className="mt-3 pt-3 border-t border-border/50">
           <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-500">Connected Address:</span>
-            <span className="font-mono text-slate-700">{shortAddress(selectedWallet.address)}</span>
+            <span className="text-muted-foreground">Connected Address:</span>
+            <span className="font-mono text-foreground">{shortAddress(selectedWallet.address)}</span>
           </div>
         </div>
       )}

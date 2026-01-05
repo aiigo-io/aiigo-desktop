@@ -207,17 +207,17 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
     return (
         <>
-            <Card className="w-full max-w-[480px] border-slate-200/50 bg-white/70 backdrop-blur-xl shadow-2xl shadow-blue-500/5 mx-auto">
+            <Card className="w-full max-w-[480px] mx-auto shadow-2xl">
                 <CardContent className="p-6 space-y-4">
                     <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-3">
-                            <h2 className="text-lg font-semibold text-slate-800">Swap</h2>
-                            <div className="h-4 w-px bg-slate-200" />
+                            <h2 className="text-lg font-semibold text-foreground">Swap</h2>
+                            <div className="h-4 w-px bg-border" />
                             <Select
                                 value={fromChain.id.toString()}
                                 onValueChange={(val) => handleChainChange(SUPPORTED_CHAINS.find(c => c.id.toString() === val)!)}
                             >
-                                <SelectTrigger className="h-7 border-none bg-slate-100 hover:bg-slate-200/70 transition-colors text-xs font-medium px-2 rounded-full">
+                                <SelectTrigger className="h-7 border-none bg-muted/50 hover:bg-muted transition-colors text-xs font-medium px-2 rounded-full">
                                     <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
@@ -235,7 +235,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="text-slate-500"
+                            className="text-muted-foreground hover:text-foreground"
                             onClick={() => setShowSlippageSettings(true)}
                         >
                             <Settings2 className="size-4" />
@@ -243,15 +243,15 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     </div>
 
                     {/* From Section */}
-                    <div className="space-y-2 p-4 rounded-2xl bg-slate-50 border border-slate-100 transition-all hover:border-slate-200">
-                        <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                    <div className="space-y-2 p-4 rounded-2xl bg-muted/30 border border-transparent hover:border-border transition-all">
+                        <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
                             <span>From</span>
                             <div className="flex items-center gap-2">
                                 <span>Balance: {isLoadingBalances ? '...' : getBalance(fromToken.symbol)}</span>
                                 {wallet && balances.get(fromToken.symbol) !== undefined && balances.get(fromToken.symbol)! > 0 && (
                                     <button
                                         onClick={() => setAmount(getBalance(fromToken.symbol))}
-                                        className="px-2 py-0.5 text-xs bg-blue-50 text-blue-600 hover:bg-blue-100 rounded transition-colors font-semibold"
+                                        className="px-2 py-0.5 text-xs bg-primary/10 text-primary hover:bg-primary/20 rounded transition-colors font-semibold cursor-pointer"
                                         title="Use max balance"
                                     >
                                         MAX
@@ -260,7 +260,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                                 {wallet && (
                                     <button
                                         onClick={loadBalances}
-                                        className="text-slate-400 hover:text-slate-600 transition-colors"
+                                        className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                                         title="Refresh balance"
                                         disabled={isLoadingBalances}
                                     >
@@ -275,7 +275,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                                 value={fromToken.symbol}
                                 onValueChange={(val) => setFromToken(fromTokens.find(t => t.symbol === val)!)}
                             >
-                                <SelectTrigger className="w-[130px] shrink-0 h-10 border-none bg-white shadow-sm ring-1 ring-slate-200/50 hover:bg-slate-50 transition-all">
+                                <SelectTrigger className="w-[130px] shrink-0 h-10 border-none bg-card shadow-sm hover:bg-accent/50 transition-all">
                                     <SelectValue>
                                         <div className="flex items-center gap-2">
                                             <img src={fromToken.logoURI} alt={fromToken.symbol} className="size-5 rounded-full" />
@@ -299,7 +299,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                                 placeholder="0.0"
                                 value={amount}
                                 onChange={(e) => setAmount(e.target.value)}
-                                className="flex-1 border-none bg-transparent text-2xl font-semibold text-right focus-visible:ring-0 p-0"
+                                className="flex-1 border-none bg-transparent text-2xl font-semibold text-right focus-visible:ring-0 p-0 text-foreground"
                             />
                         </div>
                     </div>
@@ -310,15 +310,15 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                             variant="outline"
                             size="icon"
                             onClick={flipAssets}
-                            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 size-8 rounded-xl bg-white border-slate-200 shadow-sm hover:bg-slate-50 hover:scale-110 transition-all z-10"
+                            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 size-8 rounded-xl bg-card border-border shadow-sm hover:bg-accent hover:scale-110 transition-all z-10"
                         >
-                            <ArrowUpDown className="size-4 text-blue-600" />
+                            <ArrowUpDown className="size-4 text-primary" />
                         </Button>
                     </div>
 
                     {/* To Section */}
-                    <div className="space-y-2 p-4 rounded-2xl bg-slate-50 border border-slate-100 transition-all hover:border-slate-200">
-                        <div className="flex items-center justify-between text-xs font-medium text-slate-500">
+                    <div className="space-y-2 p-4 rounded-2xl bg-muted/30 border border-transparent hover:border-border transition-all">
+                        <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
                             <span>To</span>
                             <span>Balance: {isLoadingBalances ? '...' : getBalance(toToken.symbol)}</span>
                         </div>
@@ -328,7 +328,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                                 value={toToken.symbol}
                                 onValueChange={(val) => setToToken(toTokens.find(t => t.symbol === val)!)}
                             >
-                                <SelectTrigger className="w-[130px] shrink-0 h-10 border-none bg-white shadow-sm ring-1 ring-slate-200/50 hover:bg-slate-50 transition-all">
+                                <SelectTrigger className="w-[130px] shrink-0 h-10 border-none bg-card shadow-sm hover:bg-accent/50 transition-all">
                                     <SelectValue>
                                         <div className="flex items-center gap-2">
                                             <img src={toToken.logoURI} alt={toToken.symbol} className="size-5 rounded-full" />
@@ -347,7 +347,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                                     ))}
                                 </SelectContent>
                             </Select>
-                            <div className="flex-1 text-right text-2xl font-semibold text-slate-700">
+                            <div className="flex-1 text-right text-2xl font-semibold text-foreground">
                                 {formatOutputAmount()}
                             </div>
                         </div>
@@ -356,17 +356,17 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     {/* Price Impact Warning */}
                     {priceImpact > MAX_PRICE_IMPACT_WARNING && quote && (
                         <div className={`flex items-start gap-2 p-3 rounded-xl ${priceImpact > MAX_PRICE_IMPACT_BLOCK
-                            ? 'bg-red-50 border border-red-200'
-                            : 'bg-orange-50 border border-orange-200'
+                            ? 'bg-destructive/10 border border-destructive/20'
+                            : 'bg-orange-500/10 border border-orange-500/20'
                             }`}>
-                            <AlertTriangle className={`size-4 mt-0.5 ${priceImpact > MAX_PRICE_IMPACT_BLOCK ? 'text-red-500' : 'text-orange-500'
+                            <AlertTriangle className={`size-4 mt-0.5 ${priceImpact > MAX_PRICE_IMPACT_BLOCK ? 'text-destructive' : 'text-orange-500'
                                 }`} />
                             <div className="flex-1 text-xs">
-                                <p className={`font-semibold ${priceImpact > MAX_PRICE_IMPACT_BLOCK ? 'text-red-700' : 'text-orange-700'
+                                <p className={`font-semibold ${priceImpact > MAX_PRICE_IMPACT_BLOCK ? 'text-destructive' : 'text-orange-500'
                                     }`}>
                                     {priceImpact > MAX_PRICE_IMPACT_BLOCK ? 'Price Impact Too High' : 'High Price Impact'}
                                 </p>
-                                <p className={`${priceImpact > MAX_PRICE_IMPACT_BLOCK ? 'text-red-600' : 'text-orange-600'
+                                <p className={`${priceImpact > MAX_PRICE_IMPACT_BLOCK ? 'text-destructive/80' : 'text-orange-500/80'
                                     }`}>
                                     This swap has a {priceImpact.toFixed(2)}% price impact.
                                     {priceImpact > MAX_PRICE_IMPACT_BLOCK && ' Transaction blocked for your protection.'}
@@ -377,32 +377,32 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
                     {/* Quote Error */}
                     {quoteError && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-200">
-                            <AlertTriangle className="size-4 mt-0.5 text-red-500" />
+                        <div className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20">
+                            <AlertTriangle className="size-4 mt-0.5 text-destructive" />
                             <div className="flex-1 text-xs">
-                                <p className="font-semibold text-red-700">Quote Error</p>
-                                <p className="text-red-600">{quoteError}</p>
+                                <p className="font-semibold text-destructive">Quote Error</p>
+                                <p className="text-destructive/80">{quoteError}</p>
                             </div>
                         </div>
                     )}
 
                     {/* Transaction Status */}
                     {txStatus.status === 'success' && txStatus.hash && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl bg-green-50 border border-green-200">
-                            <CheckCircle2 className="size-4 mt-0.5 text-green-500" />
+                        <div className="flex items-start gap-2 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                            <CheckCircle2 className="size-4 mt-0.5 text-emerald-500" />
                             <div className="flex-1 text-xs">
-                                <p className="font-semibold text-green-700">Transaction Successful</p>
-                                <p className="text-green-600 truncate">Hash: {txStatus.hash}</p>
+                                <p className="font-semibold text-emerald-500">Transaction Successful</p>
+                                <p className="text-emerald-500/80 truncate">Hash: {txStatus.hash}</p>
                             </div>
                         </div>
                     )}
 
                     {txStatus.status === 'error' && txStatus.error && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-200">
-                            <AlertTriangle className="size-4 mt-0.5 text-red-500" />
+                        <div className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20">
+                            <AlertTriangle className="size-4 mt-0.5 text-destructive" />
                             <div className="flex-1 text-xs">
-                                <p className="font-semibold text-red-700">Transaction Failed</p>
-                                <p className="text-red-600">{txStatus.error}</p>
+                                <p className="font-semibold text-destructive">Transaction Failed</p>
+                                <p className="text-destructive/80">{txStatus.error}</p>
                             </div>
                         </div>
                     )}
@@ -411,7 +411,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     {amount && quote && !quoteError && (
                         <div className="px-1 py-2 space-y-2">
                             <div className="flex items-center justify-between text-xs">
-                                <span className="text-slate-500 flex items-center gap-1">
+                                <span className="text-muted-foreground flex items-center gap-1">
                                     Price Impact <Info className="size-3" />
                                 </span>
                                 <span className={`font-medium ${getPriceImpactColor()}`}>
@@ -419,17 +419,17 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                                 </span>
                             </div>
                             <div className="flex items-center justify-between text-xs">
-                                <span className="text-slate-500">Slippage Tolerance</span>
-                                <span className="text-slate-700 font-medium">{slippage}%</span>
+                                <span className="text-muted-foreground">Slippage Tolerance</span>
+                                <span className="text-foreground font-medium">{slippage}%</span>
                             </div>
                             <div className="flex items-center justify-between text-xs">
-                                <span className="text-slate-500">Route</span>
-                                <span className="text-slate-700 font-medium">OpenOcean Optimal</span>
+                                <span className="text-muted-foreground">Route</span>
+                                <span className="text-foreground font-medium">OpenOcean Optimal</span>
                             </div>
                             {quote.estimatedGas && (
                                 <div className="flex items-center justify-between text-xs">
-                                    <span className="text-slate-500">Est. Gas</span>
-                                    <span className="text-slate-700 font-medium">{quote.estimatedGas.toLocaleString()}</span>
+                                    <span className="text-muted-foreground">Est. Gas</span>
+                                    <span className="text-foreground font-medium">{quote.estimatedGas.toLocaleString()}</span>
                                 </div>
                             )}
                         </div>
@@ -437,7 +437,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
                     {/* Swap Button */}
                     <Button
-                        className="w-full h-12 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-lg shadow-lg shadow-blue-500/20 active:scale-[0.98] transition-all disabled:opacity-50 disabled:bg-slate-200 disabled:text-slate-500 disabled:shadow-none"
+                        className="w-full h-12 rounded-xl text-lg shadow-lg active:scale-[0.98] transition-all"
                         disabled={isButtonDisabled()}
                         onClick={handleButtonClick}
                     >

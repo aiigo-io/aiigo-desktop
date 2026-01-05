@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '@/components/ui/card';
-import { ArrowUpRight, ArrowDownLeft, Activity, Wallet, TrendingUp, Clock } from 'lucide-react';
+import { ArrowUpRight, ArrowDownLeft, Activity, Wallet, TrendingUp } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { shortAddress } from '@/lib/utils';
 
@@ -84,7 +84,7 @@ type UnifiedTransaction = {
 
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
-  
+
   // Stats state
   const [stats, setStats] = useState<DashboardStats>({
     total_balance_usd: '$0.00',
@@ -101,7 +101,7 @@ const Dashboard: React.FC = () => {
 
   // Top movers state
   const [topMovers, setTopMovers] = useState<TopMover[]>([]);
-  
+
   // Transactions state
   const [recentTransactions, setRecentTransactions] = useState<UnifiedTransaction[]>([]);
 
@@ -116,7 +116,6 @@ const Dashboard: React.FC = () => {
         const history = await invoke<PortfolioHistoryPoint[]>('get_portfolio_history');
         if (history && history.length > 0) {
           const formattedData = history.map(point => {
-            // Format date as "Mon", "Tue", etc.
             const date = new Date(point.date);
             const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
             return {
@@ -156,7 +155,7 @@ const Dashboard: React.FC = () => {
         const updatedAllocation = await invoke<AssetAllocation[]>('get_asset_allocation');
         setAllocation(updatedAllocation);
 
-        // 8. Load top movers (token price changes)
+        // 8. Load top movers
         const moversData = await invoke<TopMover[]>('get_top_movers');
         setTopMovers(moversData);
       } catch (error) {
@@ -174,7 +173,6 @@ const Dashboard: React.FC = () => {
         invoke<EvmTransaction[]>('get_all_evm_transactions'),
       ]);
 
-      // Filter out failed transactions and convert to unified format
       const unifiedBtcTxs: UnifiedTransaction[] = btcTxs
         .filter(tx => tx.status !== 'failed')
         .map(tx => ({
@@ -199,12 +197,10 @@ const Dashboard: React.FC = () => {
           timestamp: tx.timestamp,
         }));
 
-      // Merge and sort by timestamp (most recent first)
       const allTxs = [...unifiedBtcTxs, ...unifiedEvmTxs].sort(
         (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
       );
 
-      // Take only the 5 most recent transactions
       setRecentTransactions(allTxs.slice(0, 5));
     } catch (error) {
       console.error('Failed to load recent transactions:', error);
@@ -229,15 +225,12 @@ const Dashboard: React.FC = () => {
   const maxValue = chartData.length > 0 ? Math.max(...chartData.map(d => d.value)) : 0;
   const minValue = chartData.length > 0 ? Math.min(...chartData.map(d => d.value)) : 0;
 
-  // Calculate a reasonable range for the chart
-  // Handle edge cases: single data point or all values are the same
   const valueRange = maxValue - minValue;
-  const baseValue = Math.max(maxValue, 1); // Prevent division by zero
+  const baseValue = Math.max(maxValue, 1);
   const padding = valueRange > 0 ? valueRange * 0.1 : baseValue * 0.2;
   const chartMinValue = Math.max(0, minValue - padding);
   const chartMaxValue = maxValue + padding;
 
-  // Generate 7-day labels
   const getDayLabels = () => {
     const labels = [];
     for (let i = 6; i >= 0; i--) {
@@ -250,101 +243,101 @@ const Dashboard: React.FC = () => {
   const dayLabels = getDayLabels();
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6 space-y-8 text-slate-900 font-sans selection:bg-cyan-200/50">
-      {/* Background Effects */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-200/20 rounded-full blur-[120px]" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-200/20 rounded-full blur-[120px]" />
-      </div>
-
-      <div className="relative z-10 space-y-8 max-w-7xl mx-auto">
+    <div className="min-h-screen p-6 space-y-6 font-sans bg-background selection:bg-primary/20">
+      <div className="space-y-6 max-w-7xl mx-auto">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between py-2">
           <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-slate-900 to-slate-600 bg-clip-text text-transparent">
+            <h1 className="text-2xl font-semibold tracking-tight text-foreground">
               Dashboard
             </h1>
-            <p className="text-slate-500 mt-1 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              Mainnet Connected
+            <p className="text-muted-foreground mt-1 flex items-center gap-2 text-xs font-mono">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.4)]" />
+              SYSTEM_ONLINE
             </p>
           </div>
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Total Balance Card */}
-          <Card className="p-6 bg-white/60 border-white/40 backdrop-blur-xl shadow-lg shadow-slate-200/50 relative overflow-hidden group hover:shadow-xl transition-all duration-300">
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-50/50 to-purple-50/50 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+          <Card className="p-6 glass-card relative overflow-hidden group">
             <div className="relative z-10">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
-                  <Wallet className="w-5 h-5" />
-                </div>
-                <h3 className="text-sm font-medium text-slate-500 uppercase tracking-wider">Total Balance</h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest font-mono">Total Balance</h3>
+                <Wallet className="w-4 h-4 text-muted-foreground/50" />
               </div>
               <div className="space-y-1">
-                <p className="text-4xl font-bold font-mono text-slate-900 tracking-tight">
+                <p className="text-4xl font-light tracking-tight text-foreground font-mono">
                   {stats.total_balance_usd}
                 </p>
-                <p className="text-sm font-mono text-slate-500">{stats.total_balance_btc}</p>
+                <p className="text-xs font-mono text-muted-foreground/80 flex items-center gap-2">
+                  <span className="text-primary">{stats.total_balance_btc}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-muted text-muted-foreground">BTC</span>
+                </p>
               </div>
             </div>
           </Card>
 
           {/* 24h Change Card */}
-          <Card className="p-6 bg-white/60 border-white/40 backdrop-blur-xl shadow-lg shadow-slate-200/50 relative overflow-hidden group hover:shadow-xl transition-all duration-300">
-            <div className="absolute inset-0 bg-gradient-to-br from-emerald-50/50 to-teal-50/50 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+          <Card className="p-6 glass-card relative overflow-hidden group">
             <div className="relative z-10">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 rounded-lg bg-emerald-100 text-emerald-600">
-                  <Activity className="w-5 h-5" />
-                </div>
-                <h3 className="text-sm font-medium text-slate-500 uppercase tracking-wider">24h Performance</h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-[11px] font-bold text-muted-foreground uppercase tracking-widest font-mono">24h Performance</h3>
+                <Activity className="w-4 h-4 text-muted-foreground/50" />
               </div>
               <div className="flex items-end justify-between">
                 <div>
-                  <p className="text-4xl font-bold font-mono text-emerald-600">
+                  <p className={`text-4xl font-light tracking-tight font-mono ${stats.change_24h_amount.startsWith('+') ? 'text-emerald-400' : 'text-destructive'}`}>
                     {stats.change_24h_amount}
                   </p>
-                  <p className="text-sm font-mono text-emerald-600/80 mt-1">{stats.change_24h_percentage}</p>
+                  <p className="text-xs font-mono text-muted-foreground/80 mt-1">{stats.change_24h_percentage}</p>
                 </div>
-                <div className="bg-emerald-100 p-2 rounded-full text-emerald-600">
-                  <ArrowUpRight className="w-8 h-8" />
-                </div>
+                {stats.change_24h_amount.startsWith('+') ? (
+                  <ArrowUpRight className="w-8 h-8 text-emerald-500/20" />
+                ) : (
+                  <ArrowDownLeft className="w-8 h-8 text-destructive/20" />
+                )}
               </div>
             </div>
           </Card>
         </div>
 
         {/* Portfolio Value Chart */}
-        <Card className="p-6 bg-white/60 border-white/40 backdrop-blur-xl shadow-lg shadow-slate-200/50">
+        <Card className="p-6 glass-card">
           <div className="flex items-center justify-between mb-8">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-purple-100 text-purple-600">
-                <TrendingUp className="w-5 h-5" />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-900">Portfolio Value (Last 7 Days)</h3>
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-muted-foreground" />
+              <h3 className="text-sm font-semibold text-foreground">Portfolio Performance</h3>
+            </div>
+            <div className="flex bg-muted/50 p-0.5 rounded-lg border border-border/50">
+              {['1H', '1D', '1W', '1M', '1Y', 'ALL'].map((period) => (
+                <button
+                  key={period}
+                  className={`px-3 py-1 text-[10px] font-medium rounded-md transition-all ${period === '1W'
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-background/50'
+                    }`}
+                >
+                  {period}
+                </button>
+              ))}
             </div>
           </div>
 
           <div className="h-64 px-2">
-            {/* Y-axis labels */}
             <div className="flex h-full">
-              {/* Chart area */}
               <div className="flex-1 flex gap-2 items-end justify-center">
                 {dayLabels.map((dayLabel, index) => {
-                  // Find matching data for this day
                   const dataPoint = chartData.find(d => d.day === dayLabel);
                   const hasData = dataPoint !== undefined;
                   const value = hasData ? dataPoint.value : 0;
 
-                  // Calculate height
                   let height = 0;
                   if (hasData && chartMaxValue > chartMinValue) {
                     height = Math.max(10, ((value - chartMinValue) / (chartMaxValue - chartMinValue)) * 100);
                   } else if (hasData) {
-                    height = 70; // Default height when there's only one value
+                    height = 70;
                   }
 
                   return (
@@ -352,18 +345,18 @@ const Dashboard: React.FC = () => {
                       <div className="w-full relative h-full flex items-end justify-center">
                         {hasData ? (
                           <div
-                            className="w-full bg-gradient-to-t from-blue-500 to-cyan-300 rounded-t-md transition-all duration-300 group-hover:opacity-100 group-hover:shadow-[0_0_20px_rgba(34,211,238,0.3)] opacity-80 relative"
+                            className="w-full bg-primary/20 border-t-2 border-primary rounded-sm transition-all duration-300 group-hover:bg-primary/30 relative"
                             style={{ height: `${height}%` }}
                           >
-                            <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-xs py-1 px-2 rounded shadow-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20">
+                            <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-popover text-popover-foreground border border-border text-[10px] py-1 px-2 rounded shadow-sm opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-20 font-mono">
                               ${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </div>
                           </div>
                         ) : (
-                          <div className="w-full h-1 bg-slate-200 rounded-full" />
+                          <div className="w-full h-0.5 bg-muted rounded-full" />
                         )}
                       </div>
-                      <span className={`text-xs font-mono transition-colors ${hasData ? 'text-slate-500 group-hover:text-slate-700' : 'text-slate-300'}`}>
+                      <span className={`text-[10px] font-mono transition-colors ${hasData ? 'text-muted-foreground group-hover:text-foreground' : 'text-muted-foreground/30'}`}>
                         {dayLabel}
                       </span>
                     </div>
@@ -375,32 +368,31 @@ const Dashboard: React.FC = () => {
         </Card>
 
         {/* Asset Allocation and Top Movers */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* Asset Allocation */}
-          <Card className="p-6 bg-white/60 border-white/40 backdrop-blur-xl shadow-lg shadow-slate-200/50">
-            <h3 className="text-lg font-semibold text-slate-900 mb-6 flex items-center gap-2">
-              <span className="w-1 h-6 bg-orange-500 rounded-full shadow-[0_0_8px_rgba(249,115,22,0.4)]" />
-              Asset Allocation
+          <Card className="p-6 glass-card">
+            <h3 className="text-sm font-semibold text-foreground mb-6 flex items-center gap-2">
+              Allocation
             </h3>
             {allocation.length > 0 ? (
               <div className="space-y-4">
                 {allocation.map((asset, index) => (
                   <div key={index} className="space-y-2 group">
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-center text-sm">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-700">{asset.symbol}</span>
-                        <span className="text-xs text-slate-400">{asset.name}</span>
+                        <span className="font-medium text-foreground">{asset.symbol}</span>
+                        <span className="text-xs text-muted-foreground">{asset.name}</span>
                       </div>
                       <div className="text-right">
-                        <span className="text-sm font-mono text-slate-700">{asset.percentage.toFixed(1)}%</span>
-                        <span className="text-xs text-slate-400 ml-2">
+                        <span className="font-mono text-foreground">{asset.percentage.toFixed(1)}%</span>
+                        <span className="text-xs text-muted-foreground ml-2 font-mono">
                           ${asset.value_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
                     </div>
-                    <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+                    <div className="w-full bg-muted/30 rounded-full h-1 overflow-hidden">
                       <div
-                        className={`h-full ${asset.color} rounded-full transition-all duration-500 group-hover:shadow-[0_0_10px_currentColor]`}
+                        className={`h-full ${asset.color} opacity-80 rounded-full transition-all duration-500`}
                         style={{ width: `${Math.max(asset.percentage, 1)}%` }}
                       />
                     </div>
@@ -408,128 +400,116 @@ const Dashboard: React.FC = () => {
                 ))}
               </div>
             ) : (
-              <div className="text-center py-8 text-slate-400">
-                <p className="text-sm">No assets found. Add wallets on the Portfolio page to see allocation.</p>
+              <div className="text-center py-8 text-muted-foreground">
+                <p className="text-xs">No assets found</p>
               </div>
             )}
           </Card>
 
           {/* Top Movers */}
-          <Card className="p-6 bg-white/60 border-white/40 backdrop-blur-xl shadow-lg shadow-slate-200/50">
-            <h3 className="text-lg font-semibold text-slate-900 mb-6 flex items-center gap-2">
-              <span className="w-1 h-6 bg-cyan-500 rounded-full shadow-[0_0_8px_rgba(6,182,212,0.4)]" />
+          <Card className="p-6 glass-card">
+            <h3 className="text-sm font-semibold text-foreground mb-6 flex items-center gap-2">
               Market Prices
             </h3>
             {topMovers.length > 0 ? (
-              <div className="space-y-3">
+              <div className="space-y-2">
                 {topMovers.map((mover, index) => {
-                  const getAssetStyle = (symbol: string) => {
-                    const styles: Record<string, string> = {
-                      'BTC': 'bg-orange-100 text-orange-600',
-                      'ETH': 'bg-blue-100 text-blue-600',
-                      'SOL': 'bg-purple-100 text-purple-600',
-                      'BNB': 'bg-yellow-100 text-yellow-600',
-                      'ADA': 'bg-blue-100 text-blue-600',
-                      'XRP': 'bg-slate-100 text-slate-600',
-                    };
-                    return styles[symbol] || 'bg-cyan-100 text-cyan-600';
-                  };
-
                   return (
                     <div
                       key={index}
-                      className="flex items-center justify-between p-4 bg-white/50 border border-slate-100 rounded-xl hover:bg-white/80 hover:shadow-md transition-all cursor-pointer group"
+                      className="flex items-center justify-between p-2 rounded-md hover:bg-muted/30 transition-all cursor-pointer group"
                     >
                       <div className="flex items-center gap-3">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${getAssetStyle(mover.symbol)}`}>
+                        <div className="w-6 h-6 rounded bg-muted/50 flex items-center justify-center text-[10px] font-bold text-foreground">
                           {mover.symbol[0]}
                         </div>
-                        <div>
-                          <span className="font-medium text-slate-700">{mover.symbol}</span>
-                          <span className="text-xs text-slate-400 ml-2">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-foreground leading-none">{mover.symbol}</span>
+                          <span className="text-[10px] text-muted-foreground mt-0.5">
                             ${mover.price_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`font-mono font-medium ${mover.is_positive ? 'text-emerald-600' : 'text-red-500'}`}>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`font-mono text-xs font-medium ${mover.is_positive ? 'text-emerald-400' : 'text-destructive'}`}>
                           {mover.is_positive ? '+' : ''}{mover.change_24h.toFixed(2)}%
                         </span>
-                        {mover.is_positive ? (
-                          <ArrowUpRight className="w-4 h-4 text-emerald-600" />
-                        ) : (
-                          <ArrowDownLeft className="w-4 h-4 text-red-500" />
-                        )}
                       </div>
                     </div>
                   );
                 })}
               </div>
             ) : (
-              <div className="text-center py-8 text-slate-400">
-                <p className="text-sm">Loading market data...</p>
+              <div className="text-center py-8 text-muted-foreground">
+                <p className="text-xs">Loading market data...</p>
               </div>
             )}
           </Card>
         </div>
 
         {/* Recent Transactions */}
-        <Card className="p-6 bg-white/60 border-white/40 backdrop-blur-xl shadow-lg shadow-slate-200/50">
+        <Card className="p-6 glass-card">
           <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
-              <Clock className="w-5 h-5 text-slate-400" />
-              Recent Transactions
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              Recent Activity
             </h3>
-            <button 
+            <button
               onClick={() => navigate('/transactions')}
-              className="text-blue-600 hover:text-blue-700 text-sm font-medium transition-colors hover:underline"
+              className="text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
             >
               View All
             </button>
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-1">
             {recentTransactions.length > 0 ? (
-              recentTransactions.map((tx) => {
-                const isSend = tx.tx_type === 'send';
-                return (
-                  <div
-                    key={tx.id}
-                    className="flex items-center justify-between p-4 bg-white/50 border border-slate-100 rounded-xl hover:bg-white/80 hover:shadow-md transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center gap-4">
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isSend
-                        ? 'bg-red-50 text-red-500 border border-red-100'
-                        : 'bg-emerald-50 text-emerald-500 border border-emerald-100'
-                        }`}>
-                        {isSend ? (
-                          <ArrowUpRight className="w-5 h-5" />
-                        ) : (
-                          <ArrowDownLeft className="w-5 h-5" />
-                        )}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium text-slate-700">
-                            {isSend ? 'Sent' : 'Received'} {tx.asset_symbol}
-                          </p>
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-mono border border-slate-200">
+              <div className="relative overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="text-[10px] text-muted-foreground uppercase bg-muted/20 font-mono">
+                    <tr>
+                      <th className="px-4 py-2 rounded-l-sm">Type</th>
+                      <th className="px-4 py-2">Asset</th>
+                      <th className="px-4 py-2">Hash</th>
+                      <th className="px-4 py-2 text-right">Amount</th>
+                      <th className="px-4 py-2 rounded-r-sm text-right">Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentTransactions.map((tx) => {
+                      const isSend = tx.tx_type === 'send';
+                      return (
+                        <tr key={tx.id} className="border-b border-border/50 hover:bg-muted/10 transition-colors">
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center gap-1.5 font-medium ${isSend ? 'text-destructive' : 'text-emerald-400'}`}>
+                              {isSend ? (
+                                <ArrowUpRight className="w-3 h-3" />
+                              ) : (
+                                <ArrowDownLeft className="w-3 h-3" />
+                              )}
+                              {isSend ? 'Send' : 'Receive'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 font-medium text-foreground">
+                            {tx.asset_symbol}
+                          </td>
+                          <td className="px-4 py-3 font-mono text-muted-foreground">
                             {shortAddress(tx.tx_hash)}
-                          </span>
-                        </div>
-                        <p className="text-sm text-slate-500">{formatTimeAgo(tx.timestamp)}</p>
-                      </div>
-                    </div>
-                    <p className={`font-mono font-medium ${isSend ? 'text-red-500' : 'text-emerald-600'
-                      }`}>
-                      {isSend ? '-' : '+'}{tx.amount} {tx.asset_symbol}
-                    </p>
-                  </div>
-                );
-              })
+                          </td>
+                          <td className={`px-4 py-3 text-right font-mono ${isSend ? 'text-destructive' : 'text-emerald-400'}`}>
+                            {isSend ? '-' : '+'}{tx.amount}
+                          </td>
+                          <td className="px-4 py-3 text-right text-muted-foreground">
+                            {formatTimeAgo(tx.timestamp)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             ) : (
-              <div className="text-center py-8 text-slate-400">
-                <p className="text-sm">No recent transactions</p>
+              <div className="text-center py-8 text-muted-foreground">
+                <p className="text-xs">No recent transactions</p>
               </div>
             )}
           </div>
