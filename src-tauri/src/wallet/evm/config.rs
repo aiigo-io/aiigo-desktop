@@ -55,6 +55,7 @@ pub enum EvmChainConfig {
     Optimism,
     Polygon,
     BinanceSmartChain,
+    EthereumSepolia,
 }
 
 impl EvmChainConfig {
@@ -65,6 +66,7 @@ impl EvmChainConfig {
             Self::Optimism => 10,
             Self::Polygon => 137,
             Self::BinanceSmartChain => 56,
+            Self::EthereumSepolia => 11155111,
         }
     }
 
@@ -75,6 +77,7 @@ impl EvmChainConfig {
             Self::Optimism => "optimism",
             Self::Polygon => "polygon",
             Self::BinanceSmartChain => "bsc",
+            Self::EthereumSepolia => "sepolia",
         }
     }
 
@@ -86,6 +89,7 @@ impl EvmChainConfig {
             Self::Optimism => "Optimism",
             Self::Polygon => "Polygon",
             Self::BinanceSmartChain => "Binance Smart Chain",
+            Self::EthereumSepolia => "Ethereum Sepolia",
         }
     }
 
@@ -112,6 +116,10 @@ impl EvmChainConfig {
                 &["BSC_HTTP_URL", "EVM_RPC_BSC_URL"],
                 "https://bsc-dataseed1.binance.org",
             ),
+            Self::EthereumSepolia => env_with_fallback(
+                &["ETHEREUM_SEPOLIA_HTTP_URL", "EVM_RPC_SEPOLIA_URL"],
+                "https://ethereum-sepolia-rpc.publicnode.com",
+            ),
         }
     }
 
@@ -122,6 +130,7 @@ impl EvmChainConfig {
             Self::Optimism => env_optional("OPTIMISM_WSS_URL"),
             Self::Polygon => env_optional("POLYGON_WSS_URL"),
             Self::BinanceSmartChain => env_optional("BSC_WSS_URL"),
+            Self::EthereumSepolia => env_optional("ETHEREUM_SEPOLIA_WSS_URL"),
         }
     }
 
@@ -215,6 +224,21 @@ impl EvmChainConfig {
                     Some("0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"),
                 ),
             ],
+            Self::EthereumSepolia => vec![
+                EvmAsset::new("ETH", "Ethereum", 18, None),
+                EvmAsset::new(
+                    "USDC",
+                    "USD Coin",
+                    6,
+                    Some("0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238"),
+                ),
+                EvmAsset::new(
+                    "USDT",
+                    "Tether USD",
+                    6,
+                    Some("0xE50d86c6dE38F9754f6777d2925377564Bf79482"),
+                ),
+            ],
         }
     }
 }
@@ -227,6 +251,7 @@ pub fn get_all_chains() -> Vec<EvmChainConfig> {
         EvmChainConfig::Optimism,
         EvmChainConfig::Polygon,
         EvmChainConfig::BinanceSmartChain,
+        EvmChainConfig::EthereumSepolia,
     ]
 }
 
@@ -244,6 +269,7 @@ pub fn get_chain_by_name(name: &str) -> Option<EvmChainConfig> {
         "optimism" => Some(EvmChainConfig::Optimism),
         "polygon" => Some(EvmChainConfig::Polygon),
         "bsc" => Some(EvmChainConfig::BinanceSmartChain),
+        "sepolia" => Some(EvmChainConfig::EthereumSepolia),
         _ => None,
     }
 }
@@ -257,6 +283,7 @@ pub fn get_chain_by_id(chain_id: u64) -> Option<EvmChainConfig> {
         10 => Some(EvmChainConfig::Optimism),
         137 => Some(EvmChainConfig::Polygon),
         56 => Some(EvmChainConfig::BinanceSmartChain),
+        11155111 => Some(EvmChainConfig::EthereumSepolia),
         _ => None,
     }
 }
@@ -274,6 +301,14 @@ mod tests {
     }
 
     #[test]
+    fn test_ethereum_sepolia_config() {
+        let chain = EvmChainConfig::EthereumSepolia;
+        assert_eq!(chain.chain_id(), 11155111);
+        assert_eq!(chain.name(), "sepolia");
+        assert_eq!(chain.assets().len(), 3);
+    }
+
+    #[test]
     fn test_arbitrum_config() {
         let chain = EvmChainConfig::Arbitrum;
         assert_eq!(chain.chain_id(), 42161);
@@ -284,12 +319,13 @@ mod tests {
     #[test]
     fn test_get_all_chains() {
         let chains = get_all_chains();
-        assert_eq!(chains.len(), 5);
+        assert_eq!(chains.len(), 6);
         assert!(chains.contains(&EvmChainConfig::Ethereum));
         assert!(chains.contains(&EvmChainConfig::Arbitrum));
         assert!(chains.contains(&EvmChainConfig::Optimism));
         assert!(chains.contains(&EvmChainConfig::Polygon));
         assert!(chains.contains(&EvmChainConfig::BinanceSmartChain));
+        assert!(chains.contains(&EvmChainConfig::EthereumSepolia));
     }
 
     #[test]
@@ -338,6 +374,10 @@ mod tests {
             get_chain_by_name("bsc"),
             Some(EvmChainConfig::BinanceSmartChain)
         );
+        assert_eq!(
+            get_chain_by_name("sepolia"),
+            Some(EvmChainConfig::EthereumSepolia)
+        );
         assert_eq!(get_chain_by_name("unknown"), None);
     }
 
@@ -348,6 +388,7 @@ mod tests {
         assert_eq!(get_chain_by_id(10), Some(EvmChainConfig::Optimism));
         assert_eq!(get_chain_by_id(137), Some(EvmChainConfig::Polygon));
         assert_eq!(get_chain_by_id(56), Some(EvmChainConfig::BinanceSmartChain));
+        assert_eq!(get_chain_by_id(11155111), Some(EvmChainConfig::EthereumSepolia));
         assert_eq!(get_chain_by_id(999999), None);
     }
 }
