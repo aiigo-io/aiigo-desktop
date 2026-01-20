@@ -73,7 +73,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(WindowStatePlugin::default().build())
-        .setup(|app| {
+        .setup(|_app| {
             // if let Some(window) = app.get_webview_window("main") {
             //     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
             //         width: 1000.0,
@@ -110,7 +110,9 @@ pub fn run() {
             transaction_commands::get_bitcoin_transactions,
             transaction_commands::get_all_bitcoin_transactions,
             transaction_commands::fetch_bitcoin_history,
+            transaction_commands::bitcoin_estimate_fees,
             transaction_commands::send_evm,
+            transaction_commands::evm_estimate_gas,
             transaction_commands::get_evm_transactions,
             transaction_commands::get_all_evm_transactions,
             transaction_commands::fetch_evm_history,

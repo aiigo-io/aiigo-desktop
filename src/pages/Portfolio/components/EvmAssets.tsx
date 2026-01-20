@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge, Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui';
-import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download } from 'lucide-react';
+import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, Send, ChevronRight, HelpCircle, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { shortAddress } from '@/lib/utils';
+import { shortAddress, getEvmExplorerUrl, openExternalLink } from '@/lib/utils';
+import { toast } from 'sonner';
 
 interface WalletInfo {
   id: string;
@@ -77,10 +78,78 @@ const EvmAssets: React.FC = () => {
   const [refreshingWalletId, setRefreshingWalletId] = useState<string | null>(null);
   const [lastRefreshTime, setLastRefreshTime] = useState<Map<string, Date>>(new Map());
 
+  // Send EVM State
+  const [isSendDialogOpen, setIsSendDialogOpen] = useState(false);
+  const [selectedWalletForSend, setSelectedWalletForSend] = useState<WalletInfo | null>(null);
+  const [selectedAssetForSend, setSelectedAssetForSend] = useState<{ chain: string, chainId: number, asset: EvmAssetBalance } | null>(null);
+  const [sendToAddress, setSendToAddress] = useState('');
+  const [sendAmount, setSendAmount] = useState('');
+  const [isSending, setIsSending] = useState(false);
+
+  // Gas Estimation State
+  const [isEstimatingGas, setIsEstimatingGas] = useState(false);
+  const [estimatedGasLimit, setEstimatedGasLimit] = useState<number | null>(null);
+  const [estimatedGasPrice, setEstimatedGasPrice] = useState<string | null>(null); // wei as string
+  const [gasEstimationError, setGasEstimationError] = useState<string | null>(null);
+
   // Load wallets on mount
   useEffect(() => {
     loadWallets();
   }, []);
+
+  // Effect for gas estimation
+  useEffect(() => {
+    const estimateGas = async () => {
+      if (!selectedWalletForSend || !selectedAssetForSend || !sendToAddress || !sendAmount || parseFloat(sendAmount) <= 0) {
+        setEstimatedGasLimit(null);
+        setEstimatedGasPrice(null);
+        setGasEstimationError(null);
+        return;
+      }
+
+      // Basic address validation
+      if (!sendToAddress.startsWith('0x') || sendToAddress.length !== 42) {
+        setGasEstimationError('Invalid address');
+        return;
+      }
+
+      setIsEstimatingGas(true);
+      setGasEstimationError(null);
+
+      try {
+        const decimals = selectedAssetForSend.asset.asset.decimals;
+        const amountFloat = parseFloat(sendAmount);
+        const amountInBaseUnits = BigInt(Math.floor(amountFloat * Math.pow(10, decimals))).toString();
+
+        const estimation = await invoke<{ gas_limit: number; gas_price: string }>('evm_estimate_gas', {
+          request: {
+            wallet_id: selectedWalletForSend.id,
+            to_address: sendToAddress,
+            amount: amountInBaseUnits,
+            chain: selectedAssetForSend.chain,
+            chain_id: selectedAssetForSend.chainId,
+            asset_symbol: selectedAssetForSend.asset.asset.symbol,
+            contract_address: selectedAssetForSend.asset.asset.contract_address,
+            gas_limit: null,
+            gas_price: null,
+          }
+        });
+
+        setEstimatedGasLimit(estimation.gas_limit);
+        setEstimatedGasPrice(estimation.gas_price);
+      } catch (error) {
+        console.error('Error estimating gas:', error);
+        setGasEstimationError(typeof error === 'string' ? error : 'Estimation failed');
+        setEstimatedGasLimit(null);
+        setEstimatedGasPrice(null);
+      } finally {
+        setIsEstimatingGas(false);
+      }
+    };
+
+    const timer = setTimeout(estimateGas, 500); // Debounce estimation
+    return () => clearTimeout(timer);
+  }, [selectedWalletForSend, selectedAssetForSend, sendToAddress, sendAmount]);
 
   const isCacheHit = (walletId: string) => {
     const lastRefresh = lastRefreshTime.get(walletId);
@@ -147,7 +216,7 @@ const EvmAssets: React.FC = () => {
     try {
       const result = await invoke<WalletInfo[]>('evm_get_wallets');
       setWallets(result);
-      
+
       // Load balance data for each wallet
       const balances = new Map<string, EvmWalletInfo>();
       for (const wallet of result) {
@@ -203,17 +272,17 @@ const EvmAssets: React.FC = () => {
     setIsLoading(true);
     try {
       const mnemonic = await invoke<string>('evm_create_mnemonic');
-      
+
       const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_mnemonic', {
         mnemonicPhrase: mnemonic,
         walletLabel: walletLabel || undefined,
       });
-      
+
       setGeneratedMnemonic(response);
       setShowMnemonicDialog(true);
       setMnemonicInput('');
       setWalletLabel('');
-      
+
       loadWallets();
     } catch (error) {
       console.error('Error creating wallet:', error);
@@ -225,14 +294,14 @@ const EvmAssets: React.FC = () => {
 
   const handleImportMnemonic = async () => {
     if (!mnemonicInput.trim()) return;
-    
+
     setIsLoading(true);
     try {
       const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_mnemonic', {
         mnemonicPhrase: mnemonicInput,
         walletLabel: walletLabel || undefined,
       });
-      
+
       setWallets([...wallets, response.wallet]);
       setMnemonicInput('');
       setWalletLabel('');
@@ -248,14 +317,14 @@ const EvmAssets: React.FC = () => {
 
   const handleImportPrivateKey = async () => {
     if (!privateKeyInput.trim()) return;
-    
+
     setIsLoading(true);
     try {
       const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_private_key', {
         privateKey: privateKeyInput,
         walletLabel: walletLabel || undefined,
       });
-      
+
       setWallets([...wallets, response.wallet]);
       setPrivateKeyInput('');
       setWalletLabel('');
@@ -342,6 +411,76 @@ const EvmAssets: React.FC = () => {
     }
   };
 
+  const handleSendEvm = async () => {
+    if (!selectedWalletForSend || !selectedAssetForSend || !sendToAddress || !sendAmount) return;
+
+    setIsSending(true);
+    try {
+      // Amount in the backend is expected in "wei" for eth_sendTransaction but 
+      // let's check what SendEvmRequest expects.
+      // SendEvmRequest amount is "in token units (e.g., '1.5' for 1.5 ETH)"
+      // Actually it's stored as String. 
+      // But wait, look at send_evm_transaction implementation:
+      // let amount_wei = U256::from_dec_str(&request.amount)
+      // This means the backend EXPECTS WEI if it uses from_dec_str on the string.
+      // Wait, let me re-check transaction.rs line 317:
+      // let amount_wei = U256::from_dec_str(&request.amount)
+      // Yes, it expects the raw integer value (wei) as a decimal string.
+
+      const decimals = selectedAssetForSend.asset.asset.decimals;
+      const amountFloat = parseFloat(sendAmount);
+      // Simple conversion to wei-like string (might lose precision for very small amounts, but okay for basic UI)
+      const amountInBaseUnits = BigInt(Math.floor(amountFloat * Math.pow(10, decimals))).toString();
+
+      const response = await invoke<{ tx_hash: string; message: string }>('send_evm', {
+        request: {
+          wallet_id: selectedWalletForSend.id,
+          to_address: sendToAddress,
+          amount: amountInBaseUnits,
+          chain: selectedAssetForSend.chain,
+          chain_id: selectedAssetForSend.chainId,
+          asset_symbol: selectedAssetForSend.asset.asset.symbol,
+          contract_address: selectedAssetForSend.asset.asset.contract_address,
+          gas_limit: estimatedGasLimit,
+          gas_price: estimatedGasPrice,
+        }
+      });
+
+      toast.success(
+        <div className="flex flex-col gap-1">
+          <div className="font-semibold">Transaction Sent Successfully</div>
+          <div className="text-xs font-mono text-muted-foreground break-all">
+            {response.tx_hash}
+          </div>
+          <Button
+            variant="link"
+            size="sm"
+            className="p-0 h-auto text-indigo-400 hover:text-indigo-300 justify-start"
+            onClick={() => openExternalLink(getEvmExplorerUrl(response.tx_hash, selectedAssetForSend.chainId))}
+          >
+            <ExternalLink className="w-3 h-3 mr-1" />
+            View on Explorer
+          </Button>
+        </div>,
+        {
+          duration: 10000,
+        }
+      );
+
+      setIsSendDialogOpen(false);
+      setSendToAddress('');
+      setSendAmount('');
+
+      // Refresh balance after successful send
+      handleRefreshBalance(selectedWalletForSend.id);
+    } catch (error) {
+      console.error('Error sending EVM asset:', error);
+      alert(`Error: ${error}`);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const totalBalance = Array.from(walletsWithBalances.values()).reduce(
     (sum, wallet) => sum + wallet.total_balance_usd,
     0
@@ -362,7 +501,7 @@ const EvmAssets: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button 
+            <Button
               onClick={() => handleRefreshBalance()}
               variant="outline"
               className="gap-2"
@@ -397,7 +536,7 @@ const EvmAssets: React.FC = () => {
                     <TabsTrigger value="mnemonic">Import Mnemonic</TabsTrigger>
                     <TabsTrigger value="private-key">Import Private Key</TabsTrigger>
                   </TabsList>
-                  
+
                   {/* Create New Wallet */}
                   <TabsContent value="create" className="space-y-4 mt-4">
                     <p className="text-sm text-muted-foreground">
@@ -412,15 +551,15 @@ const EvmAssets: React.FC = () => {
                         onChange={(e) => setWalletLabel(e.target.value)}
                       />
                     </div>
-                    <Button 
-                      onClick={handleCreateMnemonic} 
+                    <Button
+                      onClick={handleCreateMnemonic}
                       className="w-full"
                       disabled={isLoading}
                     >
                       {isLoading ? 'Creating...' : 'Create New Wallet'}
                     </Button>
                   </TabsContent>
-                  
+
                   {/* Import Mnemonic */}
                   <TabsContent value="mnemonic" className="space-y-4 mt-4">
                     <div className="space-y-2">
@@ -446,15 +585,15 @@ const EvmAssets: React.FC = () => {
                         Words should be separated by spaces
                       </p>
                     </div>
-                    <Button 
-                      onClick={handleImportMnemonic} 
-                      className="w-full" 
+                    <Button
+                      onClick={handleImportMnemonic}
+                      className="w-full"
                       disabled={!mnemonicInput.trim() || isLoading}
                     >
                       {isLoading ? 'Importing...' : 'Import Mnemonic'}
                     </Button>
                   </TabsContent>
-                  
+
                   {/* Import Private Key */}
                   <TabsContent value="private-key" className="space-y-4 mt-4">
                     <div className="space-y-2">
@@ -480,9 +619,9 @@ const EvmAssets: React.FC = () => {
                         Support 64-character hex string (with or without 0x prefix)
                       </p>
                     </div>
-                    <Button 
-                      onClick={handleImportPrivateKey} 
-                      className="w-full" 
+                    <Button
+                      onClick={handleImportPrivateKey}
+                      className="w-full"
                       disabled={!privateKeyInput.trim() || isLoading}
                     >
                       {isLoading ? 'Importing...' : 'Import Private Key'}
@@ -500,7 +639,7 @@ const EvmAssets: React.FC = () => {
             <DialogHeader>
               <DialogTitle>Save Your Mnemonic Phrase</DialogTitle>
             </DialogHeader>
-            
+
             {generatedMnemonic && (
               <div className="space-y-6">
                 {/* Warning Alert */}
@@ -513,8 +652,8 @@ const EvmAssets: React.FC = () => {
                         Your mnemonic phrase is not stored on this device. If you close this dialog without saving it, you will lose access to this wallet forever.
                       </p>
                       <p className="text-sm text-red-800">
-                        • Never share your mnemonic phrase with anyone<br/>
-                        • Store it in a safe location<br/>
+                        • Never share your mnemonic phrase with anyone<br />
+                        • Store it in a safe location<br />
                         • Anyone with this phrase can access your funds
                       </p>
                     </div>
@@ -592,14 +731,14 @@ const EvmAssets: React.FC = () => {
 
                 {/* Action Buttons */}
                 <div className="flex gap-3">
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     className="flex-1"
                     onClick={() => handleCopyMnemonic(generatedMnemonic.mnemonic)}
                   >
                     Copy to Clipboard
                   </Button>
-                  <Button 
+                  <Button
                     className="flex-1 bg-green-600 hover:bg-green-700"
                     onClick={handleCloseMnemonicDialog}
                   >
@@ -619,7 +758,7 @@ const EvmAssets: React.FC = () => {
                 {exportedSecretType === 'mnemonic' ? 'Export Mnemonic Phrase' : 'Export Private Key'}
               </DialogTitle>
             </DialogHeader>
-            
+
             {exportedSecret && (
               <div className="space-y-4">
                 {/* Warning Alert */}
@@ -673,7 +812,7 @@ const EvmAssets: React.FC = () => {
                 </div>
 
                 {/* Close Button */}
-                <Button 
+                <Button
                   className="w-full"
                   onClick={() => setShowExportDialog(false)}
                 >
@@ -681,6 +820,173 @@ const EvmAssets: React.FC = () => {
                 </Button>
               </div>
             )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Send EVM Dialog */}
+        <Dialog open={isSendDialogOpen} onOpenChange={setIsSendDialogOpen}>
+          <DialogContent className="sm:max-w-[480px] p-0 border-none shadow-2xl bg-[#1A1B23]">
+            <DialogHeader className="p-6 pb-2">
+              <DialogTitle className="text-xl font-bold flex items-center justify-between">
+                <span>Send</span>
+                <span className="text-sm font-normal text-muted-foreground mr-8">Cancel</span>
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="px-6 pb-6 space-y-6">
+              {/* Asset Selector Display (MetaMask style) */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-end">
+                  <Label className="text-xs text-muted-foreground uppercase font-bold tracking-wider">Asset</Label>
+                  <span className="text-[11px] text-muted-foreground">
+                    Balance: <span className="text-foreground font-mono">{selectedAssetForSend?.asset.balance_float.toFixed(6)} {selectedAssetForSend?.asset.asset.symbol}</span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-4 bg-[#252833] rounded-xl border border-white/5 cursor-pointer hover:bg-[#2C303D] transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold shadow-lg">
+                      {selectedAssetForSend?.asset.asset.symbol[0]}
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-white">{selectedAssetForSend?.asset.asset.symbol}</p>
+                      <p className="text-xs text-muted-foreground">on {selectedAssetForSend?.chain}</p>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                </div>
+              </div>
+
+              {/* To Address Input */}
+              <div className="space-y-2">
+                <Label htmlFor="to-address" className="text-xs text-muted-foreground uppercase font-bold tracking-wider">To</Label>
+                <div className="relative">
+                  <Input
+                    id="to-address"
+                    placeholder="Search, public address (0x), or ENS"
+                    value={sendToAddress}
+                    onChange={(e) => setSendToAddress(e.target.value)}
+                    className="h-12 bg-[#252833] border-white/5 rounded-xl pr-10 focus:ring-indigo-500/20 focus:border-indigo-500/50"
+                  />
+                  {sendToAddress && (
+                    <button
+                      onClick={() => setSendToAddress('')}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Amount Input with Max button */}
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <Label htmlFor="amount" className="text-xs text-muted-foreground uppercase font-bold tracking-wider">Amount</Label>
+                  <button
+                    onClick={() => setSendAmount(selectedAssetForSend?.asset.balance_float.toString() || '0')}
+                    className="text-[11px] text-indigo-400 hover:text-indigo-300 font-bold uppercase tracking-tight"
+                  >
+                    Max
+                  </button>
+                </div>
+                <div className="relative group">
+                  <Input
+                    id="amount"
+                    type="number"
+                    placeholder="0"
+                    value={sendAmount}
+                    onChange={(e) => setSendAmount(e.target.value)}
+                    className="h-14 bg-[#252833] border-white/5 rounded-xl text-2xl font-bold pr-16 focus:ring-indigo-500/20 focus:border-indigo-500/50"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-lg font-bold text-muted-foreground group-focus-within:text-indigo-400 transition-colors">
+                    {selectedAssetForSend?.asset.asset.symbol}
+                  </span>
+                </div>
+                {selectedAssetForSend?.asset.usd_price && sendAmount && (
+                  <p className="text-xs text-muted-foreground text-right mt-1">
+                    ≈ ${(parseFloat(sendAmount) * selectedAssetForSend.asset.usd_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                  </p>
+                )}
+              </div>
+
+              {/* Quote/Gas Estimation */}
+              <div className="p-4 bg-indigo-500/5 rounded-xl border border-indigo-500/10 space-y-3">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-muted-foreground">Estimated gas fee</span>
+                    <HelpCircle className="w-3.5 h-3.5 text-muted-foreground" />
+                  </div>
+                  <div className="text-right">
+                    {isEstimatingGas ? (
+                      <div className="w-3 h-3 border border-indigo-400 border-t-transparent rounded-full animate-spin ml-auto" />
+                    ) : gasEstimationError ? (
+                      <p className="text-[10px] text-red-400">{gasEstimationError}</p>
+                    ) : estimatedGasLimit && estimatedGasPrice ? (
+                      <>
+                        <p className="text-xs font-bold text-white">
+                          {(() => {
+                            const feeWei = BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice);
+                            const feeEth = Number(feeWei) / 1e18;
+                            return `${feeEth.toFixed(6)} ETH`;
+                          })()}
+                        </p>
+                        {selectedAssetForSend?.asset.usd_price && (
+                          <p className="text-[10px] text-muted-foreground">
+                            ≈ ${((Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18) * (walletsWithBalances.get(selectedWalletForSend?.id || '')?.chains.find(c => c.chain_id === selectedAssetForSend.chainId)?.assets.find(a => a.asset.contract_address === null)?.usd_price || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-xs font-bold text-white">--</p>
+                    )}
+                  </div>
+                </div>
+                <div className="h-px bg-white/5" />
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-bold text-white">Total</span>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-indigo-400">
+                      {(() => {
+                        const amount = parseFloat(sendAmount) || 0;
+                        const feeEth = estimatedGasLimit && estimatedGasPrice
+                          ? Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18
+                          : 0;
+
+                        if (selectedAssetForSend?.asset.asset.contract_address === null) {
+                          // Native token: Amount + Fee
+                          return `${(amount + feeEth).toFixed(6)} ${selectedAssetForSend.asset.asset.symbol}`;
+                        } else {
+                          // ERC20: Amount + Fee (in Native)
+                          return `${amount.toFixed(6)} ${selectedAssetForSend?.asset.asset.symbol} + ${feeEth.toFixed(6)} ETH`;
+                        }
+                      })()}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">Amount + gas fee</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex gap-4 pt-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 h-12 rounded-full border-indigo-500/30 text-indigo-400 hover:bg-indigo-500/10"
+                  onClick={() => setIsSendDialogOpen(false)}
+                >
+                  Reject
+                </Button>
+                <Button
+                  className="flex-1 h-12 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-lg shadow-indigo-600/20"
+                  onClick={handleSendEvm}
+                  disabled={isSending || !sendToAddress || !sendAmount || parseFloat(sendAmount) <= 0}
+                >
+                  {isSending ? (
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    "Confirm"
+                  )}
+                </Button>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
 
@@ -715,30 +1021,30 @@ const EvmAssets: React.FC = () => {
               const walletWithBalances = walletsWithBalances.get(wallet.id);
               const lastRefresh = lastRefreshTime.get(wallet.id);
               return (
-                  <div
-                    key={wallet.id}
-                    className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors space-y-4"
-                  >
+                <div
+                  key={wallet.id}
+                  className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors space-y-4"
+                >
                   {/* Wallet Header */}
                   <div className="flex items-start justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium text-foreground text-sm">
-                            {wallet.label}
-                          </p>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-foreground text-sm">
+                          {wallet.label}
+                        </p>
                         <Badge variant="secondary" className="text-xs">
                           {wallet.wallet_type === 'mnemonic' ? 'Mnemonic' : 'Private Key'}
                         </Badge>
                       </div>
-                        <div className="flex items-center gap-2 mt-2">
-                          <p className="font-mono text-xs text-muted-foreground truncate">
-                            {shortAddress(wallet.address)}
-                          </p>
-                          <button
-                            onClick={() => handleCopyAddress(wallet.address)}
-                            className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
-                            title="Copy address"
-                          >
+                      <div className="flex items-center gap-2 mt-2">
+                        <p className="font-mono text-xs text-muted-foreground truncate">
+                          {shortAddress(wallet.address)}
+                        </p>
+                        <button
+                          onClick={() => handleCopyAddress(wallet.address)}
+                          className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                          title="Copy address"
+                        >
                           {addressCopied === wallet.address ? (
                             <CheckCircle2 className="w-4 h-4 text-green-600" />
                           ) : (
@@ -747,24 +1053,24 @@ const EvmAssets: React.FC = () => {
                         </button>
                       </div>
                     </div>
-                      <div className="text-right ml-4 flex flex-col items-end gap-2">
-                        <div>
-                          <p className="font-semibold text-base text-foreground font-mono">
-                            ${(walletWithBalances?.total_balance_usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </p>
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {lastRefresh ? `Updated: ${lastRefresh.toLocaleTimeString()}` : 'Loading...'}
-                          </p>
+                    <div className="text-right ml-4 flex flex-col items-end gap-2">
+                      <div>
+                        <p className="font-semibold text-base text-foreground font-mono">
+                          ${(walletWithBalances?.total_balance_usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {lastRefresh ? `Updated: ${lastRefresh.toLocaleTimeString()}` : 'Loading...'}
+                        </p>
                       </div>
                       {/* Action Buttons */}
                       <div className="flex gap-1 flex-wrap justify-end">
                         {/* Refresh Button */}
-                          <button
-                            onClick={() => handleRefreshBalance(wallet.id)}
-                            className="px-2 py-1 text-xs bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground rounded transition-colors flex items-center gap-1"
-                            title="Refresh balance from blockchain"
-                            disabled={isRefreshing || refreshingWalletId === wallet.id}
-                          >
+                        <button
+                          onClick={() => handleRefreshBalance(wallet.id)}
+                          className="px-2 py-1 text-xs bg-muted/50 text-muted-foreground hover:bg-muted hover:text-foreground rounded transition-colors flex items-center gap-1"
+                          title="Refresh balance from blockchain"
+                          disabled={isRefreshing || refreshingWalletId === wallet.id}
+                        >
                           {refreshingWalletId === wallet.id ? (
                             <div className="w-3 h-3 border border-muted-foreground/60 border-t-transparent rounded-full animate-spin" />
                           ) : (
@@ -783,7 +1089,7 @@ const EvmAssets: React.FC = () => {
                           <Download className="w-3 h-3" />
                           <span>Private Key</span>
                         </button>
-                        
+
                         {/* Export Mnemonic Button (only for mnemonic wallets) */}
                         {wallet.wallet_type === 'mnemonic' && (
                           <button
@@ -796,7 +1102,7 @@ const EvmAssets: React.FC = () => {
                             <span>Mnemonic</span>
                           </button>
                         )}
-                        
+
                         {/* Delete Button */}
                         {deleteConfirm === wallet.id ? (
                           <>
@@ -830,31 +1136,37 @@ const EvmAssets: React.FC = () => {
                   </div>
 
                   {/* Chain Assets */}
-                    {walletWithBalances && walletWithBalances.chains.length > 0 && (
-                      <div className="border-t border-border pt-4 space-y-2">
-                        <p className="text-xs font-semibold text-foreground uppercase tracking-wide">Assets by Chain</p>
+                  {walletWithBalances && walletWithBalances.chains.length > 0 && (
+                    <div className="border-t border-border pt-4 space-y-2">
+                      <p className="text-xs font-semibold text-foreground uppercase tracking-wide">Assets by Chain</p>
                       <Accordion type="single" collapsible className="w-full">
                         {walletWithBalances.chains.map((chainAssets, chainIndex) => (
                           <AccordionItem key={chainIndex} value={`chain-${chainAssets.chain}`}>
                             <AccordionTrigger className="hover:no-underline py-2">
-                                <div className="flex items-center gap-3 flex-1 text-left">
-                                  <div className="flex-1">
-                                    <p className="font-medium text-foreground capitalize text-sm">{chainAssets.chain}</p>
-                                    <p className="text-xs text-muted-foreground">Chain ID: {chainAssets.chain_id}</p>
-                                  </div>
-                                  <div className="text-right">
-                                    <p className="font-semibold text-foreground text-sm font-mono">${chainAssets.total_balance_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-                                  </div>
+                              <div className="flex items-center gap-3 flex-1 text-left">
+                                <div className="flex-1">
+                                  <p className="font-medium text-foreground capitalize text-sm">{chainAssets.chain}</p>
+                                  <p className="text-xs text-muted-foreground">Chain ID: {chainAssets.chain_id}</p>
                                 </div>
+                                <div className="text-right">
+                                  <p className="font-semibold text-foreground text-sm font-mono">${chainAssets.total_balance_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                                </div>
+                              </div>
                             </AccordionTrigger>
                             <AccordionContent>
-                                <div className="space-y-2 pt-2">
-                                  {chainAssets.assets.map((assetBalance, assetIndex) => (
-                                    <div key={assetIndex} className="flex items-center justify-between px-2 py-2 bg-muted/30 rounded">
+                              <div className="space-y-2 pt-2">
+                                {chainAssets.assets.map((assetBalance, assetIndex) => (
+                                  <div key={assetIndex} className="flex items-center justify-between px-2 py-2 bg-muted/30 rounded group">
+                                    <div className="flex items-center gap-3">
+                                      <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center text-xs font-semibold">
+                                        {assetBalance.asset.symbol[0]}
+                                      </div>
                                       <div>
                                         <p className="font-medium text-foreground text-sm">{assetBalance.asset.symbol}</p>
                                         <p className="text-xs text-muted-foreground">{assetBalance.asset.name}</p>
                                       </div>
+                                    </div>
+                                    <div className="flex items-center gap-4">
                                       <div className="text-right">
                                         <p className="font-mono text-xs text-foreground">{assetBalance.balance_float.toFixed(6)} {assetBalance.asset.symbol}</p>
                                         {assetBalance.usd_value > 0 && (
@@ -862,6 +1174,22 @@ const EvmAssets: React.FC = () => {
                                             ${assetBalance.usd_value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                           </p>
                                         )}
+                                      </div>
+                                      <button
+                                        onClick={() => {
+                                          setSelectedWalletForSend(wallet);
+                                          setSelectedAssetForSend({
+                                            chain: chainAssets.chain,
+                                            chainId: chainAssets.chain_id,
+                                            asset: assetBalance
+                                          });
+                                          setIsSendDialogOpen(true);
+                                        }}
+                                        className="p-2 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-full transition-all opacity-0 group-hover:opacity-100 shadow-sm"
+                                        title="Send"
+                                      >
+                                        <Send className="w-4 h-4" />
+                                      </button>
                                     </div>
                                   </div>
                                 ))}

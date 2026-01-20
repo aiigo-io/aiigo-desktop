@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { ArrowUpRight, ArrowDownLeft, RefreshCw, Send, ExternalLink } from 'lucide-react';
-import { cn, shortAddress } from '@/lib/utils';
+import { cn, shortAddress, getEvmExplorerUrl, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
 
 interface BitcoinTransaction {
   id: string;
@@ -102,6 +101,7 @@ const Transactions: React.FC = () => {
         { name: 'Polygon', chainId: 137 },
         { name: 'Arbitrum', chainId: 42161 },
         { name: 'Optimism', chainId: 10 },
+        { name: 'Sepolia', chainId: 11155111 }
       ];
 
       // Sync EVM transactions for all chains
@@ -154,29 +154,6 @@ const Transactions: React.FC = () => {
     }
   };
 
-  const getBitcoinExplorerUrl = (txHash: string) => {
-    return `https://blockstream.info/tx/${txHash}`;
-  };
-
-  const getEvmExplorerUrl = (txHash: string, chainId: number) => {
-    const explorers: Record<number, string> = {
-      1: 'https://etherscan.io/tx/',
-      56: 'https://bscscan.com/tx/',
-      137: 'https://polygonscan.com/tx/',
-      42161: 'https://arbiscan.io/tx/',
-      10: 'https://optimistic.etherscan.io/tx/',
-    };
-    const baseUrl = explorers[chainId] || explorers[1];
-    return `${baseUrl}${txHash}`;
-  };
-
-  const openExternalLink = async (url: string) => {
-    try {
-      await openUrl(url);
-    } catch (error) {
-      console.error('Failed to open URL:', error);
-    }
-  };
 
   const BitcoinTransactionRow: React.FC<{ tx: BitcoinTransaction }> = ({ tx }) => {
     const isSend = tx.tx_type === 'send';

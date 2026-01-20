@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
-import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw } from 'lucide-react';
+import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw, Send, ExternalLink, HelpCircle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
-import { shortAddress } from '@/lib/utils';
+import { shortAddress, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
+import { toast } from 'sonner';
 
 interface WalletInfo {
   id: string;
@@ -38,6 +39,20 @@ const BitcoinAssets: React.FC = () => {
   const [refreshingBalance, setRefreshingBalance] = useState<string | null>(null);
   const [btcPrice, setBtcPrice] = useState<number>(0);
 
+  // Send BTC State
+  const [isSendDialogOpen, setIsSendDialogOpen] = useState(false);
+  const [selectedWalletForSend, setSelectedWalletForSend] = useState<WalletInfo | null>(null);
+  const [sendToAddress, setSendToAddress] = useState('');
+  const [sendAmount, setSendAmount] = useState('');
+  const [sendFeeRate, setSendFeeRate] = useState<number>(1);
+  const [isSending, setIsSending] = useState(false);
+
+  // Fee Estimation State
+  const [isEstimatingFees, setIsEstimatingFees] = useState(false);
+  const [estimatedFees, setEstimatedFees] = useState<{ fast: number; half_hour: number; hour: number } | null>(null);
+  const [feeRateType, setFeeRateType] = useState<'fast' | 'half_hour' | 'hour' | 'custom'>('half_hour');
+  const [isSendAll, setIsSendAll] = useState(false);
+
   // Load wallets on mount
   useEffect(() => {
     loadWallets();
@@ -56,6 +71,41 @@ const BitcoinAssets: React.FC = () => {
     } catch (error) {
       console.error('Error loading wallets:', error);
     }
+  };
+
+  const fetchFeeEstimates = async () => {
+    setIsEstimatingFees(true);
+    try {
+      const fees = await invoke<{ fast: number; half_hour: number; hour: number }>('bitcoin_estimate_fees');
+      setEstimatedFees(fees);
+      if (feeRateType === 'fast') setSendFeeRate(Math.ceil(fees.fast));
+      else if (feeRateType === 'half_hour') setSendFeeRate(Math.ceil(fees.half_hour));
+      else if (feeRateType === 'hour') setSendFeeRate(Math.ceil(fees.hour));
+    } catch (error) {
+      console.error('Error fetching fee estimates:', error);
+    } finally {
+      setIsEstimatingFees(false);
+    }
+  };
+
+  // Effect to fetch fees when dialog opens
+  useEffect(() => {
+    if (isSendDialogOpen) {
+      fetchFeeEstimates();
+    }
+  }, [isSendDialogOpen]);
+
+  // Effect to update sendFeeRate when feeRateType changes
+  useEffect(() => {
+    if (!estimatedFees) return;
+    if (feeRateType === 'fast') setSendFeeRate(Math.ceil(estimatedFees.fast));
+    else if (feeRateType === 'half_hour') setSendFeeRate(Math.ceil(estimatedFees.half_hour));
+    else if (feeRateType === 'hour') setSendFeeRate(Math.ceil(estimatedFees.hour));
+  }, [feeRateType, estimatedFees]);
+
+  const truncateBtc = (val: number | undefined) => {
+    if (val === undefined) return "0.00000000";
+    return (Math.floor(val * 100000000) / 100000000).toFixed(8);
   };
 
   const fetchBtcPrice = async () => {
@@ -81,18 +131,18 @@ const BitcoinAssets: React.FC = () => {
     try {
       // Generate mnemonic
       const mnemonic = await invoke<string>('bitcoin_create_mnemonic');
-      
+
       // Create wallet from mnemonic
       const response = await invoke<CreateWalletResponse>('bitcoin_create_wallet_from_mnemonic', {
         mnemonicPhrase: mnemonic,
         walletLabel: walletLabel || undefined,
       });
-      
+
       setGeneratedMnemonic(response);
       setShowMnemonicDialog(true);
       setMnemonicInput('');
       setWalletLabel('');
-      
+
       // Reload wallets
       loadWallets();
     } catch (error) {
@@ -105,7 +155,7 @@ const BitcoinAssets: React.FC = () => {
 
   const handleImportMnemonic = async () => {
     if (!mnemonicInput.trim()) return;
-    
+
     setIsLoading(true);
     try {
       // Import and create wallet from mnemonic
@@ -113,7 +163,7 @@ const BitcoinAssets: React.FC = () => {
         mnemonicPhrase: mnemonicInput,
         walletLabel: walletLabel || undefined,
       });
-      
+
       setWallets([...wallets, response.wallet]);
       setMnemonicInput('');
       setWalletLabel('');
@@ -128,7 +178,7 @@ const BitcoinAssets: React.FC = () => {
 
   const handleImportPrivateKey = async () => {
     if (!privateKeyInput.trim()) return;
-    
+
     setIsLoading(true);
     try {
       // Import and create wallet from private key
@@ -136,7 +186,7 @@ const BitcoinAssets: React.FC = () => {
         privateKey: privateKeyInput,
         walletLabel: walletLabel || undefined,
       });
-      
+
       setWallets([...wallets, response.wallet]);
       setPrivateKeyInput('');
       setWalletLabel('');
@@ -230,6 +280,50 @@ const BitcoinAssets: React.FC = () => {
     }
   };
 
+  const handleSendBtc = async () => {
+    if (!selectedWalletForSend || !sendToAddress || !sendAmount) return;
+
+    setIsSending(true);
+    try {
+      const response = await invoke<{ tx_hash: string; message: string }>('send_bitcoin', {
+        request: {
+          wallet_id: selectedWalletForSend.id,
+          to_address: sendToAddress,
+          amount: parseFloat(sendAmount),
+          fee_rate: sendFeeRate,
+          send_all: isSendAll,
+        }
+      });
+
+      toast.success(
+        <div className="flex flex-col gap-1">
+          <div className="font-medium">Transaction Sent Successfully</div>
+          <div className="text-[10px] font-mono opacity-70 break-all">{response.tx_hash}</div>
+          <button
+            onClick={() => openExternalLink(getBitcoinExplorerUrl(response.tx_hash))}
+            className="flex items-center gap-1 text-[10px] text-white underline mt-1 hover:no-underline"
+          >
+            <ExternalLink className="w-3 h-3" />
+            View on Explorer
+          </button>
+        </div>,
+        { duration: 10000 }
+      );
+
+      setIsSendDialogOpen(false);
+      setSendToAddress('');
+      setSendAmount('');
+
+      // Refresh balance after successful send
+      handleRefreshBalance(selectedWalletForSend.id);
+    } catch (error) {
+      console.error('Error sending BTC:', error);
+      toast.error(`Error: ${error}`);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const totalBalance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
 
   return (
@@ -263,7 +357,7 @@ const BitcoinAssets: React.FC = () => {
                   <TabsTrigger value="mnemonic">Import Mnemonic</TabsTrigger>
                   <TabsTrigger value="private-key">Import Private Key</TabsTrigger>
                 </TabsList>
-                
+
                 {/* Create New Wallet */}
                 <TabsContent value="create" className="space-y-4 mt-4">
                   <p className="text-sm text-muted-foreground">
@@ -278,15 +372,15 @@ const BitcoinAssets: React.FC = () => {
                       onChange={(e) => setWalletLabel(e.target.value)}
                     />
                   </div>
-                  <Button 
-                    onClick={handleCreateMnemonic} 
+                  <Button
+                    onClick={handleCreateMnemonic}
                     className="w-full"
                     disabled={isLoading}
                   >
                     {isLoading ? 'Creating...' : 'Create New Wallet'}
                   </Button>
                 </TabsContent>
-                
+
                 {/* Import Mnemonic */}
                 <TabsContent value="mnemonic" className="space-y-4 mt-4">
                   <div className="space-y-2">
@@ -312,15 +406,15 @@ const BitcoinAssets: React.FC = () => {
                       Words should be separated by spaces
                     </p>
                   </div>
-                  <Button 
-                    onClick={handleImportMnemonic} 
-                    className="w-full" 
+                  <Button
+                    onClick={handleImportMnemonic}
+                    className="w-full"
                     disabled={!mnemonicInput.trim() || isLoading}
                   >
                     {isLoading ? 'Importing...' : 'Import Mnemonic'}
                   </Button>
                 </TabsContent>
-                
+
                 {/* Import Private Key */}
                 <TabsContent value="private-key" className="space-y-4 mt-4">
                   <div className="space-y-2">
@@ -346,9 +440,9 @@ const BitcoinAssets: React.FC = () => {
                       Support WIF format (e.g., K...) or 64-character hex string
                     </p>
                   </div>
-                  <Button 
-                    onClick={handleImportPrivateKey} 
-                    className="w-full" 
+                  <Button
+                    onClick={handleImportPrivateKey}
+                    className="w-full"
                     disabled={!privateKeyInput.trim() || isLoading}
                   >
                     {isLoading ? 'Importing...' : 'Import Private Key'}
@@ -365,7 +459,7 @@ const BitcoinAssets: React.FC = () => {
             <DialogHeader>
               <DialogTitle>Save Your Mnemonic Phrase</DialogTitle>
             </DialogHeader>
-            
+
             {generatedMnemonic && (
               <div className="space-y-6">
                 {/* Warning Alert */}
@@ -378,8 +472,8 @@ const BitcoinAssets: React.FC = () => {
                         Your mnemonic phrase is not stored on this device. If you close this dialog without saving it, you will lose access to this wallet forever.
                       </p>
                       <p className="text-sm text-red-800">
-                        • Never share your mnemonic phrase with anyone<br/>
-                        • Store it in a safe location<br/>
+                        • Never share your mnemonic phrase with anyone<br />
+                        • Store it in a safe location<br />
                         • Anyone with this phrase can access your funds
                       </p>
                     </div>
@@ -457,14 +551,14 @@ const BitcoinAssets: React.FC = () => {
 
                 {/* Action Buttons */}
                 <div className="flex gap-3">
-                  <Button 
-                    variant="outline" 
+                  <Button
+                    variant="outline"
                     className="flex-1"
                     onClick={() => handleCopyMnemonic(generatedMnemonic.mnemonic)}
                   >
                     Copy to Clipboard
                   </Button>
-                  <Button 
+                  <Button
                     className="flex-1 bg-green-600 hover:bg-green-700"
                     onClick={handleCloseMnemonicDialog}
                   >
@@ -484,7 +578,7 @@ const BitcoinAssets: React.FC = () => {
                 {exportedSecretType === 'mnemonic' ? 'Export Mnemonic Phrase' : 'Export Private Key'}
               </DialogTitle>
             </DialogHeader>
-            
+
             {exportedSecret && (
               <div className="space-y-4">
                 {/* Warning Alert */}
@@ -538,7 +632,7 @@ const BitcoinAssets: React.FC = () => {
                 </div>
 
                 {/* Close Button */}
-                <Button 
+                <Button
                   className="w-full"
                   onClick={() => setShowExportDialog(false)}
                 >
@@ -549,13 +643,186 @@ const BitcoinAssets: React.FC = () => {
           </DialogContent>
         </Dialog>
 
+        {/* Send Bitcoin Dialog */}
+        <Dialog open={isSendDialogOpen} onOpenChange={setIsSendDialogOpen}>
+          <DialogContent className="sm:max-w-[450px]">
+            <DialogHeader>
+              <DialogTitle>Send Bitcoin</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label>From Wallet</Label>
+                <div className="p-3 bg-muted/50 rounded-lg text-sm border border-border/50">
+                  <p className="font-medium text-foreground">{selectedWalletForSend?.label}</p>
+                  <p className="font-mono text-xs text-muted-foreground break-all">{selectedWalletForSend?.address}</p>
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/50">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Balance</p>
+                    <p className="text-xs font-mono font-bold text-orange-600">{truncateBtc(selectedWalletForSend?.balance)} BTC</p>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="to-address">Recipient Address</Label>
+                <Input
+                  id="to-address"
+                  placeholder="Enter Bitcoin address (e.g., bc1...)"
+                  value={sendToAddress}
+                  onChange={(e) => setSendToAddress(e.target.value)}
+                  className="font-mono text-sm"
+                />
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="amount">Amount (BTC)</Label>
+                  {btcPrice > 0 && sendAmount && !isNaN(parseFloat(sendAmount)) && (
+                    <span className="text-[10px] text-muted-foreground font-mono">
+                      ≈ ${(parseFloat(sendAmount) * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                    </span>
+                  )}
+                </div>
+                <div className="relative">
+                  <Input
+                    id="amount"
+                    type="number"
+                    step="0.00000001"
+                    placeholder="0.00000000"
+                    value={sendAmount}
+                    onChange={(e) => {
+                      setSendAmount(e.target.value);
+                      setIsSendAll(false);
+                    }}
+                    className="font-mono text-sm"
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] h-7 px-2 hover:bg-orange-50 hover:text-orange-600"
+                    onClick={() => {
+                      setSendAmount((selectedWalletForSend?.balance || 0).toString());
+                      setIsSendAll(true);
+                    }}
+                  >
+                    MAX
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <Label htmlFor="fee-rate" className="text-xs">Fee Rate (sat/vB)</Label>
+                    <HelpCircle className="w-3 h-3 text-muted-foreground" />
+                  </div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setFeeRateType('hour')}
+                      className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${feeRateType === 'hour' ? 'bg-orange-500/10 border-orange-500/50 text-orange-500' : 'bg-muted/50 border-border/50 text-muted-foreground'}`}
+                    >
+                      Slow
+                    </button>
+                    <button
+                      onClick={() => setFeeRateType('half_hour')}
+                      className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${feeRateType === 'half_hour' ? 'bg-orange-500/10 border-orange-500/50 text-orange-500' : 'bg-muted/50 border-border/50 text-muted-foreground'}`}
+                    >
+                      Avg
+                    </button>
+                    <button
+                      onClick={() => setFeeRateType('fast')}
+                      className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${feeRateType === 'fast' ? 'bg-orange-500/10 border-orange-500/50 text-orange-500' : 'bg-muted/50 border-border/50 text-muted-foreground'}`}
+                    >
+                      Fast
+                    </button>
+                    <button
+                      onClick={() => setFeeRateType('custom')}
+                      className={`px-2 py-0.5 text-[10px] rounded border transition-colors ${feeRateType === 'custom' ? 'bg-orange-500/10 border-orange-500/50 text-orange-500' : 'bg-muted/50 border-border/50 text-muted-foreground'}`}
+                    >
+                      Custom
+                    </button>
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <Input
+                    id="fee-rate"
+                    type="number"
+                    min="1"
+                    value={sendFeeRate}
+                    onChange={(e) => {
+                      setSendFeeRate(parseInt(e.target.value) || 1);
+                      setFeeRateType('custom');
+                    }}
+                    className="font-mono text-sm pr-16"
+                  />
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground font-mono">
+                    sat/vB
+                  </div>
+                </div>
+
+                {isEstimatingFees && (
+                  <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" />
+                    Updating network fees...
+                  </div>
+                )}
+
+                <div className="p-3 bg-orange-500/5 rounded-xl border border-orange-500/10 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-xs text-muted-foreground">Network Fee</span>
+                    <div className="text-right">
+                      <p className="text-xs font-bold text-white">
+                        {/* Rough estimation for common transactions (input + 2 outputs) */}
+                        {truncateBtc((148 * sendFeeRate) / 100_000_000)} BTC
+                      </p>
+                      {btcPrice > 0 && (
+                        <p className="text-[10px] text-muted-foreground">
+                          ≈ ${((148 * sendFeeRate) / 100_000_000 * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="h-px bg-white/5" />
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm font-bold text-white">Total Charge</span>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-orange-400">
+                        {truncateBtc(parseFloat(sendAmount || '0') + (148 * sendFeeRate) / 100_000_000)} BTC
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setIsSendDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 bg-orange-600 hover:bg-orange-700 shadow-lg shadow-orange-500/20"
+                onClick={handleSendBtc}
+                disabled={isSending || !sendToAddress || !sendAmount || parseFloat(sendAmount) <= 0}
+              >
+                {isSending ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 mr-2" />
+                    Send Bitcoin
+                  </>
+                )}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {/* Total Balance */}
         {wallets.length > 0 && (
           <div className="bg-muted/30 rounded-lg p-4 border border-border/50">
             <p className="text-xs text-muted-foreground font-medium mb-2 uppercase tracking-wide">Total Balance</p>
             <div className="flex items-baseline gap-3">
               <p className="text-3xl font-light tracking-tight text-foreground font-mono">
-                {totalBalance.toFixed(4)} BTC
+                {truncateBtc(totalBalance)} BTC
               </p>
               {btcPrice > 0 && (
                 <p className="text-sm text-muted-foreground font-mono">
@@ -582,29 +849,29 @@ const BitcoinAssets: React.FC = () => {
             </div>
           ) : (
             wallets.map((wallet) => (
-                <div
-                  key={wallet.id}
-                  className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors space-y-3"
-                >
+              <div
+                key={wallet.id}
+                className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors space-y-3"
+              >
                 <div className="flex items-start justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="font-medium text-foreground text-sm">
-                          {wallet.label}
-                        </p>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-foreground text-sm">
+                        {wallet.label}
+                      </p>
                       <Badge variant="secondary" className="text-xs">
                         {wallet.wallet_type === 'mnemonic' ? 'Mnemonic' : 'Private Key'}
                       </Badge>
                     </div>
-                      <div className="flex items-center gap-2 mt-2">
-                        <p className="font-mono text-xs text-muted-foreground truncate">
-                          {shortAddress(wallet.address)}
-                        </p>
-                        <button
-                          onClick={() => handleCopyAddress(wallet.address)}
-                          className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
-                          title="Copy address"
-                        >
+                    <div className="flex items-center gap-2 mt-2">
+                      <p className="font-mono text-xs text-muted-foreground truncate">
+                        {shortAddress(wallet.address)}
+                      </p>
+                      <button
+                        onClick={() => handleCopyAddress(wallet.address)}
+                        className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0"
+                        title="Copy address"
+                      >
                         {addressCopied === wallet.address ? (
                           <CheckCircle2 className="w-4 h-4 text-green-600" />
                         ) : (
@@ -613,19 +880,33 @@ const BitcoinAssets: React.FC = () => {
                       </button>
                     </div>
                   </div>
-                    <div className="text-right ml-4 flex flex-col items-end gap-2">
-                      <div>
-                        <p className="font-semibold text-base text-foreground font-mono">
-                          {wallet.balance.toFixed(4)} BTC
+                  <div className="text-right ml-4 flex flex-col items-end gap-2">
+                    <div>
+                      <p className="font-semibold text-base text-foreground font-mono">
+                        {truncateBtc(wallet.balance)} BTC
+                      </p>
+                      {btcPrice > 0 && (
+                        <p className="text-xs text-muted-foreground mt-1 font-mono">
+                          ${(wallet.balance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
-                        {btcPrice > 0 && (
-                          <p className="text-xs text-muted-foreground mt-1 font-mono">
-                            ${(wallet.balance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </p>
-                        )}
+                      )}
                     </div>
                     {/* Action Buttons */}
                     <div className="flex gap-1 flex-wrap justify-end">
+                      {/* Send Button */}
+                      <button
+                        onClick={() => {
+                          setSelectedWalletForSend(wallet);
+                          setIsSendDialogOpen(true);
+                        }}
+                        className="px-2 py-1 text-xs bg-orange-50 text-orange-700 hover:bg-orange-100 rounded transition-colors flex items-center gap-1"
+                        title="Send Bitcoin"
+                        disabled={isLoading}
+                      >
+                        <Send className="w-3 h-3" />
+                        <span>Send</span>
+                      </button>
+
                       {/* Refresh Balance Button */}
                       <button
                         onClick={() => handleRefreshBalance(wallet.id)}
@@ -647,7 +928,7 @@ const BitcoinAssets: React.FC = () => {
                         <Download className="w-3 h-3" />
                         <span>Private Key</span>
                       </button>
-                      
+
                       {/* Export Mnemonic Button (only for mnemonic wallets) */}
                       {wallet.wallet_type === 'mnemonic' && (
                         <button
@@ -660,7 +941,7 @@ const BitcoinAssets: React.FC = () => {
                           <span>Mnemonic</span>
                         </button>
                       )}
-                      
+
                       {/* Delete Button */}
                       {deleteConfirm === wallet.id ? (
                         <>

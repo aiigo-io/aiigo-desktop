@@ -22,8 +22,8 @@ pub fn bitcoin_create_wallet_from_mnemonic(
     let master_xprv = Xpriv::new_master(Network::Bitcoin, &seed)
         .map_err(|e| format!("Failed to create master key: {}", e))?;
 
-    // Standard BIP44 derivation path: m/44'/0'/0'/0/0
-    let derivation_path = DerivationPath::from_str("m/44'/0'/0'/0/0")
+    // Standard BIP86 derivation path for Taproot: m/86'/0'/0'/0/0
+    let derivation_path = DerivationPath::from_str("m/86'/0'/0'/0/0")
         .map_err(|e| format!("Invalid derivation path: {}", e))?;
 
     let child_xprv = master_xprv

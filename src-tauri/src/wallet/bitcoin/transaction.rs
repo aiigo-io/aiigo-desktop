@@ -1,5 +1,5 @@
 use crate::wallet::transaction_types::{
-    BitcoinTransaction, SendBitcoinRequest, SendTransactionResponse,
+    BitcoinFeeEstimationResponse, BitcoinTransaction, SendBitcoinRequest, SendTransactionResponse,
     TransactionStatus, TransactionType,
 };
 use crate::DB;
@@ -8,7 +8,10 @@ use bdk::database::MemoryDatabase;
 use bdk::electrum_client::Client;
 use bdk::psbt::PsbtUtils;
 use bdk::{FeeRate, SignOptions, SyncOptions, Wallet};
-use bdk::bitcoin::Network;
+use bitcoin::bip32::{DerivationPath, Xpriv};
+use bitcoin::Network;
+use bdk::bitcoin::Network as BdkNetwork;
+use bip39::{Language, Mnemonic};
 use chrono::Utc;
 use serde::Deserialize;
 use std::str::FromStr;
@@ -268,6 +271,47 @@ async fn get_current_block_height() -> Result<u32, String> {
     Ok(height)
 }
 
+#[derive(Debug, Deserialize)]
+struct MempoolFees {
+    #[serde(rename = "fastestFee")]
+    fastest_fee: f32,
+    #[serde(rename = "halfHourFee")]
+    half_hour_fee: f32,
+    #[serde(rename = "hourFee")]
+    hour_fee: f32,
+}
+
+/// Estimate Bitcoin fees from mempool.space
+pub async fn estimate_bitcoin_fees() -> Result<BitcoinFeeEstimationResponse, String> {
+    let url = "https://mempool.space/api/v1/fees/recommended";
+    
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!("HTTP error: {}", response.status()));
+    }
+
+    let fees: MempoolFees = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse fee estimates: {}", e))?;
+
+    Ok(BitcoinFeeEstimationResponse {
+        fast: fees.fastest_fee,
+        half_hour: fees.half_hour_fee,
+        hour: fees.hour_fee,
+    })
+}
+
 /// Send Bitcoin transaction
 pub async fn send_bitcoin_transaction(
     request: SendBitcoinRequest,
@@ -305,31 +349,52 @@ pub async fn send_bitcoin_transaction(
 
     println!("[INFO] Wallet secret type: {}", secret_type);
 
-    // Reconstruct the wallet
-    let wallet = match secret_type.as_str() {
+    // Reconstruct the private key and descriptor
+    let secp = bitcoin::secp256k1::Secp256k1::new();
+    let descriptor = match secret_type.as_str() {
         "mnemonic" => {
-            let descriptor = format!("wpkh({}/84'/0'/0'/0/*)", secret_data);
-            println!("[INFO] Creating wallet with mnemonic descriptor");
-            Wallet::new(&descriptor, None, Network::Bitcoin, MemoryDatabase::default())
-                .map_err(|e| {
-                    println!("[ERROR] Failed to create wallet: {}", e);
-                    format!("Failed to create wallet: {}", e)
-                })?
+            // Replicate derivation from wallet.rs
+            let mnemonic = Mnemonic::parse_in_normalized(Language::English, &secret_data)
+                .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+            let seed = mnemonic.to_seed("");
+            let master_xprv = Xpriv::new_master(Network::Bitcoin, &seed)
+                .map_err(|e| format!("Failed to create master key: {}", e))?;
+            
+            // Use BIP86 derivation path for Taproot: m/86'/0'/0'/0/0
+            let derivation_path = DerivationPath::from_str("m/86'/0'/0'/0/0")
+                .map_err(|e| format!("Invalid derivation path: {}", e))?;
+            let child_xprv = master_xprv
+                .derive_priv(&secp, &derivation_path)
+                .map_err(|e| format!("Failed to derive child key: {}", e))?;
+            
+            let private_key = child_xprv.to_priv();
+            // Use tr() descriptor because wallet.rs generates P2TR addresses
+            format!("tr({})", private_key)
         }
         "private_key" | "private-key" => {
-            let descriptor = format!("wpkh({})", secret_data);
-            println!("[INFO] Creating wallet with private key descriptor");
-            Wallet::new(&descriptor, None, Network::Bitcoin, MemoryDatabase::default())
-                .map_err(|e| {
-                    println!("[ERROR] Failed to create wallet: {}", e);
-                    format!("Failed to create wallet: {}", e)
-                })?
+            // Use tr() descriptor because our wallet system uses P2TR (bc1p...)
+            format!("tr({})", secret_data)
         }
         _ => {
             println!("[ERROR] Unknown secret type: {}", secret_type);
             return Err(format!("Unknown secret type: {}", secret_type));
         }
     };
+
+    println!("[INFO] Creating wallet with descriptor: tr(SECRET)");
+    let bdk_network = match Network::Bitcoin {
+        Network::Bitcoin => BdkNetwork::Bitcoin,
+        Network::Testnet => BdkNetwork::Testnet,
+        Network::Regtest => BdkNetwork::Regtest,
+        Network::Signet => BdkNetwork::Signet,
+        _ => BdkNetwork::Bitcoin,
+    };
+
+    let wallet = Wallet::new(&descriptor, None, bdk_network, MemoryDatabase::default())
+        .map_err(|e| {
+            println!("[ERROR] Failed to create wallet: {}", e);
+            format!("Failed to create wallet: {}", e)
+        })?;
 
     // Connect to Electrum server
     println!("[INFO] Connecting to Electrum server...");
@@ -350,23 +415,44 @@ pub async fn send_bitcoin_transaction(
             format!("Failed to sync wallet: {}", e)
         })?;
     println!("[INFO] Wallet synced successfully");
+    
+    // Check balance
+    let balance = wallet.get_balance().map_err(|e| format!("Failed to get balance: {}", e))?;
+    let total_balance = balance.get_total();
+    println!("[INFO] Wallet total balance: {} satoshis", total_balance);
 
     // Parse recipient address
-    println!("[INFO] Parsing recipient address...");
-    let recipient = bdk::bitcoin::Address::from_str(&request.to_address)
+    let to_address = request.to_address.trim();
+    println!("[INFO] Parsing recipient address: {}", to_address);
+    let recipient = bdk::bitcoin::Address::from_str(to_address)
         .map_err(|e| {
-            println!("[ERROR] Invalid recipient address: {}", e);
+            println!("[ERROR] Invalid recipient address '{}': {}", to_address, e);
             format!("Invalid recipient address: {}", e)
         })?;
 
-    // Convert BTC to satoshis
-    let amount_satoshis = (request.amount * 100_000_000.0) as u64;
-    println!("[INFO] Amount in satoshis: {}", amount_satoshis);
+    // Validate network
+    if recipient.network != bdk_network {
+        println!("[ERROR] Network mismatch: expected {:?}, got {:?}", bdk_network, recipient.network);
+        return Err(format!("Address network mismatch: expected {:?}, got {:?}", bdk_network, recipient.network));
+    }
+
+    // Convert BTC to satoshis using floor to avoid rounding up sub-satoshi values
+    let amount_satoshis = (request.amount * 100_000_000.0).floor() as u64;
+    println!("[INFO] Requested amount in satoshis (truncated): {}", amount_satoshis);
 
     // Build transaction
     println!("[INFO] Building transaction...");
     let mut tx_builder = wallet.build_tx();
-    tx_builder.add_recipient(recipient.payload.script_pubkey(), amount_satoshis);
+    
+    // Auto-drain if amount is >= total balance
+    let should_drain = request.send_all.unwrap_or(false) || (amount_satoshis >= total_balance && total_balance > 0);
+    
+    if should_drain {
+        println!("[INFO] Using drain_wallet() to send all available funds");
+        tx_builder.drain_wallet().drain_to(recipient.payload.script_pubkey());
+    } else {
+        tx_builder.add_recipient(recipient.payload.script_pubkey(), amount_satoshis);
+    }
 
     // Set fee rate if provided
     if let Some(fee_rate) = request.fee_rate {

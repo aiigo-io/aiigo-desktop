@@ -103,6 +103,7 @@ pub struct SendBitcoinRequest {
     pub to_address: String,
     pub amount: f64, // in BTC
     pub fee_rate: Option<f64>, // satoshis per byte, optional
+    pub send_all: Option<bool>,
 }
 
 /// Request to send EVM transaction
@@ -110,7 +111,7 @@ pub struct SendBitcoinRequest {
 pub struct SendEvmRequest {
     pub wallet_id: String,
     pub to_address: String,
-    pub amount: String, // in token units (e.g., "1.5" for 1.5 ETH)
+    pub amount: String, // in base units (e.g., wei as string)
     pub chain: String,
     pub chain_id: u64,
     pub asset_symbol: String,
@@ -124,6 +125,21 @@ pub struct SendEvmRequest {
 pub struct SendTransactionResponse {
     pub tx_hash: String,
     pub message: String,
+}
+
+/// Response for EVM gas estimation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvmGasEstimationResponse {
+    pub gas_limit: u64,
+    pub gas_price: String, // in wei as string
+}
+
+/// Response for Bitcoin fee estimation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinFeeEstimationResponse {
+    pub fast: f32,
+    pub half_hour: f32,
+    pub hour: f32,
 }
 
 /// Request to send a raw EVM transaction (for OpenOcean swaps)

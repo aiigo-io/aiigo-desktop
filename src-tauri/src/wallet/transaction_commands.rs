@@ -1,8 +1,8 @@
-use crate::wallet::bitcoin::transaction as btc_transaction;
+use crate::wallet::bitcoin::transaction as bitcoin_transaction;
 use crate::wallet::evm::transaction as evm_transaction;
 use crate::wallet::transaction_types::{
-    BitcoinTransaction, EvmTransaction, SendBitcoinRequest, SendEvmRequest,
-    SendTransactionResponse,
+    BitcoinFeeEstimationResponse, BitcoinTransaction, EvmTransaction, SendBitcoinRequest,
+    SendEvmRequest, SendTransactionResponse,
 };
 use crate::DB;
 
@@ -10,7 +10,12 @@ use crate::DB;
 
 #[tauri::command]
 pub async fn send_bitcoin(request: SendBitcoinRequest) -> Result<SendTransactionResponse, String> {
-    btc_transaction::send_bitcoin_transaction(request).await
+    bitcoin_transaction::send_bitcoin_transaction(request).await
+}
+
+#[tauri::command]
+pub async fn bitcoin_estimate_fees() -> Result<BitcoinFeeEstimationResponse, String> {
+    bitcoin_transaction::estimate_bitcoin_fees().await
 }
 
 #[tauri::command]
@@ -32,7 +37,7 @@ pub async fn fetch_bitcoin_history(
     wallet_id: String,
     address: String,
 ) -> Result<Vec<BitcoinTransaction>, String> {
-    btc_transaction::fetch_bitcoin_transaction_history(wallet_id, address).await
+    bitcoin_transaction::fetch_bitcoin_transaction_history(wallet_id, address).await
 }
 
 // EVM Transaction Commands
@@ -40,6 +45,13 @@ pub async fn fetch_bitcoin_history(
 #[tauri::command]
 pub async fn send_evm(request: SendEvmRequest) -> Result<SendTransactionResponse, String> {
     evm_transaction::send_evm_transaction(request).await
+}
+
+#[tauri::command]
+pub async fn evm_estimate_gas(
+    request: SendEvmRequest,
+) -> Result<crate::wallet::transaction_types::EvmGasEstimationResponse, String> {
+    evm_transaction::estimate_evm_gas(request).await
 }
 
 #[tauri::command]

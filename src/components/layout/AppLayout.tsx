@@ -3,6 +3,8 @@ import { Outlet } from 'react-router-dom';
 
 import { Sidebar } from '@/components/common/Sidebar';
 import { AppHeader } from '@/components/common/AppHeader';
+import { Toaster } from '@/components/ui/sonner';
+
 const AppLayout: React.FC = () => {
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col">
@@ -13,6 +15,7 @@ const AppLayout: React.FC = () => {
           <Outlet />
         </div>
       </main>
+      <Toaster position="top-right" />
     </div>
   );
 };
