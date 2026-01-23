@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
-import { ArrowUpRight, ArrowDownLeft, RefreshCw, Send, ExternalLink } from 'lucide-react';
+import { ArrowUpRight, ArrowDownLeft, RefreshCw, Send, ExternalLink, ShieldCheck, Code } from 'lucide-react';
 import { cn, shortAddress, getEvmExplorerUrl, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
 
 interface BitcoinTransaction {
@@ -27,7 +27,7 @@ interface EvmTransaction {
   id: string;
   wallet_id: string;
   tx_hash: string;
-  tx_type: 'send' | 'receive';
+  tx_type: 'send' | 'receive' | 'approve' | 'contract';
   from_address: string;
   to_address: string;
   amount: string;
@@ -175,7 +175,7 @@ const Transactions: React.FC = () => {
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
               <span className="font-medium text-sm">
-                {isSend ? 'Sent Bitcoin' : 'Received Bitcoin'}
+                {isSend ? 'Send Bitcoin' : 'Receive Bitcoin'}
               </span>
               <Badge variant="outline" className={cn("text-xs", getStatusColor(tx.status))}>
                 {tx.status}
@@ -214,25 +214,57 @@ const Transactions: React.FC = () => {
 
   const EvmTransactionRow: React.FC<{ tx: EvmTransaction }> = ({ tx }) => {
     const isSend = tx.tx_type === 'send';
+    const isReceive = tx.tx_type === 'receive';
+    const isApprove = tx.tx_type === 'approve';
+    const isContract = tx.tx_type === 'contract';
+
+    const getIcon = () => {
+      if (isSend) return <ArrowUpRight className="w-5 h-5 text-red-500" />;
+      if (isReceive) return <ArrowDownLeft className="w-5 h-5 text-green-500" />;
+      if (isApprove) return <ShieldCheck className="w-5 h-5 text-blue-500" />;
+      if (isContract) return <Code className="w-5 h-5 text-purple-500" />;
+      return <Send className="w-5 h-5 text-muted-foreground" />;
+    };
+
+    const getIconBg = () => {
+      if (isSend) return "bg-red-500/10";
+      if (isReceive) return "bg-green-500/10";
+      if (isApprove) return "bg-blue-500/10";
+      if (isContract) return "bg-purple-500/10";
+      return "bg-muted";
+    };
+
+    const getLabel = () => {
+      if (isSend) return `Send ${tx.asset_symbol}`;
+      if (isReceive) return `Receive ${tx.asset_symbol}`;
+      if (isApprove) return `Approve ${tx.asset_symbol}`;
+      if (isContract) return "Contract Interaction";
+      return "Unknown Transaction";
+    };
+
+    const getAmountColor = () => {
+      if (isSend || isApprove || isContract) return "text-red-500";
+      if (isReceive) return "text-green-500";
+      return "";
+    };
+
+    const getAmountPrefix = () => {
+      if (isSend || isApprove || isContract) return "-";
+      if (isReceive) return "+";
+      return "";
+    };
 
     return (
       <div className="flex items-center justify-between p-4 border-b border-border/50 hover:bg-muted/50 transition-colors">
         <div className="flex items-center gap-4 flex-1">
-          <div className={cn(
-            "p-2 rounded-full",
-            isSend ? "bg-red-500/10" : "bg-green-500/10"
-          )}>
-            {isSend ? (
-              <ArrowUpRight className="w-5 h-5 text-red-500" />
-            ) : (
-              <ArrowDownLeft className="w-5 h-5 text-green-500" />
-            )}
+          <div className={cn("p-2 rounded-full", getIconBg())}>
+            {getIcon()}
           </div>
 
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
               <span className="font-medium text-sm">
-                {isSend ? `Sent ${tx.asset_symbol}` : `Received ${tx.asset_symbol}`}
+                {getLabel()}
               </span>
               <Badge variant="outline" className="text-xs">
                 {tx.chain}
@@ -248,14 +280,11 @@ const Transactions: React.FC = () => {
           </div>
 
           <div className="text-right">
-            <div className={cn(
-              "font-semibold text-sm mb-1",
-              isSend ? "text-red-500" : "text-green-500"
-            )}>
-              {isSend ? '-' : '+'}{tx.amount_float.toFixed(6)} {tx.asset_symbol}
+            <div className={cn("font-semibold text-sm mb-1", getAmountColor())}>
+              {getAmountPrefix()}{tx.amount_float.toFixed(6)} {tx.asset_symbol}
             </div>
             <div className="text-xs text-muted-foreground">
-              Fee: {tx.fee.toFixed(6)} ETH
+              Fee: {tx.fee.toFixed(6)} {tx.chain === 'BSC' ? 'BNB' : (tx.chain === 'Polygon' ? 'POL' : 'ETH')}
             </div>
           </div>
 

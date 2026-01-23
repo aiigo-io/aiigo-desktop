@@ -34,6 +34,8 @@ impl TransactionStatus {
 pub enum TransactionType {
     Send,
     Receive,
+    Approve,
+    Contract,
 }
 
 impl TransactionType {
@@ -41,6 +43,8 @@ impl TransactionType {
         match self {
             TransactionType::Send => "send",
             TransactionType::Receive => "receive",
+            TransactionType::Approve => "approve",
+            TransactionType::Contract => "contract",
         }
     }
 
@@ -48,6 +52,8 @@ impl TransactionType {
         match s {
             "send" => TransactionType::Send,
             "receive" => TransactionType::Receive,
+            "approve" => TransactionType::Approve,
+            "contract" => TransactionType::Contract,
             _ => TransactionType::Receive,
         }
     }

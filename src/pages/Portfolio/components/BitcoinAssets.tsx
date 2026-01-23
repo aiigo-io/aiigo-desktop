@@ -110,18 +110,13 @@ const BitcoinAssets: React.FC = () => {
 
   const fetchBtcPrice = async () => {
     try {
-      // Using CoinGecko API (free, no auth required)
-      const response = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-      const data = await response.json();
-
-      if (data?.bitcoin?.usd) {
-        setBtcPrice(data.bitcoin.usd);
-      }
+      const price = await invoke<number>('get_bitcoin_price');
+      setBtcPrice(price);
     } catch (error) {
-      console.error('Error fetching BTC price:', error);
+      console.error('Error fetching BTC price from backend:', error);
       // Fallback to a reasonable default if API fails
       if (btcPrice === 0) {
-        setBtcPrice(50000); // Reasonable fallback
+        setBtcPrice(95000); // Reasonable fallback
       }
     }
   };

@@ -13,11 +13,14 @@ const CACHE_DURATION_SECS: u64 = 60; // Cache prices for 60 seconds
 struct PriceData {
     #[serde(default)]
     usd: Option<f64>,
+    #[serde(default)]
+    usd_24h_change: Option<f64>,
 }
 
 // Simple in-memory cache
 struct PriceCache {
-    prices: HashMap<String, f64>,
+    // coin_id -> (price, 24h_change)
+    prices: HashMap<String, (f64, f64)>,
     last_update: Option<Instant>,
 }
 
@@ -37,42 +40,60 @@ fn get_coingecko_id(symbol: &str) -> Option<&'static str> {
         "USDC" => Some("usd-coin"),
         "MATIC" => Some("matic-network"),
         "BNB" => Some("binancecoin"),
+        "DAI" => Some("dai"),
         _ => None,
     }
 }
 
-/// Fetch USD prices for multiple crypto assets
-pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, String> {
-    // Check cache first
+/// Check if a symbol is a stablecoin and return its fixed price
+fn get_stablecoin_price(symbol: &str) -> Option<f64> {
+    match symbol.to_uppercase().as_str() {
+        "USDT" | "USDC" | "DAI" => Some(1.0),
+        _ => None,
+    }
+}
+
+/// Fetch USD prices and 24h changes for multiple crypto assets
+pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, f64)>, String> {
+    let mut result = HashMap::new();
+    let mut symbols_to_fetch = Vec::new();
+
+    // 1. Handle stablecoins and check cache
     {
         let cache = PRICE_CACHE.lock().unwrap();
-        if let Some(last_update) = cache.last_update {
-            if last_update.elapsed().as_secs() < CACHE_DURATION_SECS {
-                // Cache is still valid
-                let mut result = HashMap::new();
-                for symbol in &symbols {
-                    if let Some(coingecko_id) = get_coingecko_id(symbol) {
-                        if let Some(&price) = cache.prices.get(coingecko_id) {
-                            result.insert(symbol.clone(), price);
-                        }
+        let cache_valid = cache.last_update.map_or(false, |last| {
+            last.elapsed().as_secs() < CACHE_DURATION_SECS
+        });
+
+        for symbol in &symbols {
+            if let Some(price) = get_stablecoin_price(symbol) {
+                result.insert(symbol.clone(), (price, 0.0));
+            } else if cache_valid {
+                if let Some(coingecko_id) = get_coingecko_id(symbol) {
+                    if let Some(&data) = cache.prices.get(coingecko_id) {
+                        result.insert(symbol.clone(), data);
+                    } else {
+                        symbols_to_fetch.push(symbol.clone());
                     }
                 }
-                if !result.is_empty() {
-                    tracing::info!(age_seconds=%last_update.elapsed().as_secs(), "Using cached prices");
-                    return Ok(result);
-                }
+            } else {
+                symbols_to_fetch.push(symbol.clone());
             }
         }
     }
 
+    if symbols_to_fetch.is_empty() {
+        return Ok(result);
+    }
+
     // Convert symbols to CoinGecko IDs
-    let ids: Vec<String> = symbols
+    let ids: Vec<String> = symbols_to_fetch
         .iter()
         .filter_map(|symbol| get_coingecko_id(symbol).map(|id| id.to_string()))
         .collect();
 
     if ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(result);
     }
 
     // Create a unique set of IDs
@@ -99,9 +120,11 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
                 // Map CoinGecko IDs back to symbols
                 let mut result = HashMap::new();
                 for symbol in &symbols {
-                    if let Some(coingecko_id) = get_coingecko_id(symbol) {
-                        if let Some(&price) = response_map.get(coingecko_id) {
-                            result.insert(symbol.clone(), price);
+                    if let Some(price) = get_stablecoin_price(symbol) {
+                         result.insert(symbol.clone(), (price, 0.0));
+                    } else if let Some(coingecko_id) = get_coingecko_id(symbol) {
+                        if let Some(&data) = response_map.get(coingecko_id) {
+                            result.insert(symbol.clone(), data);
                         }
                     }
                 }
@@ -122,27 +145,29 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, f64>, 
                         tracing::info!("Using stale cache as fallback");
                         let mut result = HashMap::new();
                         for symbol in &symbols {
-                            if let Some(coingecko_id) = get_coingecko_id(symbol) {
-                                if let Some(&price) = cache.prices.get(coingecko_id) {
-                                    result.insert(symbol.clone(), price);
+                             if let Some(price) = get_stablecoin_price(symbol) {
+                                result.insert(symbol.clone(), (price, 0.0));
+                            } else if let Some(coingecko_id) = get_coingecko_id(symbol) {
+                                if let Some(&data) = cache.prices.get(coingecko_id) {
+                                    result.insert(symbol.clone(), data);
                                 }
                             }
                         }
                         return Ok(result);
                     }
-                    // Return empty map instead of error to allow wallet queries to continue
-                    return Ok(HashMap::new());
+                    // Return what we have (stablecoins)
+                    return Ok(result);
                 }
             }
         }
     }
 
-    Ok(HashMap::new())
+    Ok(result)
 }
 
-async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
+async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, (f64, f64)>, String> {
     let url = format!(
-        "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd",
+        "https://api.coingecko.com/api/v3/simple/price?ids={}&vs_currencies=usd&include_24hr_change=true",
         ids
     );
 
@@ -172,11 +197,12 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, f64>, String> {
     let parsed: HashMap<String, PriceData> = serde_json::from_str(&text)
         .map_err(|e| format!("Failed to parse JSON: {}. Response was: {}", e, text))?;
 
-    // Extract just the USD prices, skipping coins with missing data
+    // Extract price and 24h change
     let mut result = HashMap::new();
     for (coin_id, price_data) in parsed {
         if let Some(usd_price) = price_data.usd {
-            result.insert(coin_id, usd_price);
+            let change = price_data.usd_24h_change.unwrap_or(0.0);
+            result.insert(coin_id, (usd_price, change));
         } else {
             tracing::warn!(coin_id=%coin_id, "Missing USD price data");
         }
@@ -191,7 +217,7 @@ pub async fn fetch_price(symbol: &str) -> Result<f64, String> {
     let prices = fetch_prices(vec![symbol.to_string()]).await?;
     prices
         .get(symbol)
-        .copied()
+        .map(|(price, _)| *price)
         .ok_or_else(|| format!("Price not found for {}", symbol))
 }
 
@@ -218,4 +244,9 @@ mod tests {
         // Just check that it doesn't error - actual price will vary
         assert!(result.is_ok() || result.is_err());
     }
+}
+
+#[tauri::command]
+pub async fn get_bitcoin_price() -> Result<f64, String> {
+    fetch_price("BTC").await
 }

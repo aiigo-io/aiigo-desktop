@@ -9,7 +9,6 @@ use dotenvy::dotenv;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
-use tauri::Manager;
 
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 
@@ -73,13 +72,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(WindowStatePlugin::default().build())
-        .setup(|_app| {
-            // if let Some(window) = app.get_webview_window("main") {
-            //     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
-            //         width: 1000.0,
-            //         height: 800.0,
-            //     }));
-            // }
+        .setup(|app| {
+            // Initialize price manager with background refresh
+            tauri::async_runtime::spawn(async move {
+                wallet::evm::price_manager::start_background_refresh().await;
+            });
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -123,7 +121,7 @@ pub fn run() {
             dashboard::commands::refresh_dashboard_stats,
             dashboard::commands::get_portfolio_history,
             dashboard::commands::get_asset_allocation,
-            dashboard::commands::get_top_movers,
+            dashboard::commands::get_unified_recent_transactions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

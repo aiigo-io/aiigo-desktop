@@ -36,8 +36,8 @@ const Sidebar: React.FC = () => {
   const mainNavItems: NavItem[] = [
     { icon: LayoutDashboard, label: 'Dashboard', href: '/' },
     { icon: Wallet, label: 'Portfolio', href: '/portfolio' },
-    { icon: ArrowRightLeft, label: 'Transactions', href: '/transactions' },
     { icon: RefreshCw, label: 'Swap', href: '/swap' },
+    { icon: ArrowRightLeft, label: 'Transactions', href: '/transactions' },
   ];
 
   const secondaryNavItems: NavItem[] = [

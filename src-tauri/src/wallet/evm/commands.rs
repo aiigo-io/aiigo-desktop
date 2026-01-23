@@ -35,16 +35,20 @@ pub async fn evm_get_wallet_with_balances(wallet_id: String) -> Result<EvmWallet
 
     let chains_config = get_all_chains();
 
-    // Collect all unique asset symbols across all chains for batch price fetching
+    // Collect all unique asset symbols across all chains
     let symbol_set: HashSet<String> = chains_config
         .iter()
         .flat_map(|chain| chain.assets())
         .map(|asset| asset.symbol.clone())
         .collect();
-    let all_symbols: Vec<String> = symbol_set.into_iter().collect();
 
-    // Fetch all prices at once
-    let prices_map = price::fetch_prices(all_symbols).await.unwrap_or_default();
+    // Get all prices from cache (background task keeps them fresh)
+    let mut prices_map = std::collections::HashMap::new();
+    for symbol in symbol_set {
+        if let Some(price) = super::price_manager::get_cached_price(&symbol) {
+            prices_map.insert(symbol, price);
+        }
+    }
     let prices = Arc::new(prices_map);
 
     let concurrency_limit = chain_concurrency_limit();

@@ -481,8 +481,14 @@ const EvmAssets: React.FC = () => {
     }
   };
 
+  const getWalletMainnetBalance = (wallet: EvmWalletInfo) => {
+    return wallet.chains
+      .filter(chain => chain.chain_id !== 11155111) // Exclude Sepolia
+      .reduce((sum, chain) => sum + chain.total_balance_usd, 0);
+  };
+
   const totalBalance = Array.from(walletsWithBalances.values()).reduce(
-    (sum, wallet) => sum + wallet.total_balance_usd,
+    (sum, wallet) => sum + getWalletMainnetBalance(wallet),
     0
   );
 
@@ -1056,7 +1062,7 @@ const EvmAssets: React.FC = () => {
                     <div className="text-right ml-4 flex flex-col items-end gap-2">
                       <div>
                         <p className="font-semibold text-base text-foreground font-mono">
-                          ${(walletWithBalances?.total_balance_usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ${(walletWithBalances ? getWalletMainnetBalance(walletWithBalances) : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                         <p className="text-xs text-muted-foreground mt-1">
                           {lastRefresh ? `Updated: ${lastRefresh.toLocaleTimeString()}` : 'Loading...'}

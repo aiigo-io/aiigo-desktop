@@ -44,6 +44,10 @@ struct EtherscanTransaction {
     token_symbol: Option<String>,
     #[serde(rename = "tokenDecimal")]
     token_decimal: Option<String>,
+    #[serde(default)]
+    input: String,
+    #[serde(rename = "methodId", default)]
+    method_id: String,
 }
 
 impl Default for EtherscanTransaction {
@@ -63,6 +67,8 @@ impl Default for EtherscanTransaction {
             token_name: None,
             token_symbol: None,
             token_decimal: None,
+            input: String::new(),
+            method_id: String::new(),
         }
     }
 }
@@ -115,8 +121,16 @@ pub async fn fetch_evm_transaction_history(
         .unwrap_or_else(|| "ETH".to_string());
 
     for tx in all_transactions {
-        let tx_type = if tx.from.to_lowercase() == address.to_lowercase() {
-            TransactionType::Send
+        let is_from_me = tx.from.to_lowercase() == address.to_lowercase();
+        
+        let tx_type = if is_from_me {
+            if tx.method_id == "0x095ea7b3" || tx.input.starts_with("0x095ea7b3") {
+                TransactionType::Approve
+            } else if !tx.input.is_empty() && tx.input != "0x" {
+                TransactionType::Contract
+            } else {
+                TransactionType::Send
+            }
         } else {
             TransactionType::Receive
         };
