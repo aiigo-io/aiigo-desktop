@@ -109,18 +109,18 @@ Organizations or individuals who need computing power.
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           BLOCKCHAIN LAYER                                  │
+│                    SIMPLIFIED BLOCKCHAIN LAYER                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐            │
-│  │  AIIGO     │  │   Node     │  │   Task     │  │  Staking   │            │
-│  │  Token     │  │  Registry  │  │ Marketplace│  │   Pool     │            │
+│  │   Node     │  │   Task     │  │   Escrow   │  │    PoW     │            │
+│  │  Registry  │  │ Marketplace│  │  Manager   │  │  Verifier  │            │
+│  │            │  │            │  │            │  │            │            │
+│  │ ETH-based  │  │ ETH/USDC   │  │  Payment   │  │  Compute   │            │
+│  │  Staking   │  │  Trading   │  │  Custody   │  │   Proof    │            │
 │  └────────────┘  └────────────┘  └────────────┘  └────────────┘            │
 │                                                                             │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐                            │
-│  │   Escrow   │  │   PoW      │  │ Governor   │                            │
-│  │  Contract  │  │ Verifier   │  │   (DAO)    │                            │
-│  └────────────┘  └────────────┘  └────────────┘                            │
+│  Removed: AIIGO Token, StakingPool, RewardDistributor, Governor (DAO)      │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -251,86 +251,78 @@ AIIGO-owned infrastructure for guaranteed capacity.
 
 ---
 
-## Token Economics
+## Simplified Economics (ETH-Only)
 
-### AIIGO Token Utility
+### Payment Flow
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    AIIGO TOKEN FLOW                     │
+│                ETH PAYMENT FLOW (SIMPLIFIED)            │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
 │  ┌─────────────┐                                        │
 │  │  PROVIDERS  │                                        │
 │  │             │                                        │
-│  │  • Stake to │──────────┐                             │
-│  │    register │          │                             │
-│  │             │          ▼                             │
-│  │  • Earn     │    ┌───────────┐                       │
-│  │    rewards  │◀───│  STAKING  │                       │
-│  └─────────────┘    │   POOL    │                       │
-│                     └─────┬─────┘                       │
+│  │  • Deposit  │──────────┐                             │
+│  │    ETH      │          │                             │
+│  │    stake    │          ▼                             │
+│  │             │    ┌───────────┐                       │
+│  │  • Earn ETH │◀───│   NODE    │                       │
+│  │    directly │    │ REGISTRY  │                       │
+│  └─────────────┘    └───────────┘                       │
+│                                                         │
+│  ┌─────────────┐                                        │
+│  │   BUYERS    │                                        │
+│  │             │                                        │
+│  │  • Pay ETH  │    ┌───────────┐                       │
+│  │  • Pay USDC │───▶│  ESCROW   │                       │
+│  │             │    │  MANAGER  │                       │
+│  └─────────────┘    └─────┬─────┘                       │
 │                           │                             │
-│  ┌─────────────┐          │                             │
-│  │   BUYERS    │          │                             │
-│  │             │          ▼                             │
-│  │  • Pay with │    ┌───────────┐     ┌───────────┐    │
-│  │    ETH/USDC │───▶│  PLATFORM │────▶│ TREASURY  │    │
-│  │             │    │   FEES    │     │           │    │
-│  │  • Discount │    └───────────┘     └─────┬─────┘    │
-│  │    with     │                            │          │
-│  │    AIIGO    │                            ▼          │
-│  └─────────────┘                      ┌───────────┐    │
-│                                       │ GOVERNANCE│    │
-│  ┌─────────────┐                      │   (DAO)   │    │
-│  │  STAKERS    │                      └───────────┘    │
-│  │             │                                        │
-│  │  • Lock     │                                        │
-│  │    tokens   │                                        │
-│  │             │                                        │
-│  │  • Earn     │                                        │
-│  │    yield    │                                        │
-│  │             │                                        │
-│  │  • Vote on  │                                        │
-│  │    proposals│                                        │
-│  └─────────────┘                                        │
+│                           ▼                             │
+│                    ┌───────────┐                        │
+│                    │ TASK DONE │                        │
+│                    └─────┬─────┘                        │
+│                          │                              │
+│        ┌─────────────────┼─────────────────┐            │
+│        │                 │                 │            │
+│        ▼                 ▼                 ▼            │
+│   92% to            8% Platform      Treasury           │
+│   Provider              Fee          Accumulates        │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Token Distribution
-
-| Allocation | Percentage | Vesting |
-|------------|------------|---------|
-| Community Rewards | 40% | Released over 4 years |
-| Team & Advisors | 15% | 1 year cliff, 3 year vest |
-| Platform Treasury | 20% | DAO controlled |
-| Private Sale | 10% | 6 month cliff, 2 year vest |
-| Public Sale | 10% | Immediate |
-| Ecosystem Fund | 5% | DAO controlled |
-
-### Fee Structure
+### Fee Structure (ETH-Based)
 
 | Action | Fee | Recipient |
 |--------|-----|-----------|
-| Task Completion | 8% | Platform Treasury |
-| Early Unstake | 5% | Burn |
-| Dispute Resolution | 2% | Arbitrators |
-| Node Registration | 0.1 ETH | Treasury |
+| Node Registration | 0.1 ETH | Platform Treasury (one-time) |
+| Task Completion | 8% of task value | Platform Treasury |
+| Dispute Resolution | 2% of escrowed amount | Arbitrator pool |
+| Early Stake Withdrawal | No penalty (cooldown period only) |
+| Slashing (violations) | Up to 50% of stake | Platform Treasury |
 
 ---
 
-## Provider Earnings Model
+## Provider Earnings Model (Simplified)
 
 ### Revenue Calculation
 
 ```
-Provider Earnings = (Task Revenue × 92%) + Staking Rewards + Bonuses
+Provider Earnings = Task Revenue × 92%
 
 Where:
 - Task Revenue = Hours × Hourly Rate × Utilization
-- Staking Rewards = Staked Amount × APY × Time
-- Bonuses = Referral + Uptime + Performance
+- No staking rewards (just collateral)
+- No token bonuses (simplified marketplace)
+```
+
+**Example Calculation:**
+```
+Task Value: 1 ETH for 10 hours of GPU compute
+Provider receives: 1 ETH × 92% = 0.92 ETH
+Platform keeps: 1 ETH × 8% = 0.08 ETH
 ```
 
 ### Example Earnings (Monthly)
@@ -391,34 +383,36 @@ Where:
 
 ## Security & Trust
 
-### Provider Verification Levels
+### Provider Verification Levels (ETH-Based)
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                 TRUST LEVELS                            │
+│              ETH-BASED TRUST LEVELS                     │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
 │  LEVEL 1: Basic                                         │
-│  ├── Wallet connected                                   │
-│  ├── Minimum stake (100 AIIGO)                          │
-│  └── Access: Small tasks only                           │
+│  ├── ETH stake: 0.5 ETH minimum                         │
+│  ├── Registration fee paid: 0.1 ETH                     │
+│  └── Access: Small tasks only (<$100 value)             │
 │                                                         │
 │  LEVEL 2: Verified                                      │
+│  ├── ETH stake: 1+ ETH                                  │
 │  ├── 10+ successful PoW challenges                      │
-│  ├── Medium stake (1,000 AIIGO)                         │
-│  └── Access: Standard marketplace                       │
+│  ├── Basic reputation (50%+ success)                    │
+│  └── Access: Standard marketplace (all public tasks)    │
 │                                                         │
 │  LEVEL 3: Trusted                                       │
+│  ├── ETH stake: 3+ ETH                                  │
 │  ├── 100+ tasks completed                               │
 │  ├── 95%+ success rate                                  │
-│  ├── High stake (10,000 AIIGO)                          │
 │  └── Access: Enterprise + Priority matching             │
 │                                                         │
 │  LEVEL 4: Partner                                       │
-│  ├── Business verification (optional)                   │
-│  ├── SLA commitment                                     │
-│  ├── Insurance bond                                     │
-│  └── Access: Direct enterprise contracts                │
+│  ├── ETH stake: 5+ ETH                                  │
+│  ├── SLA commitment signed                              │
+│  ├── Insurance bond (additional)                        │
+│  ├── Optional business verification                     │
+│  └── Access: Direct enterprise contracts + Whitelabel   │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -436,33 +430,34 @@ Where:
 
 ## Solidity Implementation Design
 
-### Smart Contract Architecture
+### Simplified Architecture (Marketplace Only)
+
+This design focuses purely on the computing power marketplace without token governance complexity.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        SMART CONTRACT ARCHITECTURE                          │
+│                   SIMPLIFIED SMART CONTRACT ARCHITECTURE                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
 │  │                         CORE CONTRACTS                              │   │
 │  ├─────────────────────────────────────────────────────────────────────┤   │
 │  │                                                                     │   │
+│  │                      ┌──────────────┐                              │   │
+│  │                      │ NodeRegistry │                              │   │
+│  │                      │              │                              │   │
+│  │                      │ • ETH Stake  │                              │   │
+│  │                      │ • Reputation │                              │   │
+│  │                      └──────┬───────┘                              │   │
+│  │                             │                                      │   │
+│  │                             ▼                                      │   │
 │  │  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐       │   │
-│  │  │  AIIGOToken  │     │ NodeRegistry │     │   Staking    │       │   │
-│  │  │   (ERC20)    │────▶│              │◀───▶│    Pool      │       │   │
-│  │  └──────────────┘     └──────┬───────┘     └──────────────┘       │   │
-│  │                              │                                     │   │
-│  │                              ▼                                     │   │
-│  │  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐       │   │
-│  │  │    Escrow    │◀───▶│    Task      │◀───▶│   PoW        │       │   │
-│  │  │   Manager    │     │  Marketplace │     │  Verifier    │       │   │
+│  │  │   Escrow     │◀───▶│    Task      │◀───▶│    PoW       │       │   │
+│  │  │   Manager    │     │ Marketplace  │     │  Verifier    │       │   │
+│  │  │              │     │              │     │              │       │   │
+│  │  │ ETH/USDC     │     │ ETH/USDC     │     │ Verify Power │       │   │
+│  │  │ Custody      │     │ Payments     │     │              │       │   │
 │  │  └──────────────┘     └──────────────┘     └──────────────┘       │   │
-│  │                              │                                     │   │
-│  │                              ▼                                     │   │
-│  │  ┌──────────────┐     ┌──────────────┐                            │   │
-│  │  │   Reward     │     │  Governor    │                            │   │
-│  │  │ Distributor  │     │    (DAO)     │                            │   │
-│  │  └──────────────┘     └──────────────┘                            │   │
 │  │                                                                     │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
@@ -471,51 +466,32 @@ Where:
 │  ├─────────────────────────────────────────────────────────────────────┤   │
 │  │                                                                     │   │
 │  │  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐       │   │
-│  │  │AccessControl │     │  Pausable    │     │ReentrancyGua │       │   │
+│  │  │   Ownable    │     │  Pausable    │     │ReentrancyGua │       │   │
 │  │  │(OpenZeppelin)│     │(OpenZeppelin)│     │(OpenZeppelin)│       │   │
 │  │  └──────────────┘     └──────────────┘     └──────────────┘       │   │
 │  │                                                                     │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
+│  Key Changes:                                                               │
+│  • Removed: AIIGOToken (no governance token)                                │
+│  • Removed: StakingPool (no token staking)                                  │
+│  • Removed: RewardDistributor (direct ETH payments)                         │
+│  • Removed: Governor (no DAO - owner-controlled)                            │
+│  • Simplified: ETH-based deposits and payments only                         │
+│                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Contract Specifications
-
-#### 1. AIIGOToken.sol
-**Purpose:** ERC20 governance token with vote delegation support
-
-```solidity
-// SPDX-License-Identifier: MIT
-// Key interfaces and data structures
-
-interface IAIIGOToken {
-    // ERC20 + ERC20Votes standard functions
-    function mint(address to, uint256 amount) external;
-    function burn(uint256 amount) external;
-
-    // Governance
-    function delegate(address delegatee) external;
-    function getVotes(address account) external view returns (uint256);
-    function getPastVotes(address account, uint256 blockNumber) external view returns (uint256);
-}
-
-// Events
-event TokensMinted(address indexed to, uint256 amount);
-event TokensBurned(address indexed from, uint256 amount);
-event DelegateChanged(address indexed delegator, address indexed fromDelegate, address indexed toDelegate);
+**Payment Flow (Simplified):**
+```
+Buyer deposits ETH/USDC → Escrow → Task completed → Provider receives 92% → Platform 8%
+No tokens, no staking rewards, no governance - just pure marketplace economics
 ```
 
-**Key Features:**
-- ERC20Votes extension for governance
-- Minting controlled by RewardDistributor
-- Burning mechanism for penalties
-- Total supply: 1,000,000,000 AIIGO
+### Simplified Contract Specifications
 
----
-
-#### 2. NodeRegistry.sol
-**Purpose:** Manages provider registration, status, and hardware inventory
+#### 1. NodeRegistry.sol
+**Purpose:** Manages provider registration, status, and hardware inventory with ETH-based deposits
 
 ```solidity
 // Key data structures
@@ -528,10 +504,10 @@ struct Node {
     NodeStatus status;
     ResourceType resourceType;
     uint256 computePower;     // Verified computing power (TFLOPS)
-    uint256 stakedAmount;     // AIIGO tokens staked
+    uint256 stakedAmount;     // ETH staked (in wei)
     uint256 reputation;       // 0-10000 (basis points)
     uint256 totalTasksCompleted;
-    uint256 totalEarnings;
+    uint256 totalEarnings;    // Total ETH earned (in wei)
     uint256 registeredAt;
     uint256 lastActiveAt;
     string metadataURI;       // IPFS URI for hardware specs
@@ -549,15 +525,24 @@ struct HardwareSpec {
 
 // Key functions
 interface INodeRegistry {
+    // Registration with ETH deposit (min 0.1 ETH registration + 0.5 ETH stake)
     function registerNode(
         ResourceType resourceType,
         string calldata metadataURI
-    ) external payable returns (bytes32 nodeId);
+    ) external payable returns (bytes32 nodeId); // Requires msg.value >= 0.6 ETH
 
-    function stakeForNode(bytes32 nodeId, uint256 amount) external;
-    function unstake(bytes32 nodeId, uint256 amount) external;
+    // Stake additional ETH
+    function addStake(bytes32 nodeId) external payable;
+
+    // Withdraw stake (only when node inactive and no pending tasks)
+    function withdrawStake(bytes32 nodeId, uint256 amount) external;
+
+    // Admin functions
     function updateNodeStatus(bytes32 nodeId, NodeStatus status) external;
     function updateReputation(bytes32 nodeId, int256 delta) external;
+    function slashStake(bytes32 nodeId, uint256 amount) external;
+
+    // View functions
     function getNode(bytes32 nodeId) external view returns (Node memory);
     function getNodesByOwner(address owner) external view returns (bytes32[] memory);
     function getActiveNodes(ResourceType resourceType) external view returns (bytes32[] memory);
@@ -574,32 +559,32 @@ event ReputationUpdated(bytes32 indexed nodeId, uint256 oldReputation, uint256 n
 event NodeSlashed(bytes32 indexed nodeId, uint256 slashedAmount, string reason);
 ```
 
-**Trust Level Calculation:**
+**Trust Level Calculation (ETH-based):**
 ```solidity
 function getNodeTrustLevel(bytes32 nodeId) public view returns (uint8) {
     Node memory node = nodes[nodeId];
 
-    // Level 4: Partner (10,000+ AIIGO, 95%+ success, SLA commitment)
-    if (node.stakedAmount >= 10000e18 &&
+    // Level 4: Partner (5+ ETH stake, 95%+ success, SLA commitment)
+    if (node.stakedAmount >= 5 ether &&
         node.reputation >= 9500 &&
         hasPartnerSLA[nodeId]) {
         return 4;
     }
 
-    // Level 3: Trusted (10,000+ AIIGO, 95%+ success rate, 100+ tasks)
-    if (node.stakedAmount >= 10000e18 &&
+    // Level 3: Trusted (3+ ETH stake, 95%+ success rate, 100+ tasks)
+    if (node.stakedAmount >= 3 ether &&
         node.reputation >= 9500 &&
         node.totalTasksCompleted >= 100) {
         return 3;
     }
 
-    // Level 2: Verified (1,000+ AIIGO, 10+ PoW challenges)
-    if (node.stakedAmount >= 1000e18 && powChallengesPassed[nodeId] >= 10) {
+    // Level 2: Verified (1+ ETH stake, 10+ PoW challenges)
+    if (node.stakedAmount >= 1 ether && powChallengesPassed[nodeId] >= 10) {
         return 2;
     }
 
-    // Level 1: Basic (100+ AIIGO, wallet connected)
-    if (node.stakedAmount >= 100e18) {
+    // Level 1: Basic (0.5+ ETH stake, registered)
+    if (node.stakedAmount >= 0.5 ether) {
         return 1;
     }
 
@@ -607,55 +592,16 @@ function getNodeTrustLevel(bytes32 nodeId) public view returns (uint8) {
 }
 ```
 
----
-
-#### 3. StakingPool.sol
-**Purpose:** Manages AIIGO token staking for providers and yield distribution
-
-```solidity
-struct StakeInfo {
-    uint256 amount;
-    uint256 startTime;
-    uint256 lockPeriod;       // Minimum lock duration
-    uint256 rewardDebt;       // For reward calculation
-    uint256 pendingRewards;
-}
-
-// Key functions
-interface IStakingPool {
-    function stake(uint256 amount, uint256 lockPeriod) external;
-    function unstake(uint256 amount) external;
-    function claimRewards() external;
-    function getStakeInfo(address staker) external view returns (StakeInfo memory);
-    function getPendingRewards(address staker) external view returns (uint256);
-    function getAPY() external view returns (uint256);
-    function getTotalStaked() external view returns (uint256);
-}
-
-// Events
-event Staked(address indexed staker, uint256 amount, uint256 lockPeriod);
-event Unstaked(address indexed staker, uint256 amount, uint256 penalty);
-event RewardsClaimed(address indexed staker, uint256 amount);
-event APYUpdated(uint256 oldAPY, uint256 newAPY);
-```
-
-**Early Unstake Penalty:**
-```solidity
-function calculateUnstakePenalty(address staker) public view returns (uint256) {
-    StakeInfo memory info = stakes[staker];
-
-    if (block.timestamp >= info.startTime + info.lockPeriod) {
-        return 0; // No penalty after lock period
-    }
-
-    // 5% penalty for early unstake
-    return (info.amount * EARLY_UNSTAKE_PENALTY) / 10000;
-}
-```
+**Stake Requirements:**
+- Registration Fee: 0.1 ETH (goes to platform)
+- Minimum Stake: 0.5 ETH (refundable, held as collateral)
+- Level 2: 1 ETH stake
+- Level 3: 3 ETH stake
+- Level 4: 5 ETH stake
 
 ---
 
-#### 4. TaskMarketplace.sol
+#### 2. TaskMarketplace.sol
 **Purpose:** Core marketplace for task creation, matching, and lifecycle management
 
 ```solidity
@@ -899,89 +845,7 @@ function calculateComputePower(uint256 solutionTime, uint256 difficulty) public 
 
 ---
 
-#### 7. RewardDistributor.sol
-**Purpose:** Manages reward distribution to providers and stakers
-
-```solidity
-struct RewardPool {
-    uint256 totalRewards;
-    uint256 distributedRewards;
-    uint256 rewardRate;       // Rewards per second
-    uint256 lastUpdateTime;
-    uint256 rewardPerTokenStored;
-}
-
-// Key functions
-interface IRewardDistributor {
-    function distributeTaskReward(bytes32 nodeId, uint256 amount) external;
-    function distributeStakingReward(address staker) external;
-    function addRewardsToPool(uint256 amount) external;
-    function claimRewards(bytes32 nodeId) external;
-    function getPendingRewards(bytes32 nodeId) external view returns (uint256);
-    function calculateBonus(bytes32 nodeId) external view returns (uint256);
-}
-
-// Events
-event TaskRewardDistributed(bytes32 indexed nodeId, uint256 amount);
-event StakingRewardDistributed(address indexed staker, uint256 amount);
-event BonusAwarded(bytes32 indexed nodeId, string bonusType, uint256 amount);
-event RewardsPoolReplenished(uint256 amount);
-```
-
-**Bonus Calculation:**
-```solidity
-function calculateBonus(bytes32 nodeId) public view returns (uint256) {
-    INodeRegistry.Node memory node = nodeRegistry.getNode(nodeId);
-    uint256 bonus = 0;
-
-    // Uptime bonus: 5% extra for 99%+ uptime
-    if (getNodeUptime(nodeId) >= 9900) {
-        bonus += (node.totalEarnings * 500) / 10000; // 5%
-    }
-
-    // Performance bonus: 3% for top 10% performers
-    if (isTopPerformer(nodeId)) {
-        bonus += (node.totalEarnings * 300) / 10000; // 3%
-    }
-
-    // Referral bonus: 2% for each referred node
-    bonus += referralCount[node.owner] * REFERRAL_BONUS;
-
-    return bonus;
-}
-```
-
----
-
-#### 8. AIIGOGovernor.sol
-**Purpose:** Token-weighted DAO governance for protocol decisions
-
-```solidity
-// Key functions (extends OpenZeppelin Governor)
-interface IAIIGOGovernor {
-    function propose(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        string memory description
-    ) external returns (uint256 proposalId);
-
-    function castVote(uint256 proposalId, uint8 support) external returns (uint256 weight);
-    function execute(uint256 proposalId) external;
-
-    // Custom governance functions
-    function updatePlatformFee(uint256 newFee) external;
-    function updateMinStake(uint256 newMinStake) external;
-    function addTrustedNode(bytes32 nodeId) external;
-    function slashNode(bytes32 nodeId, uint256 amount, string calldata reason) external;
-}
-
-// Governance parameters
-uint256 public constant VOTING_DELAY = 1 days;      // Time before voting starts
-uint256 public constant VOTING_PERIOD = 7 days;     // Duration of voting
-uint256 public constant PROPOSAL_THRESHOLD = 100000e18;  // 100,000 AIIGO to propose
-uint256 public constant QUORUM = 4;                 // 4% of total supply
-```
+**Note:** Removed token-related contracts (StakingPool, RewardDistributor, AIIGOGovernor) for marketplace simplicity. Platform governance is owner-controlled with multi-sig wallet recommended.
 
 ---
 
@@ -1018,14 +882,9 @@ uint256 public constant QUORUM = 4;                 // 4% of total supply
 │    │                         │                            │                 │
 │    │                         │  7. release()              │                 │
 │    │                         ├───────────────────────────▶│                 │
-│    │                         │ EscrowManager              │ (92% payment)   │
+│    │                         │ EscrowManager              │ (92% ETH)       │
 │    │                         │                            │                 │
-│    │                         │  8. distributeReward()     │                 │
-│    │                         │ RewardDistributor          │                 │
-│    │                         ├───────────────────────────▶│                 │
-│    │                         │                            │ (bonus tokens)  │
-│    │                         │                            │                 │
-│    │                         │  9. updateReputation()     │                 │
+│    │                         │  8. updateReputation()     │                 │
 │    │                         │ NodeRegistry               │                 │
 │    │                         │                            │                 │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -1035,11 +894,11 @@ uint256 public constant QUORUM = 4;                 // 4% of total supply
 
 ### Complete Workflow Illustrations
 
-#### Workflow 1: Provider Registration & Onboarding
+#### Workflow 1: Provider Registration & Onboarding (ETH-Based)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                     PROVIDER REGISTRATION WORKFLOW                                   │
+│                  SIMPLIFIED PROVIDER REGISTRATION WORKFLOW                           │
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                      │
 │  PROVIDER (User)              SMART CONTRACTS                      BLOCKCHAIN       │
@@ -1047,18 +906,16 @@ uint256 public constant QUORUM = 4;                 // 4% of total supply
 │       │  1. Connect Wallet         │                                    │           │
 │       ├───────────────────────────▶│                                    │           │
 │       │                            │                                    │           │
-│       │  2. Approve AIIGO tokens   │                                    │           │
-│       ├───────────────────────────▶│ AIIGOToken.approve()               │           │
-│       │                            ├───────────────────────────────────▶│           │
-│       │                            │                                    │ ✓ Approved│
-│       │                            │◀───────────────────────────────────┤           │
-│       │                            │                                    │           │
-│       │  3. Register Node          │                                    │           │
+│       │  2. Register Node          │                                    │           │
 │       │     + Hardware Metadata    │                                    │           │
-│       │     + 0.1 ETH Fee          │                                    │           │
+│       │     + Send 0.6 ETH         │                                    │           │
+│       │     (0.1 fee + 0.5 stake)  │                                    │           │
 │       ├───────────────────────────▶│ NodeRegistry.registerNode()        │           │
+│       │                            │  ├─ Receive 0.6 ETH                │           │
 │       │                            │  ├─ Validate metadata URI          │           │
 │       │                            │  ├─ Generate nodeId                │           │
+│       │                            │  ├─ Store 0.5 ETH as stake         │           │
+│       │                            │  ├─ Send 0.1 ETH to treasury       │           │
 │       │                            │  ├─ Set status = Pending           │           │
 │       │                            │  └─ Emit NodeRegistered            │           │
 │       │                            ├───────────────────────────────────▶│           │
@@ -1066,17 +923,7 @@ uint256 public constant QUORUM = 4;                 // 4% of total supply
 │       │                            │◀───────────────────────────────────┤           │
 │       │◀───────────────────────────┤ Return nodeId                      │           │
 │       │                            │                                    │           │
-│       │  4. Stake AIIGO Tokens     │                                    │           │
-│       │     (min 100 AIIGO)        │                                    │           │
-│       ├───────────────────────────▶│ NodeRegistry.stakeForNode()        │           │
-│       │                            │  ├─ Transfer tokens to contract    │           │
-│       │                            │  ├─ Update stakedAmount            │           │
-│       │                            │  └─ Emit StakeDeposited            │           │
-│       │                            ├───────────────────────────────────▶│           │
-│       │                            │◀───────────────────────────────────┤           │
-│       │◀───────────────────────────┤ Stake confirmed                    │           │
-│       │                            │                                    │           │
-│       │  5. Complete PoW Challenge │                                    │           │
+│       │  3. Complete PoW Challenge │                                    │           │
 │       ├───────────────────────────▶│ PoWVerifier.issueChallenge()       │           │
 │       │                            │  ├─ Generate random seed           │           │
 │       │                            │  ├─ Set difficulty target          │           │
@@ -1087,7 +934,7 @@ uint256 public constant QUORUM = 4;                 // 4% of total supply
 │       │  [Provider computes        │                                    │           │
 │       │   nonce offline]           │                                    │           │
 │       │                            │                                    │           │
-│       │  6. Submit Solution        │                                    │           │
+│       │  4. Submit Solution        │                                    │           │
 │       ├───────────────────────────▶│ PoWVerifier.submitSolution()       │           │
 │       │                            │  ├─ Verify hash(seed,nonce)        │           │
 │       │                            │  ├─ Calculate compute power        │           │
@@ -1109,14 +956,15 @@ uint256 public constant QUORUM = 4;                 // 4% of total supply
 │       │                            │                                    │           │
 │       │  ✅ NODE ACTIVE            │                                    │           │
 │       │  Trust Level 1 (Basic)     │                                    │           │
+│       │  0.5 ETH staked            │                                    │           │
 │       │                            │                                    │           │
 └───────┴────────────────────────────┴────────────────────────────────────┴───────────┘
 
-Trust Level Progression:
+Trust Level Progression (ETH-Based):
 ┌────────────────────────────────────────────────────────────────────────────────────┐
-│  Level 1 → Level 2:  Complete 10+ PoW challenges + Stake 1,000 AIIGO              │
-│  Level 2 → Level 3:  Complete 100+ tasks + 95% success + Stake 10,000 AIIGO       │
-│  Level 3 → Level 4:  Sign SLA commitment + Insurance bond (enterprise)            │
+│  Level 1 → Level 2:  Complete 10+ PoW challenges + Stake 1 ETH total              │
+│  Level 2 → Level 3:  Complete 100+ tasks + 95% success + Stake 3 ETH total        │
+│  Level 3 → Level 4:  Sign SLA commitment + Stake 5 ETH total + Insurance bond     │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1203,12 +1051,6 @@ Trust Level Progression:
 │    │                      │  └─ Transfer 8% → Treasury │                      │     │
 │    │                      │         │                  │                      │     │
 │    │                      │         ▼                  │                      │     │
-│    │                      │ RewardDistributor          │                      │     │
-│    │                      │  .distributeTaskReward()   │                      │     │
-│    │                      │  ├─ Calculate bonus tokens │                      │     │
-│    │                      │  └─ Mint AIIGO to provider │─────────────────────▶│     │
-│    │                      │         │                  │                      │     │
-│    │                      │         ▼                  │                      │     │
 │    │                      │ NodeRegistry               │                      │     │
 │    │                      │  .updateReputation(+)      │                      │     │
 │    │                      │  .incrementTaskCount()     │                      │     │
@@ -1217,8 +1059,7 @@ Trust Level Progression:
 │    │◀─────────────────────┤                            │                      │     │
 │    │                      │                            │◀─────────────────────┤     │
 │    │                      │                            │                      │     │
-│    │  ✅ TASK COMPLETE    │                            │  ✅ PAYMENT RECEIVED │     │
-│    │                      │                            │     + BONUS TOKENS   │     │
+│    │  ✅ TASK COMPLETE    │                            │  ✅ ETH RECEIVED     │     │
 │    │                      │                            │     + REPUTATION UP  │     │
 │    │                      │                            │                      │     │
 └────┴──────────────────────┴────────────────────────────┴──────────────────────┴─────┘
@@ -1250,8 +1091,8 @@ Trust Level Progression:
 │    │                │                       │                    │                  │
 │    │                │ 2. Arbitrator         │                    │                  │
 │    │                │    Selection          │                    │                  │
-│    │                │    (DAO members with  │                    │                  │
-│    │                │    stake > 10k AIIGO) │                    │                  │
+│    │                │    (Platform owner/   │                    │                  │
+│    │                │     multi-sig)        │                    │                  │
 │    │                ├──────────────────────▶│                    │                  │
 │    │                │                       │ 3. Review          │                  │
 │    │                │                       │    Evidence        │                  │
@@ -1301,190 +1142,106 @@ Trust Level Progression:
 
 ---
 
-#### Workflow 4: Staking & Rewards
+#### Workflow 4: ETH Stake Management
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                           STAKING & REWARDS WORKFLOW                                 │
+│                        ETH STAKE MANAGEMENT WORKFLOW                                 │
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                      │
-│  USER                     CONTRACTS                           REWARD POOL           │
+│  PROVIDER                 CONTRACTS                              RESULT             │
 │    │                          │                                    │                │
-│    │  ════════════════════════════════════════════════════════════════════════     │
-│    │  STAKING FLOW                                                                  │
-│    │  ════════════════════════════════════════════════════════════════════════     │
+│    │  ═══════════════════════════════════════════════════════════════              │
+│    │  ADD STAKE (Increase Trust Level)                                             │
+│    │  ═══════════════════════════════════════════════════════════════              │
 │    │                          │                                    │                │
-│    │  1. Approve Tokens       │                                    │                │
-│    ├─────────────────────────▶│ AIIGOToken.approve()               │                │
-│    │                          │                                    │                │
-│    │  2. Stake Tokens         │                                    │                │
-│    │     + Lock Period        │                                    │                │
-│    ├─────────────────────────▶│ StakingPool.stake()                │                │
-│    │                          │  ├─ Transfer tokens to pool        │                │
-│    │                          │  ├─ Record stake info              │                │
-│    │                          │  │   ├─ amount                     │                │
-│    │                          │  │   ├─ startTime                  │                │
-│    │                          │  │   ├─ lockPeriod                 │                │
-│    │                          │  │   └─ rewardDebt                 │                │
-│    │                          │  └─ Update total staked            │                │
-│    │                          │                                    │                │
-│    │                          │ [Event: Staked]                    │                │
+│    │  1. Add Stake            │                                    │                │
+│    │     (Send more ETH)      │                                    │                │
+│    ├─────────────────────────▶│ NodeRegistry.addStake()            │                │
+│    │                          │  ├─ Receive ETH                    │                │
+│    │                          │  ├─ Update stakedAmount            │                │
+│    │                          │  ├─ Recalculate trust level        │                │
+│    │                          │  └─ Emit StakeDeposited            │                │
 │    │◀─────────────────────────┤                                    │                │
 │    │                          │                                    │                │
-│    │  ════════════════════════════════════════════════════════════════════════     │
-│    │  REWARD ACCUMULATION (Continuous)                                              │
-│    │  ════════════════════════════════════════════════════════════════════════     │
+│    │  ═══════════════════════════════════════════════════════════════              │
+│    │  WITHDRAW STAKE (After node deactivation)                                     │
+│    │  ═══════════════════════════════════════════════════════════════              │
 │    │                          │                                    │                │
-│    │                          │ [Every block]                      │                │
-│    │                          │ StakingPool                        │                │
-│    │                          │  ._updateReward()                  │                │
-│    │                          │  ├─ rewardPerToken +=              │◀───────────────│
-│    │                          │  │   (rewardRate * timeDelta)      │  Platform fees │
-│    │                          │  │   / totalStaked                 │  Task rewards  │
-│    │                          │  └─ Update lastUpdateTime          │                │
-│    │                          │                                    │                │
-│    │                          │ userReward =                       │                │
-│    │                          │  stakeAmount *                     │                │
-│    │                          │  (rewardPerToken - rewardDebt)     │                │
-│    │                          │                                    │                │
-│    │  ════════════════════════════════════════════════════════════════════════     │
-│    │  CLAIM REWARDS                                                                 │
-│    │  ════════════════════════════════════════════════════════════════════════     │
-│    │                          │                                    │                │
-│    │  3. Claim Rewards        │                                    │                │
-│    ├─────────────────────────▶│ StakingPool.claimRewards()         │                │
-│    │                          │  ├─ Calculate pending rewards      │                │
-│    │                          │  ├─ Reset reward debt              │                │
-│    │                          │  └─ Transfer AIIGO to user         │                │
+│    │  2. Request Withdrawal   │                                    │                │
+│    ├─────────────────────────▶│ NodeRegistry.withdrawStake()       │                │
+│    │                          │  ├─ Check node status = Inactive   │                │
+│    │                          │  ├─ Check no pending tasks         │                │
+│    │                          │  ├─ Apply cooldown period          │                │
+│    │                          │  ├─ Transfer ETH back to provider  │────────────────▶
+│    │                          │  └─ Emit StakeWithdrawn            │  Receive ETH   │
 │    │◀─────────────────────────┤                                    │                │
-│    │  Receive AIIGO           │ [Event: RewardsClaimed]            │                │
-│    │                          │                                    │                │
-│    │  ════════════════════════════════════════════════════════════════════════     │
-│    │  UNSTAKE (After Lock Period)                                                   │
-│    │  ════════════════════════════════════════════════════════════════════════     │
-│    │                          │                                    │                │
-│    │  4. Unstake              │                                    │                │
-│    ├─────────────────────────▶│ StakingPool.unstake()              │                │
-│    │                          │  ├─ Check lock period expired      │                │
-│    │                          │  ├─ Calculate penalty (if early)   │                │
-│    │                          │  │   └─ 5% penalty → burn          │                │
-│    │                          │  ├─ Return tokens - penalty        │                │
-│    │                          │  └─ Update total staked            │                │
-│    │◀─────────────────────────┤                                    │                │
-│    │  Receive tokens          │ [Event: Unstaked]                  │                │
-│    │  (minus any penalty)     │                                    │                │
 │    │                          │                                    │                │
 └────┴──────────────────────────┴────────────────────────────────────┴────────────────┘
 
-Reward Sources:
+Stake Requirements:
 ┌────────────────────────────────────────────────────────────────────────────────────┐
-│  Platform Fees (8%)  ──────▶  Treasury  ──────▶  StakingPool.addRewardsToPool()   │
-│  Task Completion     ──────▶  RewardDistributor  ──────▶  Provider + Stakers      │
-│  PoW Challenges      ──────▶  Bonus AIIGO minted ──────▶  Provider                │
+│  Trust Level 1 (Basic):      0.5 ETH   → Small tasks (<$100)                      │
+│  Trust Level 2 (Verified):   1.0 ETH   → Standard marketplace                     │
+│  Trust Level 3 (Trusted):    3.0 ETH   → Enterprise + Priority                    │
+│  Trust Level 4 (Partner):    5.0 ETH   → Direct contracts + SLA                   │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-#### Workflow 5: Governance Proposal & Voting
+#### Workflow 5: Platform Governance (Multi-Sig)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                         GOVERNANCE WORKFLOW (DAO)                                    │
+│                   PLATFORM GOVERNANCE WORKFLOW (MULTI-SIG)                           │
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                      │
-│  PROPOSER              CONTRACTS              VOTERS             EXECUTION          │
-│  (100k+ AIIGO)             │                    │                    │              │
-│       │                    │                    │                    │              │
-│       │  1. Create         │                    │                    │              │
-│       │     Proposal       │                    │                    │              │
-│       ├───────────────────▶│ AIIGOGovernor     │                    │              │
-│       │                    │  .propose()        │                    │              │
-│       │                    │  ├─ Verify 100k    │                    │              │
-│       │                    │  │  AIIGO balance  │                    │              │
-│       │                    │  ├─ Store proposal │                    │              │
-│       │                    │  │   ├─ targets[]  │                    │              │
-│       │                    │  │   ├─ values[]   │                    │              │
-│       │                    │  │   ├─ calldatas[]│                    │              │
-│       │                    │  │   └─ description│                    │              │
-│       │                    │  └─ Set snapshot   │                    │              │
-│       │                    │       block        │                    │              │
-│       │◀───────────────────┤ Return proposalId  │                    │              │
-│       │                    │                    │                    │              │
-│       │                    │ [Event: ProposalCreated]               │              │
-│       │                    ├───────────────────▶│                    │              │
-│       │                    │                    │                    │              │
-│       │                    │ ═══════════════════════════════════════              │
-│       │                    │ VOTING DELAY (1 day)                                  │
-│       │                    │ ═══════════════════════════════════════              │
-│       │                    │                    │                    │              │
-│       │                    │                    │ 2. Cast Votes      │              │
-│       │                    │◀───────────────────┤    (For/Against/   │              │
-│       │                    │ AIIGOGovernor     │     Abstain)       │              │
-│       │                    │  .castVote()       │                    │              │
-│       │                    │  ├─ Get voting     │                    │              │
-│       │                    │  │  weight at      │                    │              │
-│       │                    │  │  snapshot       │                    │              │
-│       │                    │  ├─ Record vote    │                    │              │
-│       │                    │  └─ Update totals  │                    │              │
-│       │                    │                    │                    │              │
-│       │                    │ [Event: VoteCast]  │                    │              │
-│       │                    │                    │                    │              │
-│       │                    │ ═══════════════════════════════════════              │
-│       │                    │ VOTING PERIOD (7 days)                                │
-│       │                    │ ═══════════════════════════════════════              │
-│       │                    │                    │                    │              │
-│       │                    │ 3. Check Quorum    │                    │              │
-│       │                    │    (4% of supply)  │                    │              │
-│       │                    │                    │                    │              │
-│       │                    │ ┌────────────────────────────────────┐ │              │
-│       │                    │ │ Proposal States:                   │ │              │
-│       │                    │ │ ├─ Pending   (before voting delay) │ │              │
-│       │                    │ │ ├─ Active    (during voting)       │ │              │
-│       │                    │ │ ├─ Succeeded (passed + quorum)     │ │              │
-│       │                    │ │ ├─ Defeated  (failed or no quorum) │ │              │
-│       │                    │ │ ├─ Queued    (in timelock)         │ │              │
-│       │                    │ │ └─ Executed  (completed)           │ │              │
-│       │                    │ └────────────────────────────────────┘ │              │
-│       │                    │                    │                    │              │
-│       │                    │ ═══════════════════════════════════════              │
-│       │                    │ TIMELOCK (2 days) - if passed                         │
-│       │                    │ ═══════════════════════════════════════              │
-│       │                    │                    │                    │              │
-│       │ 4. Execute         │                    │                    │              │
-│       ├───────────────────▶│ AIIGOGovernor     │                    │              │
-│       │                    │  .execute()        │                    │              │
-│       │                    │  ├─ Verify state   │                    │              │
-│       │                    │  │  = Succeeded    │                    │              │
-│       │                    │  ├─ Execute calls  │                    │              │
-│       │                    │  │   ├─ targets[0] │───────────────────▶│              │
-│       │                    │  │   ├─ targets[1] │───────────────────▶│              │
-│       │                    │  │   └─ ...        │                    │ Apply        │
-│       │                    │  └─ Mark executed  │                    │ Changes      │
-│       │                    │                    │                    │              │
-│       │                    │ [Event: ProposalExecuted]              │              │
-│       │◀───────────────────┤                    │                    │              │
-│       │                    │                    │                    │              │
-└───────┴────────────────────┴────────────────────┴────────────────────┴──────────────┘
+│  OWNER 1         OWNER 2         MULTI-SIG          CONTRACTS        EXECUTION      │
+│    │               │                 │                  │                │          │
+│    │  1. Propose   │                 │                  │                │          │
+│    │     Change    │                 │                  │                │          │
+│    ├──────────────────────────────────▶                 │                │          │
+│    │               │      Gnosis Safe │                  │                │          │
+│    │               │      Dashboard   │                  │                │          │
+│    │               │                 │                  │                │          │
+│    │               │  2. Review       │                  │                │          │
+│    │               ├────────────────▶│                  │                │          │
+│    │               │                 │                  │                │          │
+│    │               │  3. Approve      │                  │                │          │
+│    │               ├────────────────▶│                  │                │          │
+│    │               │                 │                  │                │          │
+│    │               │                 │ 4. Execute (2/3  │                │          │
+│    │               │                 │    signatures)   │                │          │
+│    │               │                 ├─────────────────▶│                │          │
+│    │               │                 │                  │                │          │
+│    │               │                 │  Contract Calls: │                │          │
+│    │               │                 │  ├─ updateFee()  │───────────────▶│          │
+│    │               │                 │  ├─ slashNode()  │───────────────▶│          │
+│    │               │                 │  ├─ pause()      │───────────────▶│          │
+│    │               │                 │  └─ ...          │                │ Apply    │
+│    │               │                 │                  │                │ Changes  │
+│    │               │                 │                  │                │          │
+└────┴───────────────┴─────────────────┴──────────────────┴────────────────┴──────────┘
 
-Example Governance Actions:
+Common Administrative Actions:
 ┌────────────────────────────────────────────────────────────────────────────────────┐
-│  • updatePlatformFee(700)        // Change fee from 8% to 7%                       │
-│  • updateMinStake(200e18)        // Increase minimum stake to 200 AIIGO            │
-│  • slashNode(nodeId, 1000e18)    // Slash malicious provider                       │
-│  • addTrustedNode(nodeId)        // Whitelist enterprise partner                   │
-│  • setRewardRate(newRate)        // Adjust staking APY                             │
-│  • pause() / unpause()           // Emergency circuit breaker                      │
+│  • updatePlatformFee(uint256 newFee)         // Change fee (e.g., 8% → 7%)        │
+│  • updateMinStake(uint256 newMinStake)       // Adjust minimum stake requirement  │
+│  • slashNode(bytes32 nodeId, uint256 amount) // Penalize malicious provider       │
+│  • addTrustedNode(bytes32 nodeId)            // Whitelist enterprise partner       │
+│  • pause() / unpause()                       // Emergency circuit breaker          │
+│  • setArbitrator(address newArbitrator)      // Update dispute resolver            │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-#### Workflow 6: Complete System Overview
+#### Workflow 6: Simplified System Overview (ETH-Only)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                    AIIGO COMPUTING POWER - COMPLETE SYSTEM FLOW                      │
+│                  AIIGO COMPUTING POWER - SIMPLIFIED SYSTEM FLOW                      │
 ├─────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                      │
 │   PROVIDERS                         PLATFORM                         BUYERS         │
@@ -1495,16 +1252,18 @@ Example Governance Actions:
 │       │         │                      │                      │        │           │
 │       ▼         ▼                      ▼                      ▼        ▼           │
 │  ┌─────────┐ ┌─────────┐         ┌─────────┐           ┌─────────┐ ┌─────────┐    │
-│  │ Register│ │  Stake  │         │   PoW   │           │  Stake  │ │ Deposit │    │
-│  │  Node   │ │  AIIGO  │         │ Verify  │           │ (opt.)  │ │   ETH   │    │
+│  │ Register│ │  Stake  │         │   PoW   │           │ Connect │ │ Deposit │    │
+│  │  Node   │ │  ETH    │         │ Verify  │           │ Wallet  │ │ ETH/USDC│    │
 │  └────┬────┘ └────┬────┘         └────┬────┘           └────┬────┘ └────┬────┘    │
 │       │           │                   │                     │           │          │
 │       ▼           ▼                   ▼                     ▼           ▼          │
 │  ┌─────────────────────────────────────────────────────────────────────────────┐  │
+│  │                        SMART CONTRACT LAYER                                 │  │
 │  │                                                                               │  │
-│  │   NodeRegistry    StakingPool    PoWVerifier                  EscrowManager  │  │
-│  │        │               │              │                            │          │  │
-│  │        └───────────────┴──────────────┴────────────────────────────┘          │  │
+│  │   NodeRegistry       PoWVerifier                         EscrowManager       │  │
+│  │   (ETH Stake)        (Compute Proof)                     (ETH/USDC)          │  │
+│  │        │                   │                                  │              │  │
+│  │        └───────────────────┴──────────────────────────────────┘              │  │
 │  │                                   │                                           │  │
 │  │                                   ▼                                           │  │
 │  │  ┌─────────────────────────────────────────────────────────────────────────┐ │  │
@@ -1522,30 +1281,25 @@ Example Governance Actions:
 │  │  │        │               │               │          YES  │  NO            │ │  │
 │  │  │        │               │               │          ┌────┴────┐           │ │  │
 │  │  │        │               │               │          ▼         ▼           │ │  │
-│  │  │        │               │               │     Arbitration  Release       │ │  │
-│  │  │        │               │               │                  Payment       │ │  │
+│  │  │        │               │               │    Multi-Sig   Release         │ │  │
+│  │  │        │               │               │   Arbitration  Payment         │ │  │
 │  │  │        │               │               │                                │ │  │
 │  │  └────────┴───────────────┴───────────────┴────────────────────────────────┘ │  │
 │  │                                   │                                           │  │
 │  │                                   ▼                                           │  │
 │  │  ┌─────────────────────────────────────────────────────────────────────────┐ │  │
-│  │  │                        PAYMENT & REWARDS                                 │ │  │
+│  │  │                      PAYMENT DISTRIBUTION                                │ │  │
 │  │  │                                                                          │ │  │
 │  │  │      ┌────────────────────────────────────────────────────────┐         │ │  │
-│  │  │      │                     ESCROW RELEASE                     │         │ │  │
+│  │  │      │                  ESCROW RELEASE (ETH)                 │         │ │  │
 │  │  │      │                                                        │         │ │  │
-│  │  │      │   Total Payment                                        │         │ │  │
+│  │  │      │   Total Payment (ETH/USDC)                            │         │ │  │
 │  │  │      │        │                                               │         │ │  │
 │  │  │      │        ├──────────▶  92% ─────▶ Provider Wallet        │         │ │  │
 │  │  │      │        │                                               │         │ │  │
 │  │  │      │        └──────────▶   8% ─────▶ Platform Treasury      │         │ │  │
-│  │  │      │                            │                           │         │ │  │
-│  │  │      │                            ▼                           │         │ │  │
-│  │  │      │                    ┌──────────────┐                    │         │ │  │
-│  │  │      │                    │RewardDistrib.│                    │         │ │  │
-│  │  │      │                    │  + Bonuses   │                    │         │ │  │
-│  │  │      │                    │  + Staking   │                    │         │ │  │
-│  │  │      │                    └──────────────┘                    │         │ │  │
+│  │  │      │                                                        │         │ │  │
+│  │  │      │   No tokens, no bonuses - pure ETH distribution        │         │ │  │
 │  │  │      │                                                        │         │ │  │
 │  │  │      └────────────────────────────────────────────────────────┘         │ │  │
 │  │  │                                                                          │ │  │
@@ -1553,83 +1307,82 @@ Example Governance Actions:
 │  │                                   │                                           │  │
 │  │                                   ▼                                           │  │
 │  │  ┌─────────────────────────────────────────────────────────────────────────┐ │  │
-│  │  │                           GOVERNANCE (DAO)                               │ │  │
+│  │  │                    GOVERNANCE (MULTI-SIG)                                │ │  │
 │  │  │                                                                          │ │  │
-│  │  │         AIIGOToken Holders                                               │ │  │
+│  │  │         Platform Owners (Gnosis Safe)                                    │ │  │
 │  │  │                │                                                         │ │  │
 │  │  │                ▼                                                         │ │  │
 │  │  │   ┌────────────────────────────────────────────────────────────┐        │ │  │
-│  │  │   │  Propose  │──▶│  Vote  │──▶│  Queue  │──▶│  Execute  │     │        │ │  │
+│  │  │   │  Propose  │──▶│ Review │──▶│ Sign (2/3) │──▶│ Execute │    │        │ │  │
 │  │  │   └────────────────────────────────────────────────────────────┘        │ │  │
 │  │  │                │                                                         │ │  │
 │  │  │                ▼                                                         │ │  │
 │  │  │   ┌────────────────────────────────────────────────────────────┐        │ │  │
-│  │  │   │  • Platform fee changes     • Minimum stake updates        │        │ │  │
-│  │  │   │  • Slashing proposals       • Protocol upgrades            │        │ │  │
-│  │  │   │  • Treasury allocation      • Emergency actions            │        │ │  │
+│  │  │   │  • Platform fee updates     • Minimum stake changes        │        │ │  │
+│  │  │   │  • Slashing malicious nodes • Emergency pause/unpause      │        │ │  │
+│  │  │   │  • Arbitrator updates       • Contract upgrades            │        │ │  │
 │  │  │   └────────────────────────────────────────────────────────────┘        │ │  │
 │  │  │                                                                          │ │  │
 │  │  └──────────────────────────────────────────────────────────────────────────┘ │  │
 │  │                                                                               │  │
 │  └───────────────────────────────────────────────────────────────────────────────┘  │
 │                                                                                      │
+│  Key Simplifications:                                                                │
+│  ✓ No AIIGO token (removed)                                                         │
+│  ✓ No StakingPool (ETH stake in NodeRegistry)                                       │
+│  ✓ No RewardDistributor (direct ETH payment)                                        │
+│  ✓ No DAO (multi-sig governance)                                                    │
+│                                                                                      │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-#### Contract API Call Summary
+#### Simplified Contract API Call Summary
 
-| Flow | Step | Contract | Method | Parameters |
-|------|------|----------|--------|------------|
-| **Registration** | 1 | AIIGOToken | `approve()` | spender, amount |
-| | 2 | NodeRegistry | `registerNode()` | resourceType, metadataURI |
-| | 3 | NodeRegistry | `stakeForNode()` | nodeId, amount |
-| | 4 | PoWVerifier | `issueChallenge()` | nodeId |
-| | 5 | PoWVerifier | `submitSolution()` | challengeId, nonce |
-| **Task** | 1 | TaskMarketplace | `createTask()` | type, power, duration, price, trustLevel, specURI |
-| | 2 | TaskMarketplace | `acceptTask()` | taskId, nodeId |
-| | 3 | TaskMarketplace | `submitResult()` | taskId, resultHash, resultURI |
-| | 4 | TaskMarketplace | `approveResult()` | taskId |
-| **Dispute** | 1 | TaskMarketplace | `disputeTask()` | taskId, reason |
-| | 2 | AIIGOGovernor | `castVote()` | disputeId, support |
-| | 3 | EscrowManager | `refund()` / `release()` | taskId |
-| **Staking** | 1 | AIIGOToken | `approve()` | spender, amount |
-| | 2 | StakingPool | `stake()` | amount, lockPeriod |
-| | 3 | StakingPool | `claimRewards()` | - |
-| | 4 | StakingPool | `unstake()` | amount |
-| **Governance** | 1 | AIIGOGovernor | `propose()` | targets, values, calldatas, description |
-| | 2 | AIIGOGovernor | `castVote()` | proposalId, support |
-| | 3 | AIIGOGovernor | `execute()` | proposalId |
+| Flow | Step | Contract | Method | Parameters | Value (ETH) |
+|------|------|----------|--------|------------|-------------|
+| **Registration** | 1 | NodeRegistry | `registerNode()` | resourceType, metadataURI | 0.6 ETH (0.1 fee + 0.5 stake) |
+| | 2 | PoWVerifier | `issueChallenge()` | nodeId | - |
+| | 3 | PoWVerifier | `submitSolution()` | challengeId, nonce | - |
+| | 4 | NodeRegistry | `addStake()` | nodeId | Additional ETH for higher trust |
+| **Task** | 1 | TaskMarketplace | `createTask()` | type, power, duration, price, trustLevel, specURI | Task payment in ETH |
+| | 2 | TaskMarketplace | `acceptTask()` | taskId, nodeId | - |
+| | 3 | TaskMarketplace | `submitResult()` | taskId, resultHash, resultURI | - |
+| | 4 | TaskMarketplace | `approveResult()` | taskId | - |
+| **Dispute** | 1 | TaskMarketplace | `disputeTask()` | taskId, reason | - |
+| | 2 | Admin/Owner | `resolveDispute()` | taskId, winner, split | - |
+| | 3 | EscrowManager | `refund()` / `release()` | taskId | - |
+| **Withdrawal** | 1 | NodeRegistry | `withdrawStake()` | nodeId, amount | - (receives ETH back) |
 
 ---
 
-### Deployment Order
+### Simplified Deployment Order
 
 ```
-1. AIIGOToken.sol           ← Deploy first (no dependencies)
-2. NodeRegistry.sol         ← Depends on AIIGOToken
-3. StakingPool.sol          ← Depends on AIIGOToken, NodeRegistry
-4. ProofOfWorkVerifier.sol  ← Depends on NodeRegistry
-5. EscrowManager.sol        ← Standalone escrow logic
-6. RewardDistributor.sol    ← Depends on AIIGOToken, NodeRegistry
-7. TaskMarketplace.sol      ← Depends on all above
-8. AIIGOGovernor.sol        ← Depends on AIIGOToken, final deployment
+1. NodeRegistry.sol         ← Deploy first (standalone, owner-controlled)
+2. ProofOfWorkVerifier.sol  ← Depends on NodeRegistry
+3. EscrowManager.sol        ← Standalone escrow logic
+4. TaskMarketplace.sol      ← Depends on all above (orchestrator contract)
 ```
 
 **Post-Deployment Configuration:**
 ```solidity
-// Grant roles
-aiigoToken.grantRole(MINTER_ROLE, rewardDistributor);
-nodeRegistry.grantRole(UPDATER_ROLE, powVerifier);
-nodeRegistry.grantRole(UPDATER_ROLE, taskMarketplace);
-escrowManager.grantRole(RELEASER_ROLE, taskMarketplace);
+// Set contract references
+taskMarketplace.setNodeRegistry(address(nodeRegistry));
+taskMarketplace.setEscrowManager(address(escrowManager));
+taskMarketplace.setPowVerifier(address(powVerifier));
 
-// Set contract addresses
-taskMarketplace.setNodeRegistry(nodeRegistry);
-taskMarketplace.setEscrowManager(escrowManager);
-taskMarketplace.setPowVerifier(powVerifier);
-rewardDistributor.setNodeRegistry(nodeRegistry);
+// Grant permissions
+nodeRegistry.grantRole(UPDATER_ROLE, address(powVerifier));
+nodeRegistry.grantRole(UPDATER_ROLE, address(taskMarketplace));
+escrowManager.grantRole(RELEASER_ROLE, address(taskMarketplace));
+
+// Transfer ownership to multi-sig (recommended for production)
+nodeRegistry.transferOwnership(MULTISIG_ADDRESS);
+taskMarketplace.transferOwnership(MULTISIG_ADDRESS);
+escrowManager.transferOwnership(MULTISIG_ADDRESS);
+powVerifier.transferOwnership(MULTISIG_ADDRESS);
 ```
 
 ---
@@ -1660,18 +1413,19 @@ rewardDistributor.setNodeRegistry(nodeRegistry);
 
 ## Technical Stack Summary
 
-| Layer | Technology |
-|-------|------------|
-| **Smart Contracts** | Solidity 0.8.20, OpenZeppelin, Foundry |
-| **Blockchain** | Ethereum (Sepolia → Mainnet) |
-| **Provider Agent** | Rust (Tauri), GPU libraries |
-| **Backend Services** | Go/Rust microservices |
-| **API Gateway** | Kong / AWS API Gateway |
-| **Database** | PostgreSQL + Redis |
-| **Message Queue** | RabbitMQ / Kafka |
-| **Monitoring** | Prometheus + Grafana |
-| **Desktop Client** | Tauri + React + TypeScript |
-| **Mobile Client** | React Native |
+| Layer | Technology | Notes |
+|-------|------------|-------|
+| **Smart Contracts** | Solidity 0.8.20, OpenZeppelin, Foundry | 4 core contracts (simplified) |
+| **Blockchain** | Ethereum (Sepolia → Mainnet) | ETH + USDC payments |
+| **Provider Agent** | Rust (Tauri), GPU libraries | Desktop mining-like agent |
+| **Backend Services** | Go/Rust microservices | Off-chain matching + monitoring |
+| **API Gateway** | Kong / AWS API Gateway | Rate limiting + auth |
+| **Database** | PostgreSQL + Redis | Task queue + cache |
+| **Message Queue** | RabbitMQ / Kafka | Task distribution |
+| **Monitoring** | Prometheus + Grafana | Performance tracking |
+| **Desktop Client** | Tauri + React + TypeScript | Provider + Buyer UI |
+| **Mobile Client** | React Native (optional) | Future expansion |
+| **Governance** | Multi-sig wallet (Gnosis Safe) | Owner-controlled, no DAO |
 
 ---
 
@@ -1691,10 +1445,33 @@ rewardDistributor.setNodeRegistry(nodeRegistry);
 
 ## Summary
 
-AIIGO Computing Power Marketplace creates a three-sided market:
+### Simplified Architecture Benefits
 
-1. **Providers** earn passive income from idle devices
-2. **Buyers** access affordable distributed computing
-3. **Platform** ensures quality, trust, and liquidity
+The AIIGO Computing Power Marketplace has been simplified to focus on core marketplace functionality:
+
+**Removed Complexity:**
+- ❌ No governance token (AIIGO)
+- ❌ No token staking rewards
+- ❌ No DAO governance
+- ❌ No token economics
+
+**Core Focus:**
+- ✅ Pure marketplace for computing power trading
+- ✅ ETH-based deposits and payments (+ USDC support)
+- ✅ Simple stake-based reputation system
+- ✅ Direct provider earnings (92% of task value)
+- ✅ Owner/multi-sig controlled platform
+
+**Three-Sided Market:**
+1. **Providers** earn ETH from idle devices (92% revenue share)
+2. **Buyers** pay ETH/USDC for computing power
+3. **Platform** takes 8% fee + collects registration fees
+
+**Key Advantages:**
+- Lower complexity = faster development + fewer attack vectors
+- No token speculation = focus on real utility
+- ETH-based = better liquidity + no token launch required
+- Simpler governance = faster decision making
+- Easier audit = 4 contracts instead of 8
 
 The combination of community-driven supply with platform-owned infrastructure ensures both flexibility and reliability, making it viable for both casual users and enterprise clients.
