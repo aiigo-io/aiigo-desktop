@@ -3,7 +3,7 @@ on:
   push:
     branches:
       - main
-      - test-workflow  # <--- 临时加上这个
+      - feature/test-workflow  # <--- 临时加上这个
 
 jobs:
   publish-tauri:
