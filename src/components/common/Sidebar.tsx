@@ -6,7 +6,6 @@ import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
   ArrowRightLeft,
-  LineChart,
   RefreshCw,
   Rocket,
   FolderOpen,
