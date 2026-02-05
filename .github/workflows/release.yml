@@ -43,6 +43,6 @@ jobs:
         with:
           tagName: app-v__VERSION__ 
           releaseName: 'App v__VERSION__'
-          body: 'Automatic release based on main branch merge.'
-          draft: false
+          releaseBody: 'Automatic release based on main branch merge.'
+          releaseDraft: false
           prerelease: false
