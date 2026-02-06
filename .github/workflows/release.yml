@@ -1,9 +1,6 @@
 name: Release
 on:
-  push:
-    branches:
-      - main
-      - feature/test-workflow  # <--- 临时加上这个
+  workflow_dispatch:
 
 jobs:
   publish-tauri:
