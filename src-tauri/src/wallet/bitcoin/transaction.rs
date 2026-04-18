@@ -2,6 +2,14 @@ use crate::wallet::transaction_types::{
     BitcoinFeeEstimationResponse, BitcoinTransaction, SendBitcoinRequest, SendTransactionResponse,
     TransactionStatus, TransactionType,
 };
+use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
+use crate::wallet::security::session::SessionManager;
+use crate::wallet::security::types::{SecurityError, SignerOperation};
+use crate::wallet::types::WalletInfo;
+use crate::wallet::bitcoin::private_key::{
+    bitcoin_session_manager, load_authorized_mnemonic, load_authorized_private_key,
+    map_security_error,
+};
 use crate::DB;
 use bdk::blockchain::{Blockchain, ElectrumBlockchain, GetHeight};
 use bdk::database::MemoryDatabase;
@@ -19,6 +27,11 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const REQUEST_TIMEOUT_SECS: u64 = 10;
+
+enum BitcoinSigningSecret {
+    Mnemonic(String),
+    PrivateKey(String),
+}
 
 #[derive(Debug, Deserialize)]
 struct BlockstreamTx {
@@ -319,20 +332,6 @@ pub async fn send_bitcoin_transaction(
     println!("[INFO] Sending Bitcoin transaction from wallet: {}", request.wallet_id);
     println!("[INFO] Recipient: {}, Amount: {} BTC", request.to_address, request.amount);
     
-    // Get wallet secret
-    let (secret_data, secret_type) = {
-        let db = DB.lock().unwrap();
-        db.get_wallet_secret(&request.wallet_id)
-            .map_err(|e| {
-                println!("[ERROR] Failed to get wallet secret: {}", e);
-                format!("Failed to get wallet secret: {}", e)
-            })?
-            .ok_or_else(|| {
-                println!("[ERROR] Wallet secret not found");
-                "Wallet secret not found".to_string()
-            })?
-    };
-
     // Get wallet info
     let wallet_info = {
         let db = DB.lock().unwrap();
@@ -347,39 +346,16 @@ pub async fn send_bitcoin_transaction(
             })?
     };
 
-    println!("[INFO] Wallet secret type: {}", secret_type);
+    // TODO(phase1-task6): inject keystore instead of constructing per-call.
+    let keystore = SqliteKeystore::new(&DB);
+    let signing_secret =
+        load_signing_secret(&wallet_info, &keystore, bitcoin_session_manager())
+            .map_err(map_security_error)?
+            .ok_or_else(|| "Wallet secret not found".to_string())?;
 
     // Reconstruct the private key and descriptor
     let secp = bitcoin::secp256k1::Secp256k1::new();
-    let descriptor = match secret_type.as_str() {
-        "mnemonic" => {
-            // Replicate derivation from wallet.rs
-            let mnemonic = Mnemonic::parse_in_normalized(Language::English, &secret_data)
-                .map_err(|e| format!("Invalid mnemonic: {}", e))?;
-            let seed = mnemonic.to_seed("");
-            let master_xprv = Xpriv::new_master(Network::Bitcoin, &seed)
-                .map_err(|e| format!("Failed to create master key: {}", e))?;
-            
-            // Use BIP86 derivation path for Taproot: m/86'/0'/0'/0/0
-            let derivation_path = DerivationPath::from_str("m/86'/0'/0'/0/0")
-                .map_err(|e| format!("Invalid derivation path: {}", e))?;
-            let child_xprv = master_xprv
-                .derive_priv(&secp, &derivation_path)
-                .map_err(|e| format!("Failed to derive child key: {}", e))?;
-            
-            let private_key = child_xprv.to_priv();
-            // Use tr() descriptor because wallet.rs generates P2TR addresses
-            format!("tr({})", private_key)
-        }
-        "private_key" | "private-key" => {
-            // Use tr() descriptor because our wallet system uses P2TR (bc1p...)
-            format!("tr({})", secret_data)
-        }
-        _ => {
-            println!("[ERROR] Unknown secret type: {}", secret_type);
-            return Err(format!("Unknown secret type: {}", secret_type));
-        }
-    };
+    let descriptor = descriptor_from_signing_secret(signing_secret, &secp)?;
 
     println!("[INFO] Creating wallet with descriptor: tr(SECRET)");
     let bdk_network = match Network::Bitcoin {
@@ -535,4 +511,97 @@ pub async fn send_bitcoin_transaction(
         tx_hash,
         message: "Transaction sent successfully".to_string(),
     })
+}
+
+fn load_signing_secret(
+    wallet_info: &WalletInfo,
+    keystore: &dyn Keystore,
+    session_manager: &SessionManager,
+) -> Result<Option<BitcoinSigningSecret>, SecurityError> {
+    match wallet_info.wallet_type.as_str() {
+        "mnemonic" => Ok(load_authorized_mnemonic(
+            &wallet_info.address,
+            keystore,
+            session_manager,
+            SignerOperation::Send,
+        )?
+        .map(BitcoinSigningSecret::Mnemonic)),
+        "private-key" | "private_key" => Ok(load_authorized_private_key(
+            &wallet_info.address,
+            keystore,
+            session_manager,
+            SignerOperation::Send,
+        )?
+        .map(BitcoinSigningSecret::PrivateKey)),
+        _ => Ok(None),
+    }
+}
+
+fn descriptor_from_signing_secret(
+    signing_secret: BitcoinSigningSecret,
+    secp: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>,
+) -> Result<String, String> {
+    match signing_secret {
+        BitcoinSigningSecret::Mnemonic(secret_data) => {
+            let mnemonic = Mnemonic::parse_in_normalized(Language::English, &secret_data)
+                .map_err(|e| format!("Invalid mnemonic: {}", e))?;
+            let seed = mnemonic.to_seed("");
+            let master_xprv = Xpriv::new_master(Network::Bitcoin, &seed)
+                .map_err(|e| format!("Failed to create master key: {}", e))?;
+
+            let derivation_path = DerivationPath::from_str("m/86'/0'/0'/0/0")
+                .map_err(|e| format!("Invalid derivation path: {}", e))?;
+            let child_xprv = master_xprv
+                .derive_priv(secp, &derivation_path)
+                .map_err(|e| format!("Failed to derive child key: {}", e))?;
+
+            let private_key = child_xprv.to_priv();
+            Ok(format!("tr({})", private_key))
+        }
+        BitcoinSigningSecret::PrivateKey(secret_data) => Ok(format!("tr({})", secret_data)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_signing_secret;
+    use crate::wallet::security::keystore::Keystore;
+    use crate::wallet::security::session::SessionManager;
+    use crate::wallet::security::types::SecurityError;
+    use crate::wallet::types::WalletInfo;
+    use std::time::Duration;
+
+    struct PanicKeystore;
+
+    impl Keystore for PanicKeystore {
+        fn load_mnemonic(&self, _address: &str) -> Result<Option<String>, SecurityError> {
+            panic!("keystore should not be called while session is locked");
+        }
+
+        fn load_private_key(&self, _address: &str) -> Result<Option<String>, SecurityError> {
+            panic!("keystore should not be called while session is locked");
+        }
+    }
+
+    fn test_wallet(wallet_type: &str) -> WalletInfo {
+        WalletInfo {
+            id: "wallet-id".to_string(),
+            label: "Bitcoin Wallet".to_string(),
+            wallet_type: wallet_type.to_string(),
+            address: "bc1ptestaddress".to_string(),
+            balance: 0.0,
+            created_at: "2026-04-18T00:00:00Z".to_string(),
+            updated_at: "2026-04-18T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn send_signing_returns_locked_without_keystore_access() {
+        let session = SessionManager::new(Duration::from_secs(30));
+
+        assert!(matches!(
+            load_signing_secret(&test_wallet("mnemonic"), &PanicKeystore, &session),
+            Err(SecurityError::Locked)
+        ));
+    }
 }

@@ -236,6 +236,7 @@ impl Database {
         Ok(())
     }
 
+    #[deprecated(note = "Use wallet::security::Keystore for bitcoin secret reads")]
     pub fn get_wallet_secret(&self, wallet_id: &str) -> SqliteResult<Option<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
