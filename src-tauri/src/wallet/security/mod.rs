@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 pub mod types;
-// pub mod keystore;     // Phase 1
-// pub mod session;      // Phase 1
+pub mod keystore;
+pub mod session;
 // pub mod log_sanitize; // Phase 1
 // pub mod commands;     // Phase 1
