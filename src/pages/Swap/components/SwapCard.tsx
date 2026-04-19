@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowUpDown, Settings2, Info, RefreshCw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import { UnlockGate } from '@/components/common/UnlockGate';
 import { useSwap } from '../hooks/useSwap';
 import { SUPPORTED_CHAINS, MAX_PRICE_IMPACT_WARNING, MAX_PRICE_IMPACT_BLOCK } from '../constants';
 import { Button } from '@/components/ui/button';
@@ -436,20 +437,26 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     )}
 
                     {/* Swap Button */}
-                    <Button
-                        className="w-full h-12 rounded-xl text-lg shadow-lg active:scale-[0.98] transition-all"
-                        disabled={isButtonDisabled()}
-                        onClick={handleButtonClick}
+                    <UnlockGate
+                        className="w-full"
+                        prompt="Unlock to approve or swap"
+                        onUnlockSuccess={handleButtonClick}
                     >
-                        {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote) ? (
-                            <div className="flex items-center gap-2">
-                                <Loader2 className="size-4 animate-spin" />
-                                {getButtonText()}
-                            </div>
-                        ) : (
-                            getButtonText()
-                        )}
-                    </Button>
+                        <Button
+                            className="w-full h-12 rounded-xl text-lg shadow-lg active:scale-[0.98] transition-all"
+                            disabled={isButtonDisabled()}
+                            onClick={handleButtonClick}
+                        >
+                            {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote) ? (
+                                <div className="flex items-center gap-2">
+                                    <Loader2 className="size-4 animate-spin" />
+                                    {getButtonText()}
+                                </div>
+                            ) : (
+                                getButtonText()
+                            )}
+                        </Button>
+                    </UnlockGate>
                 </CardContent>
             </Card>
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw, Send, ExternalLink, HelpCircle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -317,6 +318,11 @@ const BitcoinAssets: React.FC = () => {
     } finally {
       setIsSending(false);
     }
+  };
+
+  const openSendDialog = (wallet: WalletInfo) => {
+    setSelectedWalletForSend(wallet);
+    setIsSendDialogOpen(true);
   };
 
   const totalBalance = wallets.reduce((sum, wallet) => sum + wallet.balance, 0);
@@ -889,18 +895,20 @@ const BitcoinAssets: React.FC = () => {
                     {/* Action Buttons */}
                     <div className="flex gap-1 flex-wrap justify-end">
                       {/* Send Button */}
-                      <button
-                        onClick={() => {
-                          setSelectedWalletForSend(wallet);
-                          setIsSendDialogOpen(true);
-                        }}
-                        className="px-2 py-1 text-xs bg-orange-50 text-orange-700 hover:bg-orange-100 rounded transition-colors flex items-center gap-1"
-                        title="Send Bitcoin"
-                        disabled={isLoading}
+                      <UnlockGate
+                        prompt="Unlock to send BTC"
+                        onUnlockSuccess={() => openSendDialog(wallet)}
                       >
-                        <Send className="w-3 h-3" />
-                        <span>Send</span>
-                      </button>
+                        <button
+                          onClick={() => openSendDialog(wallet)}
+                          className="px-2 py-1 text-xs bg-orange-50 text-orange-700 hover:bg-orange-100 rounded transition-colors flex items-center gap-1"
+                          title="Send Bitcoin"
+                          disabled={isLoading}
+                        >
+                          <Send className="w-3 h-3" />
+                          <span>Send</span>
+                        </button>
+                      </UnlockGate>
 
                       {/* Refresh Balance Button */}
                       <button
@@ -914,27 +922,37 @@ const BitcoinAssets: React.FC = () => {
                       </button>
 
                       {/* Export Private Key Button */}
-                      <button
-                        onClick={() => handleExportPrivateKey(wallet.id)}
-                        className="px-2 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded transition-colors flex items-center gap-1"
-                        title="Export private key"
-                        disabled={isLoading}
+                      <UnlockGate
+                        prompt="Unlock to export key"
+                        onUnlockSuccess={() => handleExportPrivateKey(wallet.id)}
                       >
-                        <Download className="w-3 h-3" />
-                        <span>Private Key</span>
-                      </button>
-
-                      {/* Export Mnemonic Button (only for mnemonic wallets) */}
-                      {wallet.wallet_type === 'mnemonic' && (
                         <button
-                          onClick={() => handleExportMnemonic(wallet.id)}
-                          className="px-2 py-1 text-xs bg-green-50 text-green-700 hover:bg-green-100 rounded transition-colors flex items-center gap-1"
-                          title="Export mnemonic phrase"
+                          onClick={() => handleExportPrivateKey(wallet.id)}
+                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded transition-colors flex items-center gap-1"
+                          title="Export private key"
                           disabled={isLoading}
                         >
                           <Download className="w-3 h-3" />
-                          <span>Mnemonic</span>
+                          <span>Private Key</span>
                         </button>
+                      </UnlockGate>
+
+                      {/* Export Mnemonic Button (only for mnemonic wallets) */}
+                      {wallet.wallet_type === 'mnemonic' && (
+                        <UnlockGate
+                          prompt="Unlock to export mnemonic"
+                          onUnlockSuccess={() => handleExportMnemonic(wallet.id)}
+                        >
+                          <button
+                            onClick={() => handleExportMnemonic(wallet.id)}
+                            className="px-2 py-1 text-xs bg-green-50 text-green-700 hover:bg-green-100 rounded transition-colors flex items-center gap-1"
+                            title="Export mnemonic phrase"
+                            disabled={isLoading}
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Mnemonic</span>
+                          </button>
+                        </UnlockGate>
                       )}
 
                       {/* Delete Button */}

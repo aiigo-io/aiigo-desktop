@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge, Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, Send, ChevronRight, HelpCircle, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -479,6 +480,17 @@ const EvmAssets: React.FC = () => {
     } finally {
       setIsSending(false);
     }
+  };
+
+  const openSendDialog = (
+    wallet: WalletInfo,
+    chain: string,
+    chainId: number,
+    asset: EvmAssetBalance
+  ) => {
+    setSelectedWalletForSend(wallet);
+    setSelectedAssetForSend({ chain, chainId, asset });
+    setIsSendDialogOpen(true);
   };
 
   const getWalletMainnetBalance = (wallet: EvmWalletInfo) => {
@@ -1086,27 +1098,37 @@ const EvmAssets: React.FC = () => {
                         </button>
 
                         {/* Export Private Key Button */}
-                        <button
-                          onClick={() => handleExportPrivateKey(wallet.id)}
-                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded transition-colors flex items-center gap-1"
-                          title="Export private key"
-                          disabled={isLoading}
+                        <UnlockGate
+                          prompt="Unlock to export key"
+                          onUnlockSuccess={() => handleExportPrivateKey(wallet.id)}
                         >
-                          <Download className="w-3 h-3" />
-                          <span>Private Key</span>
-                        </button>
-
-                        {/* Export Mnemonic Button (only for mnemonic wallets) */}
-                        {wallet.wallet_type === 'mnemonic' && (
                           <button
-                            onClick={() => handleExportMnemonic(wallet.id)}
-                            className="px-2 py-1 text-xs bg-green-50 text-green-700 hover:bg-green-100 rounded transition-colors flex items-center gap-1"
-                            title="Export mnemonic phrase"
+                            onClick={() => handleExportPrivateKey(wallet.id)}
+                            className="px-2 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded transition-colors flex items-center gap-1"
+                            title="Export private key"
                             disabled={isLoading}
                           >
                             <Download className="w-3 h-3" />
-                            <span>Mnemonic</span>
+                            <span>Private Key</span>
                           </button>
+                        </UnlockGate>
+
+                        {/* Export Mnemonic Button (only for mnemonic wallets) */}
+                        {wallet.wallet_type === 'mnemonic' && (
+                          <UnlockGate
+                            prompt="Unlock to export mnemonic"
+                            onUnlockSuccess={() => handleExportMnemonic(wallet.id)}
+                          >
+                            <button
+                              onClick={() => handleExportMnemonic(wallet.id)}
+                              className="px-2 py-1 text-xs bg-green-50 text-green-700 hover:bg-green-100 rounded transition-colors flex items-center gap-1"
+                              title="Export mnemonic phrase"
+                              disabled={isLoading}
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Mnemonic</span>
+                            </button>
+                          </UnlockGate>
                         )}
 
                         {/* Delete Button */}
@@ -1181,21 +1203,33 @@ const EvmAssets: React.FC = () => {
                                           </p>
                                         )}
                                       </div>
-                                      <button
-                                        onClick={() => {
-                                          setSelectedWalletForSend(wallet);
-                                          setSelectedAssetForSend({
-                                            chain: chainAssets.chain,
-                                            chainId: chainAssets.chain_id,
-                                            asset: assetBalance
-                                          });
-                                          setIsSendDialogOpen(true);
-                                        }}
-                                        className="p-2 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-full transition-all opacity-0 group-hover:opacity-100 shadow-sm"
-                                        title="Send"
+                                      <UnlockGate
+                                        className="ml-auto"
+                                        prompt="Unlock to send"
+                                        onUnlockSuccess={() =>
+                                          openSendDialog(
+                                            wallet,
+                                            chainAssets.chain,
+                                            chainAssets.chain_id,
+                                            assetBalance
+                                          )
+                                        }
                                       >
-                                        <Send className="w-4 h-4" />
-                                      </button>
+                                        <button
+                                          onClick={() =>
+                                            openSendDialog(
+                                              wallet,
+                                              chainAssets.chain,
+                                              chainAssets.chain_id,
+                                              assetBalance
+                                            )
+                                          }
+                                          className="p-2 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-full transition-all opacity-0 group-hover:opacity-100 shadow-sm"
+                                          title="Send"
+                                        >
+                                          <Send className="w-4 h-4" />
+                                        </button>
+                                      </UnlockGate>
                                     </div>
                                   </div>
                                 ))}

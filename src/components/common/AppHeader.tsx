@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import dayjs from 'dayjs';
+import { Lock } from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { notifySecurityChanged, securityLock } from '@/lib/security';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 const AppHeader: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(dayjs());
+  const [isLocking, setIsLocking] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -21,6 +27,19 @@ const AppHeader: React.FC = () => {
     return date.format('MMM DD, YYYY');
   };
 
+  const handleLock = async () => {
+    setIsLocking(true);
+    try {
+      await securityLock();
+      notifySecurityChanged();
+      toast.success('Wallet locked');
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setIsLocking(false);
+    }
+  };
+
   return (
     <header className={cn(
       "h-16 px-6 flex items-center justify-between select-none transition-colors duration-200",
@@ -33,6 +52,16 @@ const AppHeader: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-4">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void handleLock()}
+          disabled={isLocking}
+          className="gap-2"
+        >
+          <Lock className="w-4 h-4" />
+          {isLocking ? 'Locking...' : 'Lock'}
+        </Button>
         <div className="text-right">
           <div className="font-mono text-sm font-medium tabular-nums leading-none mb-1 text-foreground/90">
             {formatTime(currentTime)}
