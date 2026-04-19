@@ -3,6 +3,14 @@ use crate::wallet::transaction_types::{
     TransactionStatus, TransactionType,
 };
 use crate::wallet::evm::config::get_chain_by_id;
+use crate::wallet::evm::private_key::{
+    evm_session_manager, load_authorized_mnemonic, load_authorized_private_key,
+    map_security_error,
+};
+use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
+use crate::wallet::security::session::SessionManager;
+use crate::wallet::security::types::{SecurityError, SignerOperation};
+use crate::wallet::types::WalletInfo;
 use crate::DB;
 use chrono::Utc;
 use ethers::prelude::*;
@@ -16,6 +24,11 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 
 const ETHERSCAN_API_KEY: &str = "TKG5YYYPSX97W8HG7ZHA319UXKWMXFKKG6";
+
+enum EvmSigningSecret {
+    Mnemonic(String),
+    PrivateKey(String),
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -381,14 +394,6 @@ pub async fn estimate_evm_gas(
 pub async fn send_evm_transaction(
     request: SendEvmRequest,
 ) -> Result<SendTransactionResponse, String> {
-    // Get wallet secret
-    let (secret_data, secret_type) = {
-        let db = DB.lock().unwrap();
-        db.get_evm_wallet_secret(&request.wallet_id)
-            .map_err(|e| format!("Failed to get wallet secret: {}", e))?
-            .ok_or_else(|| "Wallet secret not found".to_string())?
-    };
-
     // Get wallet info
     let wallet_info = {
         let db = DB.lock().unwrap();
@@ -396,6 +401,17 @@ pub async fn send_evm_transaction(
             .map_err(|e| format!("Failed to get wallet info: {}", e))?
             .ok_or_else(|| "Wallet not found".to_string())?
     };
+
+    // TODO(phase1-task6): inject keystore instead of constructing per-call.
+    let keystore = SqliteKeystore::new(&DB);
+    let signing_secret = load_signing_secret(
+        &wallet_info,
+        &keystore,
+        evm_session_manager(),
+        SignerOperation::Send,
+    )
+    .map_err(map_security_error)?
+    .ok_or_else(|| "Wallet secret not found".to_string())?;
 
     // Get chain config
     let chain_config = get_chain_by_id(request.chain_id)
@@ -407,29 +423,7 @@ pub async fn send_evm_transaction(
     let provider = Arc::new(provider);
 
     // Create wallet from secret
-    let wallet = match secret_type.as_str() {
-        "mnemonic" => {
-            MnemonicBuilder::<English>::default()
-                .phrase(secret_data.as_str())
-                .derivation_path("m/44'/60'/0'/0/0")
-                .map_err(|e| format!("Failed to set derivation path: {}", e))?
-                .build()
-                .map_err(|e| format!("Failed to build wallet: {}", e))?
-                .with_chain_id(request.chain_id)
-        }
-        "private-key" | "private_key" => {
-            let trimmed = secret_data.trim();
-            let pk = if trimmed.starts_with("0x") {
-                trimmed.to_string()
-            } else {
-                format!("0x{}", trimmed)
-            };
-            pk.parse::<LocalWallet>()
-                .map_err(|e| format!("Failed to parse private key: {}", e))?
-                .with_chain_id(request.chain_id)
-        }
-        _ => return Err(format!("Unsupported secret type: {}", secret_type)),
-    };
+    let wallet = wallet_from_signing_secret(signing_secret, request.chain_id)?;
 
     let client = SignerMiddleware::new(provider.clone(), wallet);
 
@@ -601,21 +595,24 @@ pub async fn get_transaction_receipt(
 pub async fn send_raw_evm_transaction(
     request: crate::wallet::transaction_types::RawTransactionRequest,
 ) -> Result<SendTransactionResponse, String> {
-    // Get wallet secret
-    let (secret_data, secret_type) = {
-        let db = DB.lock().unwrap();
-        db.get_evm_wallet_secret(&request.wallet_id)
-            .map_err(|e| format!("Failed to get wallet secret: {}", e))?
-            .ok_or_else(|| "Wallet secret not found".to_string())?
-    };
-
     // Get wallet info
-    let _wallet_info = {
+    let wallet_info = {
         let db = DB.lock().unwrap();
         db.get_evm_wallet(&request.wallet_id)
             .map_err(|e| format!("Failed to get wallet info: {}", e))?
             .ok_or_else(|| "Wallet not found".to_string())?
     };
+
+    // TODO(phase1-task6): inject keystore instead of constructing per-call.
+    let keystore = SqliteKeystore::new(&DB);
+    let signing_secret = load_signing_secret(
+        &wallet_info,
+        &keystore,
+        evm_session_manager(),
+        SignerOperation::Send,
+    )
+    .map_err(map_security_error)?
+    .ok_or_else(|| "Wallet secret not found".to_string())?;
 
     // Get chain config
     let chain_config = get_chain_by_id(request.chain_id)
@@ -627,29 +624,7 @@ pub async fn send_raw_evm_transaction(
     let provider = Arc::new(provider);
 
     // Create wallet from secret
-    let wallet = match secret_type.as_str() {
-        "mnemonic" => {
-            MnemonicBuilder::<English>::default()
-                .phrase(secret_data.as_str())
-                .derivation_path("m/44'/60'/0'/0/0")
-                .map_err(|e| format!("Failed to set derivation path: {}", e))?
-                .build()
-                .map_err(|e| format!("Failed to build wallet: {}", e))?
-                .with_chain_id(request.chain_id)
-        }
-        "private_key" | "private-key" => {
-            let trimmed = secret_data.trim();
-            let pk = if trimmed.starts_with("0x") {
-                trimmed.to_string()
-            } else {
-                format!("0x{}", trimmed)
-            };
-            pk.parse::<LocalWallet>()
-                .map_err(|e| format!("Failed to parse private key: {}", e))?
-                .with_chain_id(request.chain_id)
-        }
-        _ => return Err(format!("Unsupported secret type: {}", secret_type)),
-    };
+    let wallet = wallet_from_signing_secret(signing_secret, request.chain_id)?;
 
     let client = SignerMiddleware::new(provider.clone(), wallet);
 
@@ -712,13 +687,23 @@ pub async fn approve_erc20_token(
     spender_address: String,
     amount: String,
 ) -> Result<SendTransactionResponse, String> {
-    // Get wallet secret
-    let (secret_data, secret_type) = {
+    let wallet_info = {
         let db = DB.lock().unwrap();
-        db.get_evm_wallet_secret(&wallet_id)
-            .map_err(|e| format!("Failed to get wallet secret: {}", e))?
-            .ok_or_else(|| "Wallet secret not found".to_string())?
+        db.get_evm_wallet(&wallet_id)
+            .map_err(|e| format!("Failed to get wallet info: {}", e))?
+            .ok_or_else(|| "Wallet not found".to_string())?
     };
+
+    // TODO(phase1-task6): inject keystore instead of constructing per-call.
+    let keystore = SqliteKeystore::new(&DB);
+    let signing_secret = load_signing_secret(
+        &wallet_info,
+        &keystore,
+        evm_session_manager(),
+        SignerOperation::Approve,
+    )
+    .map_err(map_security_error)?
+    .ok_or_else(|| "Wallet secret not found".to_string())?;
 
     // Get chain config
     let chain_config = get_chain_by_id(chain_id)
@@ -730,29 +715,7 @@ pub async fn approve_erc20_token(
     let provider = Arc::new(provider);
 
     // Create wallet from secret
-    let wallet = match secret_type.as_str() {
-        "mnemonic" => {
-            MnemonicBuilder::<English>::default()
-                .phrase(secret_data.as_str())
-                .derivation_path("m/44'/60'/0'/0/0")
-                .map_err(|e| format!("Failed to set derivation path: {}", e))?
-                .build()
-                .map_err(|e| format!("Failed to build wallet: {}", e))?
-                .with_chain_id(chain_id)
-        }
-        "private-key" | "private_key" => {
-            let trimmed = secret_data.trim();
-            let pk = if trimmed.starts_with("0x") {
-                trimmed.to_string()
-            } else {
-                format!("0x{}", trimmed)
-            };
-            pk.parse::<LocalWallet>()
-                .map_err(|e| format!("Failed to parse private key: {}", e))?
-                .with_chain_id(chain_id)
-        }
-        _ => return Err(format!("Unsupported secret type: {}", secret_type)),
-    };
+    let wallet = wallet_from_signing_secret(signing_secret, chain_id)?;
 
     let client = SignerMiddleware::new(provider.clone(), wallet);
 
@@ -806,4 +769,119 @@ pub async fn approve_erc20_token(
         tx_hash: tx_hash_str,
         message: "Token approved successfully".to_string(),
     })
+}
+
+fn load_signing_secret(
+    wallet_info: &WalletInfo,
+    keystore: &dyn Keystore,
+    session_manager: &SessionManager,
+    operation: SignerOperation,
+) -> Result<Option<EvmSigningSecret>, SecurityError> {
+    match wallet_info.wallet_type.as_str() {
+        "mnemonic" => Ok(load_authorized_mnemonic(
+            &wallet_info.address,
+            keystore,
+            session_manager,
+            operation,
+        )?
+        .map(EvmSigningSecret::Mnemonic)),
+        "private-key" | "private_key" => Ok(load_authorized_private_key(
+            &wallet_info.address,
+            keystore,
+            session_manager,
+            operation,
+        )?
+        .map(EvmSigningSecret::PrivateKey)),
+        _ => Ok(None),
+    }
+}
+
+fn wallet_from_signing_secret(
+    signing_secret: EvmSigningSecret,
+    chain_id: u64,
+) -> Result<LocalWallet, String> {
+    match signing_secret {
+        EvmSigningSecret::Mnemonic(secret_data) => MnemonicBuilder::<English>::default()
+            .phrase(secret_data.as_str())
+            .derivation_path("m/44'/60'/0'/0/0")
+            .map_err(|e| format!("Failed to set derivation path: {}", e))?
+            .build()
+            .map_err(|e| format!("Failed to build wallet: {}", e))
+            .map(|wallet| wallet.with_chain_id(chain_id)),
+        EvmSigningSecret::PrivateKey(secret_data) => {
+            let trimmed = secret_data.trim();
+            let pk = if trimmed.starts_with("0x") {
+                trimmed.to_string()
+            } else {
+                format!("0x{}", trimmed)
+            };
+            pk.parse::<LocalWallet>()
+                .map_err(|e| format!("Failed to parse private key: {}", e))
+                .map(|wallet| wallet.with_chain_id(chain_id))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_signing_secret;
+    use crate::wallet::security::keystore::Keystore;
+    use crate::wallet::security::session::SessionManager;
+    use crate::wallet::security::types::{SecurityError, SignerOperation};
+    use crate::wallet::types::WalletInfo;
+    use std::time::Duration;
+
+    struct PanicKeystore;
+
+    impl Keystore for PanicKeystore {
+        fn load_mnemonic(&self, _address: &str) -> Result<Option<String>, SecurityError> {
+            panic!("keystore should not be called while session is locked");
+        }
+
+        fn load_private_key(&self, _address: &str) -> Result<Option<String>, SecurityError> {
+            panic!("keystore should not be called while session is locked");
+        }
+    }
+
+    fn test_wallet(wallet_type: &str) -> WalletInfo {
+        WalletInfo {
+            id: "wallet-id".to_string(),
+            label: "EVM Wallet".to_string(),
+            wallet_type: wallet_type.to_string(),
+            address: "0x1234".to_string(),
+            balance: 0.0,
+            created_at: "2026-04-19T00:00:00Z".to_string(),
+            updated_at: "2026-04-19T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn send_signing_returns_locked_without_keystore_access() {
+        let session = SessionManager::new(Duration::from_secs(30));
+
+        assert!(matches!(
+            load_signing_secret(
+                &test_wallet("mnemonic"),
+                &PanicKeystore,
+                &session,
+                SignerOperation::Send
+            ),
+            Err(SecurityError::Locked)
+        ));
+    }
+
+    #[test]
+    fn approve_signing_returns_locked_without_keystore_access() {
+        let session = SessionManager::new(Duration::from_secs(30));
+
+        assert!(matches!(
+            load_signing_secret(
+                &test_wallet("mnemonic"),
+                &PanicKeystore,
+                &session,
+                SignerOperation::Approve
+            ),
+            Err(SecurityError::Locked)
+        ));
+    }
 }
