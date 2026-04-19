@@ -1,3 +1,4 @@
+use crate::wallet::security::sanitize;
 use crate::wallet::evm::config::EvmChainConfig;
 use crate::wallet::evm::provider::{HybridProvider, ProviderError, ProviderRegistry};
 use ethers::prelude::*;
@@ -57,8 +58,16 @@ pub async fn get_chain_balances(
     while let Some(res) = set.join_next().await {
         match res {
             Ok(Ok(tuple)) => balances.push(tuple),
-            Ok(Err(err)) => tracing::warn!(chain=%chain_config.name(), error=%err, "Asset balance query failed"),
-            Err(join_err) => tracing::error!(chain=%chain_config.name(), join_err=?join_err, "Asset balance task panicked"),
+            Ok(Err(err)) => tracing::warn!(
+                chain = %sanitize(&format!("{}", chain_config.name())),
+                error = %sanitize(&format!("{}", err)),
+                "Asset balance query failed"
+            ),
+            Err(join_err) => tracing::error!(
+                chain = %sanitize(&format!("{}", chain_config.name())),
+                join_err = %sanitize(&format!("{:?}", join_err)),
+                "Asset balance task panicked"
+            ),
         }
     }
 
@@ -111,7 +120,13 @@ async fn handle_retry(label: &str, attempt: u32, err: ProviderError) -> Result<(
     }
 
     let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-    tracing::warn!(label=%label, attempt=%attempt, delay_ms=%delay_ms, error=%err.to_string(), "Retrying balance query");
+    tracing::warn!(
+        label = %sanitize(&format!("{}", label)),
+        attempt = %sanitize(&format!("{}", attempt)),
+        delay_ms = %sanitize(&format!("{}", delay_ms)),
+        error = %sanitize(&format!("{}", err)),
+        "Retrying balance query"
+    );
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     Ok(())
 }

@@ -55,7 +55,10 @@ macro_rules! safe_log {
         let sanitized = $crate::wallet::security::log_sanitize::sanitize(&message);
         #[cfg(test)]
         {
-            println!("{}", sanitized);
+            let _ = ::std::io::Write::write_fmt(
+                &mut ::std::io::stdout(),
+                format_args!("{}\n", sanitized),
+            );
         }
         #[cfg(not(test))]
         {

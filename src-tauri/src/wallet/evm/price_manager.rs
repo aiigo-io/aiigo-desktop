@@ -1,3 +1,4 @@
+use crate::wallet::security::sanitize;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -85,7 +86,7 @@ impl PriceManager {
         }
 
         tracing::info!(
-            symbols_updated = cache.len(),
+            symbols_updated = %sanitize(&format!("{}", cache.len())),
             "Price cache refreshed successfully"
         );
 
@@ -105,7 +106,10 @@ fn get_stablecoin_price(symbol: &str) -> Option<f64> {
 pub async fn start_background_refresh() {
     // Initial refresh
     if let Err(e) = PRICE_MANAGER.refresh_prices().await {
-        tracing::warn!(error = %e, "Initial price refresh failed");
+        tracing::warn!(
+            error = %sanitize(&format!("{}", e)),
+            "Initial price refresh failed"
+        );
     } else {
         tracing::info!("Price manager initialized with initial prices");
     }
@@ -116,7 +120,10 @@ pub async fn start_background_refresh() {
         interval.tick().await;
         
         if let Err(e) = PRICE_MANAGER.refresh_prices().await {
-            tracing::warn!(error = %e, "Background price refresh failed");
+            tracing::warn!(
+                error = %sanitize(&format!("{}", e)),
+                "Background price refresh failed"
+            );
         }
     }
 }

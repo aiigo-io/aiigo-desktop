@@ -105,8 +105,8 @@ pub async fn evm_get_wallet_with_balances(wallet_id: String) -> Result<EvmWallet
                                 usd_value,
                             });
 
-                            chain_assets_vec.push(EvmAssetBalance {
-                                chain: chain_name.clone(),
+                    chain_assets_vec.push(EvmAssetBalance {
+                        chain: chain_name.clone(),
                                 asset: asset.clone(),
                                 balance: balance_str.clone(),
                                 balance_float: *balance_float,
@@ -117,7 +117,7 @@ pub async fn evm_get_wallet_with_balances(wallet_id: String) -> Result<EvmWallet
                     }
                 }
                 Err(e) => {
-                    eprintln!(
+                    crate::safe_log!(
                         "[WARNING] Failed to query balances for {}: {}",
                         chain_name, e
                     );
@@ -148,8 +148,8 @@ pub async fn evm_get_wallet_with_balances(wallet_id: String) -> Result<EvmWallet
                 chains_with_order.push((order, chain_assets));
                 all_asset_data.extend(asset_data);
             }
-            Ok(Err(e)) => eprintln!("[ERROR] Chain balance task failed: {}", e),
-            Err(join_err) => eprintln!("[ERROR] Chain task panicked: {:?}", join_err),
+            Ok(Err(e)) => crate::safe_log!("[ERROR] Chain balance task failed: {}", e),
+            Err(join_err) => crate::safe_log!("[ERROR] Chain task panicked: {:?}", join_err),
         }
     }
 

@@ -1,4 +1,5 @@
 use super::types::{ProviderConfig, ProviderError};
+use crate::wallet::security::sanitize;
 use ethers::providers::{Provider, Ws};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -27,11 +28,22 @@ impl WssConnectionPool {
         for i in 0..pool_size {
             match Self::connect(&wss_url, config.connect_timeout_secs).await {
                 Ok(provider) => {
-                    tracing::info!(chain=%chain_name, connection=%(i + 1), pool_size=%pool_size, "Established WSS connection");
+                    tracing::info!(
+                        chain = %sanitize(&format!("{}", chain_name)),
+                        connection = %sanitize(&format!("{}", i + 1)),
+                        pool_size = %sanitize(&format!("{}", pool_size)),
+                        "Established WSS connection"
+                    );
                     connections.push(provider);
                 }
                 Err(err) => {
-                    tracing::warn!(chain=%chain_name, connection=%(i + 1), pool_size=%pool_size, error=%err.to_string(), "Failed to establish WSS connection");
+                    tracing::warn!(
+                        chain = %sanitize(&format!("{}", chain_name)),
+                        connection = %sanitize(&format!("{}", i + 1)),
+                        pool_size = %sanitize(&format!("{}", pool_size)),
+                        error = %sanitize(&format!("{}", err)),
+                        "Failed to establish WSS connection"
+                    );
                     if connections.is_empty() {
                         return Err(err);
                     } else {

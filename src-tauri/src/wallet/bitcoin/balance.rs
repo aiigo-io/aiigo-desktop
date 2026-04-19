@@ -1,3 +1,4 @@
+use crate::wallet::security::sanitize;
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -52,16 +53,29 @@ pub async fn query_btc_balance(address: &str) -> Result<f64, String> {
         for attempt in 1..=RETRY_ATTEMPTS {
             match try_query_from_api(api_name, url).await {
                 Ok(balance) => {
-                    tracing::info!(api=%api_name, balance=%balance, "Retrieved BTC balance");
+                    tracing::info!(
+                        api = %sanitize(&format!("{}", api_name)),
+                        balance = %sanitize(&format!("{}", balance)),
+                        "Retrieved BTC balance"
+                    );
                     return Ok(balance);
                 }
                 Err(e) => {
                     if attempt < RETRY_ATTEMPTS {
                         let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                        tracing::warn!(attempt=%attempt, api=%api_name, delay_ms=%delay_ms, error=%e.to_string(), "Retrying BTC balance query");
+                        tracing::warn!(
+                            attempt = %sanitize(&format!("{}", attempt)),
+                            api = %sanitize(&format!("{}", api_name)),
+                            delay_ms = %sanitize(&format!("{}", delay_ms)),
+                            error = %sanitize(&format!("{}", e)),
+                            "Retrying BTC balance query"
+                        );
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     } else {
-                        tracing::warn!(api=%api_name, "All attempts failed; trying next API");
+                        tracing::warn!(
+                            api = %sanitize(&format!("{}", api_name)),
+                            "All attempts failed; trying next API"
+                        );
                     }
                 }
             }

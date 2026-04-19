@@ -1,4 +1,5 @@
 use once_cell::sync::Lazy;
+use crate::wallet::security::sanitize;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -129,16 +130,28 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
                     }
                 }
                 let duration_ms = attempt_start.elapsed().as_millis();
-                tracing::info!(count=%result.len(), duration_ms=%duration_ms, "Fetched fresh prices from CoinGecko");
+                tracing::info!(
+                    count = %sanitize(&format!("{}", result.len())),
+                    duration_ms = %sanitize(&format!("{}", duration_ms)),
+                    "Fetched fresh prices from CoinGecko"
+                );
                 return Ok(result);
             }
             Err(e) => {
                 if attempt < RETRY_ATTEMPTS {
                     let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                    tracing::warn!(attempt=%attempt, delay_ms=%delay_ms, error=%e.to_string(), "Price query attempt failed; retrying");
+                    tracing::warn!(
+                        attempt = %sanitize(&format!("{}", attempt)),
+                        delay_ms = %sanitize(&format!("{}", delay_ms)),
+                        error = %sanitize(&format!("{}", e)),
+                        "Price query attempt failed; retrying"
+                    );
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 } else {
-                    tracing::warn!(error=%e.to_string(), "Failed to fetch prices after all retries");
+                    tracing::warn!(
+                        error = %sanitize(&format!("{}", e)),
+                        "Failed to fetch prices after all retries"
+                    );
                     // Try to use stale cache as fallback
                     let cache = PRICE_CACHE.lock().unwrap();
                     if !cache.prices.is_empty() {
@@ -204,7 +217,10 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, (f64, f64)>, Stri
             let change = price_data.usd_24h_change.unwrap_or(0.0);
             result.insert(coin_id, (usd_price, change));
         } else {
-            tracing::warn!(coin_id=%coin_id, "Missing USD price data");
+            tracing::warn!(
+                coin_id = %sanitize(&format!("{}", coin_id)),
+                "Missing USD price data"
+            );
         }
     }
 
