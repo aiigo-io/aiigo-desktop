@@ -1,5 +1,6 @@
 use crate::wallet::bitcoin::transaction as bitcoin_transaction;
 use crate::wallet::evm::transaction as evm_transaction;
+use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::transaction_types::{
     BitcoinFeeEstimationResponse, BitcoinTransaction, EvmTransaction, SendBitcoinRequest,
     SendEvmRequest, SendTransactionResponse,
@@ -9,8 +10,16 @@ use crate::DB;
 // Bitcoin Transaction Commands
 
 #[tauri::command]
-pub async fn send_bitcoin(request: SendBitcoinRequest) -> Result<SendTransactionResponse, String> {
-    bitcoin_transaction::send_bitcoin_transaction(request).await
+pub async fn send_bitcoin(
+    request: SendBitcoinRequest,
+    state: tauri::State<'_, AppSecurity>,
+) -> Result<SendTransactionResponse, String> {
+    bitcoin_transaction::send_bitcoin_transaction(
+        request,
+        state.keystore(),
+        state.session_manager(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -43,8 +52,16 @@ pub async fn fetch_bitcoin_history(
 // EVM Transaction Commands
 
 #[tauri::command]
-pub async fn send_evm(request: SendEvmRequest) -> Result<SendTransactionResponse, String> {
-    evm_transaction::send_evm_transaction(request).await
+pub async fn send_evm(
+    request: SendEvmRequest,
+    state: tauri::State<'_, AppSecurity>,
+) -> Result<SendTransactionResponse, String> {
+    evm_transaction::send_evm_transaction(
+        request,
+        state.keystore(),
+        state.session_manager(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -83,6 +100,7 @@ pub async fn evm_send_transaction(
     wallet_id: String,
     chain_id: u64,
     transaction: serde_json::Value,
+    state: tauri::State<'_, AppSecurity>,
 ) -> Result<String, String> {
     // Parse the transaction object
     let to = transaction.get("to")
@@ -120,7 +138,12 @@ pub async fn evm_send_transaction(
         gas_price,
     };
 
-    let response = evm_transaction::send_raw_evm_transaction(request).await?;
+    let response = evm_transaction::send_raw_evm_transaction(
+        request,
+        state.keystore(),
+        state.session_manager(),
+    )
+    .await?;
     Ok(response.tx_hash)
 }
 
@@ -131,6 +154,7 @@ pub async fn evm_approve_token(
     token_address: String,
     spender_address: String,
     amount: String,
+    state: tauri::State<'_, AppSecurity>,
 ) -> Result<String, String> {
     let response = evm_transaction::approve_erc20_token(
         wallet_id,
@@ -138,6 +162,8 @@ pub async fn evm_approve_token(
         token_address,
         spender_address,
         amount,
+        state.keystore(),
+        state.session_manager(),
     ).await?;
     Ok(response.tx_hash)
 }

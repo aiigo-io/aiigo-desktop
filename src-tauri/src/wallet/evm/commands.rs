@@ -1,7 +1,6 @@
 use crate::db::AssetBalanceData;
 use crate::wallet::evm::balance;
 use crate::wallet::evm::config::{chain_concurrency_limit, get_all_chains};
-use crate::wallet::evm::price;
 use crate::wallet::types::{EvmAssetBalance, EvmChainAssets, EvmWalletInfo, WalletInfo};
 use crate::DB;
 use std::collections::{HashMap, HashSet};

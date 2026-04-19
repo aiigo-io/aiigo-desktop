@@ -1,20 +1,11 @@
-use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
+use crate::wallet::security::keystore::Keystore;
+use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
 use crate::wallet::types::CreateWalletResponse;
 use crate::DB;
 use bitcoin::{Address, Network};
-use once_cell::sync::Lazy;
-use std::time::Duration;
 use std::str::FromStr;
-
-// TODO(phase1-task6): move session ownership to Tauri managed state.
-static BITCOIN_SESSION_MANAGER: Lazy<SessionManager> =
-    Lazy::new(|| SessionManager::new(Duration::from_secs(300)));
-
-pub(crate) fn bitcoin_session_manager() -> &'static SessionManager {
-    &BITCOIN_SESSION_MANAGER
-}
 
 pub(crate) fn map_security_error(error: SecurityError) -> String {
     match error {
@@ -27,7 +18,7 @@ pub(crate) fn map_security_error(error: SecurityError) -> String {
 
 pub(crate) fn load_authorized_mnemonic(
     address: &str,
-    keystore: &dyn Keystore,
+    keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
     operation: SignerOperation,
 ) -> Result<Option<String>, SecurityError> {
@@ -37,7 +28,7 @@ pub(crate) fn load_authorized_mnemonic(
 
 pub(crate) fn load_authorized_private_key(
     address: &str,
-    keystore: &dyn Keystore,
+    keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
     operation: SignerOperation,
 ) -> Result<Option<String>, SecurityError> {
@@ -107,8 +98,7 @@ pub fn bitcoin_create_wallet_from_private_key(
         .add_bitcoin_wallet(label, "private-key".to_string(), address_str)
         .map_err(|e| format!("Failed to save wallet: {}", e))?;
 
-    // TODO(phase1-task6): route secret writes through a Keystore write API.
-    // Deferred, not scoped to Phase 1 read-path boundary extraction.
+    // Secret writes remain DB-backed in Phase 1; Keystore write API is deferred.
     // Store private key (for now, storing as plain text - TODO: add encryption)
     db.add_wallet_secret(
         wallet.id.clone(),
@@ -126,7 +116,10 @@ pub fn bitcoin_create_wallet_from_private_key(
 }
 
 #[tauri::command]
-pub fn bitcoin_export_mnemonic(wallet_id: String) -> Result<String, String> {
+pub fn bitcoin_export_mnemonic(
+    wallet_id: String,
+    state: tauri::State<'_, AppSecurity>,
+) -> Result<String, String> {
     let db = DB.lock().unwrap();
 
     // Get wallet to verify it exists
@@ -143,12 +136,10 @@ pub fn bitcoin_export_mnemonic(wallet_id: String) -> Result<String, String> {
     let address = wallet.address.clone();
     drop(db);
 
-    // TODO(phase1-task6): inject keystore instead of constructing per-call.
-    let keystore = SqliteKeystore::new(&DB);
     load_authorized_mnemonic(
         &address,
-        &keystore,
-        bitcoin_session_manager(),
+        state.keystore(),
+        state.session_manager(),
         SignerOperation::ExportMnemonic,
     )
     .map_err(map_security_error)?
@@ -156,7 +147,10 @@ pub fn bitcoin_export_mnemonic(wallet_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn bitcoin_export_private_key(wallet_id: String) -> Result<String, String> {
+pub fn bitcoin_export_private_key(
+    wallet_id: String,
+    state: tauri::State<'_, AppSecurity>,
+) -> Result<String, String> {
     let db = DB.lock().unwrap();
 
     // Get wallet to verify it exists
@@ -169,14 +163,11 @@ pub fn bitcoin_export_private_key(wallet_id: String) -> Result<String, String> {
     let wallet_type = wallet.wallet_type.clone();
     drop(db);
 
-    // TODO(phase1-task6): inject keystore instead of constructing per-call.
-    let keystore = SqliteKeystore::new(&DB);
-
     match wallet_type.as_str() {
         "private-key" | "private_key" => load_authorized_private_key(
             &address,
-            &keystore,
-            bitcoin_session_manager(),
+            state.keystore(),
+            state.session_manager(),
             SignerOperation::ExportPrivateKey,
         )
         .map_err(map_security_error)?
@@ -185,8 +176,8 @@ pub fn bitcoin_export_private_key(wallet_id: String) -> Result<String, String> {
             // For mnemonic-based wallets, we need to derive the private key from mnemonic
             let mnemonic = load_authorized_mnemonic(
                 &address,
-                &keystore,
-                bitcoin_session_manager(),
+                state.keystore(),
+                state.session_manager(),
                 SignerOperation::ExportPrivateKey,
             )
             .map_err(map_security_error)?

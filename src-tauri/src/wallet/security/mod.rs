@@ -8,8 +8,8 @@ pub mod types;
 pub mod keystore;
 pub mod session;
 pub mod log_sanitize;
+pub mod commands;
 #[allow(unused_imports)]
 pub use crate::safe_log;
 #[allow(unused_imports)]
 pub use log_sanitize::sanitize;
-// pub mod commands;     // Phase 1

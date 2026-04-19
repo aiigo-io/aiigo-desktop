@@ -4,10 +4,10 @@ use crate::wallet::transaction_types::{
 };
 use crate::wallet::evm::config::get_chain_by_id;
 use crate::wallet::evm::private_key::{
-    evm_session_manager, load_authorized_mnemonic, load_authorized_private_key,
+    load_authorized_mnemonic, load_authorized_private_key,
     map_security_error,
 };
-use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
+use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
 use crate::wallet::types::WalletInfo;
@@ -393,6 +393,8 @@ pub async fn estimate_evm_gas(
 /// Send EVM transaction
 pub async fn send_evm_transaction(
     request: SendEvmRequest,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
     // Get wallet info
     let wallet_info = {
@@ -402,12 +404,10 @@ pub async fn send_evm_transaction(
             .ok_or_else(|| "Wallet not found".to_string())?
     };
 
-    // TODO(phase1-task6): inject keystore instead of constructing per-call.
-    let keystore = SqliteKeystore::new(&DB);
     let signing_secret = load_signing_secret(
         &wallet_info,
-        &keystore,
-        evm_session_manager(),
+        keystore,
+        session_manager,
         SignerOperation::Send,
     )
     .map_err(map_security_error)?
@@ -594,6 +594,8 @@ pub async fn get_transaction_receipt(
 /// Send a raw EVM transaction (for OpenOcean swaps and other contract interactions)
 pub async fn send_raw_evm_transaction(
     request: crate::wallet::transaction_types::RawTransactionRequest,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
     // Get wallet info
     let wallet_info = {
@@ -603,12 +605,10 @@ pub async fn send_raw_evm_transaction(
             .ok_or_else(|| "Wallet not found".to_string())?
     };
 
-    // TODO(phase1-task6): inject keystore instead of constructing per-call.
-    let keystore = SqliteKeystore::new(&DB);
     let signing_secret = load_signing_secret(
         &wallet_info,
-        &keystore,
-        evm_session_manager(),
+        keystore,
+        session_manager,
         SignerOperation::Send,
     )
     .map_err(map_security_error)?
@@ -686,6 +686,8 @@ pub async fn approve_erc20_token(
     token_address: String,
     spender_address: String,
     amount: String,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
     let wallet_info = {
         let db = DB.lock().unwrap();
@@ -694,12 +696,10 @@ pub async fn approve_erc20_token(
             .ok_or_else(|| "Wallet not found".to_string())?
     };
 
-    // TODO(phase1-task6): inject keystore instead of constructing per-call.
-    let keystore = SqliteKeystore::new(&DB);
     let signing_secret = load_signing_secret(
         &wallet_info,
-        &keystore,
-        evm_session_manager(),
+        keystore,
+        session_manager,
         SignerOperation::Approve,
     )
     .map_err(map_security_error)?
@@ -773,7 +773,7 @@ pub async fn approve_erc20_token(
 
 fn load_signing_secret(
     wallet_info: &WalletInfo,
-    keystore: &dyn Keystore,
+    keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
     operation: SignerOperation,
 ) -> Result<Option<EvmSigningSecret>, SecurityError> {

@@ -236,8 +236,10 @@ impl Database {
         Ok(())
     }
 
-    #[deprecated(note = "Use wallet::security::Keystore for bitcoin secret reads")]
-    pub fn get_wallet_secret(&self, wallet_id: &str) -> SqliteResult<Option<(String, String)>> {
+    pub(crate) fn load_bitcoin_wallet_secret(
+        &self,
+        wallet_id: &str,
+    ) -> SqliteResult<Option<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT secret_data, secret_type FROM bitcoin_wallet_secrets WHERE wallet_id = ?1",
@@ -382,7 +384,10 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_evm_wallet_secret(&self, wallet_id: &str) -> SqliteResult<Option<(String, String)>> {
+    pub(crate) fn load_evm_wallet_secret(
+        &self,
+        wallet_id: &str,
+    ) -> SqliteResult<Option<(String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT secret_data, secret_type FROM evm_wallet_secrets WHERE wallet_id = ?1",

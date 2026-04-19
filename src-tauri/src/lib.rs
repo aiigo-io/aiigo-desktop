@@ -4,10 +4,15 @@ mod dashboard;
 
 use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
 use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
+use wallet::security::commands::{security_is_unlocked, security_lock, security_unlock, AppSecurity};
+use wallet::security::keystore::{Keystore, SqliteKeystore};
+use wallet::security::session::SessionManager;
 use wallet::transaction_commands;
 use dotenvy::dotenv;
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
 
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
@@ -68,11 +73,16 @@ pub fn run() {
     init_tracing();
 
     let _ = &*DB;
+    let app_security = AppSecurity {
+        session_manager: Arc::new(SessionManager::new(Duration::from_secs(300))),
+        keystore: Arc::new(SqliteKeystore::new(&DB)) as Arc<dyn Keystore + Send + Sync>,
+    };
 
     tauri::Builder::default()
+        .manage(app_security)
         .plugin(tauri_plugin_opener::init())
         .plugin(WindowStatePlugin::default().build())
-        .setup(|app| {
+        .setup(|_app| {
             // Initialize price manager with background refresh
             tauri::async_runtime::spawn(async move {
                 wallet::evm::price_manager::start_background_refresh().await;
@@ -122,6 +132,10 @@ pub fn run() {
             dashboard::commands::get_portfolio_history,
             dashboard::commands::get_asset_allocation,
             dashboard::commands::get_unified_recent_transactions,
+            // Security handlers
+            security_unlock,
+            security_lock,
+            security_is_unlocked,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

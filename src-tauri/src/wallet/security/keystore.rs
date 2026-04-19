@@ -71,7 +71,7 @@ fn load_secret_from_database(
         address,
     ) {
         return db
-            .get_wallet_secret(&wallet_id)
+            .load_bitcoin_wallet_secret(&wallet_id)
             .map_err(|_| SecurityError::OperationNotAllowed);
     }
 
@@ -81,7 +81,7 @@ fn load_secret_from_database(
         address,
     ) {
         return db
-            .get_evm_wallet_secret(&wallet_id)
+            .load_evm_wallet_secret(&wallet_id)
             .map_err(|_| SecurityError::OperationNotAllowed);
     }
 

@@ -2,16 +2,16 @@ use crate::wallet::transaction_types::{
     BitcoinFeeEstimationResponse, BitcoinTransaction, SendBitcoinRequest, SendTransactionResponse,
     TransactionStatus, TransactionType,
 };
-use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
+use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
 use crate::wallet::types::WalletInfo;
 use crate::wallet::bitcoin::private_key::{
-    bitcoin_session_manager, load_authorized_mnemonic, load_authorized_private_key,
+    load_authorized_mnemonic, load_authorized_private_key,
     map_security_error,
 };
 use crate::DB;
-use bdk::blockchain::{Blockchain, ElectrumBlockchain, GetHeight};
+use bdk::blockchain::{Blockchain, ElectrumBlockchain};
 use bdk::database::MemoryDatabase;
 use bdk::electrum_client::Client;
 use bdk::psbt::PsbtUtils;
@@ -358,6 +358,8 @@ pub async fn estimate_bitcoin_fees() -> Result<BitcoinFeeEstimationResponse, Str
 /// Send Bitcoin transaction
 pub async fn send_bitcoin_transaction(
     request: SendBitcoinRequest,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
     crate::safe_log!("[INFO] Sending Bitcoin transaction from wallet: {}", request.wallet_id);
     crate::safe_log!(
@@ -380,10 +382,8 @@ pub async fn send_bitcoin_transaction(
             })?
     };
 
-    // TODO(phase1-task6): inject keystore instead of constructing per-call.
-    let keystore = SqliteKeystore::new(&DB);
     let signing_secret =
-        load_signing_secret(&wallet_info, &keystore, bitcoin_session_manager())
+        load_signing_secret(&wallet_info, keystore, session_manager)
             .map_err(map_security_error)?
             .ok_or_else(|| "Wallet secret not found".to_string())?;
 
@@ -556,7 +556,7 @@ pub async fn send_bitcoin_transaction(
 
 fn load_signing_secret(
     wallet_info: &WalletInfo,
-    keystore: &dyn Keystore,
+    keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<Option<BitcoinSigningSecret>, SecurityError> {
     match wallet_info.wallet_type.as_str() {
