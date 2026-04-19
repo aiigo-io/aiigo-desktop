@@ -4,6 +4,9 @@ const REDACTED_HEX: &str = "[REDACTED_HEX]";
 const REDACTED_TOKEN: &str = "[REDACTED_TOKEN]";
 const PLACEHOLDER_TOKEN: &str = "token";
 
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+
 pub fn sanitize(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut index = 0;
@@ -48,6 +51,22 @@ pub fn sanitize_error<E: std::fmt::Display>(err: E) -> String {
     sanitize(&err.to_string())
 }
 
+#[cfg(test)]
+fn test_log_buffer() -> &'static Mutex<Vec<String>> {
+    static TEST_LOG_BUFFER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    TEST_LOG_BUFFER.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn record_test_log_line(line: &str) {
+    test_log_buffer().lock().unwrap().push(line.to_string());
+}
+
+#[cfg(test)]
+pub(crate) fn take_test_log_lines() -> Vec<String> {
+    std::mem::take(&mut *test_log_buffer().lock().unwrap())
+}
+
 #[macro_export]
 macro_rules! safe_log {
     ($($arg:tt)*) => {{
@@ -59,6 +78,7 @@ macro_rules! safe_log {
                 &mut ::std::io::stdout(),
                 format_args!("{}\n", sanitized),
             );
+            $crate::wallet::security::log_sanitize::record_test_log_line(&sanitized);
         }
         #[cfg(not(test))]
         {

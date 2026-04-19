@@ -607,6 +607,7 @@ fn descriptor_from_signing_secret(
 mod tests {
     use super::load_signing_secret;
     use crate::wallet::security::keystore::Keystore;
+    use crate::wallet::security::log_sanitize::take_test_log_lines;
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::SecurityError;
     use crate::wallet::types::WalletInfo;
@@ -644,5 +645,20 @@ mod tests {
             load_signing_secret(&test_wallet("mnemonic"), &PanicKeystore, &session),
             Err(SecurityError::Locked)
         ));
+    }
+
+    #[test]
+    fn history_fetch_log_harness_redacts_mnemonic_shape() {
+        let _ = take_test_log_lines();
+        let mnemonic_shape =
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        crate::safe_log!(
+            "[INFO] Fetching Bitcoin transaction history for wallet: {}",
+            mnemonic_shape
+        );
+        let output = take_test_log_lines().join("\n");
+
+        assert!(output.contains("[REDACTED_MNEMONIC]"));
+        assert!(!output.contains(mnemonic_shape));
     }
 }
