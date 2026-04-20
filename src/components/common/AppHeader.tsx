@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import dayjs from 'dayjs';
 import { Lock } from 'lucide-react';
 
+import { useSecuritySession } from '@/components/common/SecuritySession';
 import { Button } from '@/components/ui/button';
 import { notifySecurityChanged, securityLock } from '@/lib/security';
 import { cn } from '@/lib/utils';
@@ -10,6 +11,7 @@ import { toast } from 'sonner';
 const AppHeader: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(dayjs());
   const [isLocking, setIsLocking] = useState(false);
+  const { status } = useSecuritySession();
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -56,8 +58,8 @@ const AppHeader: React.FC = () => {
           variant="outline"
           size="sm"
           onClick={() => void handleLock()}
-          disabled={isLocking}
-          className="gap-2"
+          disabled={isLocking || status !== 'unlocked'}
+          className="gap-2 rounded-2xl border-border/60 bg-[#141C27] px-4 text-slate-200 hover:bg-[#192331]"
         >
           <Lock className="w-4 h-4" />
           {isLocking ? 'Locking...' : 'Lock'}

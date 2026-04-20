@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge, Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, Send, ChevronRight, HelpCircle, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { parseSecurityError } from '@/lib/security';
 import { shortAddress, getEvmExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -59,6 +61,7 @@ const REFRESH_CACHE_TTL_MS = 60_000; // Align with backend price cache duration
 type RefreshScope = 'single' | 'all';
 
 const EvmAssets: React.FC = () => {
+  const { requestUnlock } = useSecuritySession();
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [walletsWithBalances, setWalletsWithBalances] = useState<Map<string, EvmWalletInfo>>(new Map());
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -476,7 +479,15 @@ const EvmAssets: React.FC = () => {
       handleRefreshBalance(selectedWalletForSend.id);
     } catch (error) {
       console.error('Error sending EVM asset:', error);
-      alert(`Error: ${error}`);
+      if (parseSecurityError(error) === 'locked') {
+        void requestUnlock({
+          prompt: 'Unlock to continue sending assets.',
+          reason: 'expired',
+          onUnlockSuccess: handleSendEvm,
+        });
+      } else {
+        alert(`Error: ${error}`);
+      }
     } finally {
       setIsSending(false);
     }

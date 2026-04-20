@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowUpDown, Settings2, Info, RefreshCw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
+import { parseSecurityError } from '@/lib/security';
 import { useSwap } from '../hooks/useSwap';
 import { SUPPORTED_CHAINS, MAX_PRICE_IMPACT_WARNING, MAX_PRICE_IMPACT_BLOCK } from '../constants';
 import { Button } from '@/components/ui/button';
@@ -65,6 +67,7 @@ interface SwapCardProps {
 }
 
 export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
+    const { requestUnlock } = useSecuritySession();
     const {
         fromChain,
         fromToken,
@@ -190,6 +193,13 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
             }
         } catch (error) {
             console.error('Transaction error:', error);
+            if (parseSecurityError(error) === 'locked') {
+                await requestUnlock({
+                    prompt: needsApproval ? `Unlock to approve ${fromToken.symbol}.` : 'Unlock to continue swap.',
+                    reason: 'expired',
+                    onUnlockSuccess: handleButtonClick,
+                });
+            }
         }
     };
 

@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw, Send, ExternalLink, HelpCircle } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { parseSecurityError } from '@/lib/security';
 import { shortAddress, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -22,6 +24,7 @@ interface CreateWalletResponse {
 }
 
 const BitcoinAssets: React.FC = () => {
+  const { requestUnlock } = useSecuritySession();
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [showMnemonicDialog, setShowMnemonicDialog] = useState(false);
@@ -314,7 +317,15 @@ const BitcoinAssets: React.FC = () => {
       handleRefreshBalance(selectedWalletForSend.id);
     } catch (error) {
       console.error('Error sending BTC:', error);
-      toast.error(`Error: ${error}`);
+      if (parseSecurityError(error) === 'locked') {
+        void requestUnlock({
+          prompt: 'Unlock to continue sending BTC.',
+          reason: 'expired',
+          onUnlockSuccess: handleSendBtc,
+        });
+      } else {
+        toast.error(`Error: ${error}`);
+      }
     } finally {
       setIsSending(false);
     }

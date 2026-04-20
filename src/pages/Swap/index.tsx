@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { SessionBadge } from '@/components/common/SecuritySession';
 import { SwapCard } from './components/SwapCard';
 import { WalletSelector } from './components/WalletSelector';
 
@@ -25,13 +26,18 @@ const SWAP: React.FC = () => {
 
       <div className="relative z-10 max-w-7xl mx-auto space-y-6">
         {/* Header */}
-        <div className="text-center md:text-left">
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">
-            Token Swap
-          </h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            Swap tokens across multiple chains with the best rates
-          </p>
+        <div className="flex items-start justify-between gap-4 text-center md:text-left">
+          <div className="space-y-3">
+            <div className="flex items-center justify-center gap-3 md:justify-start">
+              <h1 className="text-3xl font-bold tracking-tight text-foreground">
+                Token Swap
+              </h1>
+              <SessionBadge />
+            </div>
+            <p className="text-muted-foreground mt-1 text-sm">
+              Swap tokens across multiple chains with the best rates
+            </p>
+          </div>
         </div>
 
         {/* Wallet Selector */}
