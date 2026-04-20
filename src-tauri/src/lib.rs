@@ -7,6 +7,7 @@ use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as ev
 use wallet::security::commands::{security_is_unlocked, security_lock, security_unlock, AppSecurity};
 use wallet::security::keystore::{Keystore, SqliteKeystore};
 use wallet::security::session::SessionManager;
+use wallet::state::commands as state_commands;
 use wallet::transaction_commands;
 use dotenvy::dotenv;
 use once_cell::sync::Lazy;
@@ -132,6 +133,10 @@ pub fn run() {
             dashboard::commands::get_portfolio_history,
             dashboard::commands::get_asset_allocation,
             dashboard::commands::get_unified_recent_transactions,
+            // State handlers
+            state_commands::state_get_bitcoin_wallet_balance_state,
+            state_commands::state_get_bitcoin_price_state,
+            state_commands::state_get_bitcoin_portfolio_state,
             // Security handlers
             security_unlock,
             security_lock,

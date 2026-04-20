@@ -1,9 +1,15 @@
 use crate::wallet::security::sanitize;
+use crate::wallet::state::price as state_price;
+use crate::wallet::state::types::PriceState;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time;
+use chrono::Utc;
+
+const PRICE_FRESH_WITHIN_SECS: i64 = 60;
+const PRICE_STALE_AFTER_SECS: i64 = 300;
 
 /// Global price cache with automatic background refresh
 static PRICE_MANAGER: Lazy<PriceManager> = Lazy::new(|| PriceManager::new());
@@ -13,7 +19,8 @@ static PRICE_MANAGER: Lazy<PriceManager> = Lazy::new(|| PriceManager::new());
 struct PriceEntry {
     price: f64,
     change_24h: f64,
-    last_updated: Instant,
+    fetched_at_unix: i64,
+    source: String,
 }
 
 /// Thread-safe price cache manager
@@ -39,6 +46,28 @@ impl PriceManager {
 
         let cache = self.cache.lock().unwrap();
         cache.get(symbol).map(|entry| entry.price)
+    }
+
+    pub fn get_cached_price_state(&self, symbol: &str) -> PriceState {
+        let now = Utc::now().timestamp();
+
+        if let Some(price) = get_stablecoin_price(symbol) {
+            return state_price::synthetic(price, "synthetic-stablecoin", now);
+        }
+
+        let cache = self.cache.lock().unwrap();
+        let Some(entry) = cache.get(symbol) else {
+            return state_price::unavailable();
+        };
+
+        state_price::from_fetch(
+            entry.price,
+            &entry.source,
+            entry.fetched_at_unix,
+            now,
+            PRICE_FRESH_WITHIN_SECS,
+            PRICE_STALE_AFTER_SECS,
+        )
     }
 
     /// Get cached 24h change for a symbol
@@ -75,13 +104,19 @@ impl PriceManager {
 
         // Update cache
         let mut cache = self.cache.lock().unwrap();
-        let now = Instant::now();
+        let now = Utc::now().timestamp();
         
         for (symbol, data) in fresh_prices {
+            let source = if get_stablecoin_price(&symbol).is_some() {
+                "synthetic-stablecoin".to_string()
+            } else {
+                "coingecko".to_string()
+            };
             cache.insert(symbol, PriceEntry {
                 price: data.0,
                 change_24h: data.1,
-                last_updated: now,
+                fetched_at_unix: now,
+                source,
             });
         }
 
@@ -131,6 +166,10 @@ pub async fn start_background_refresh() {
 /// Get cached price for a symbol (public API for business logic)
 pub fn get_cached_price(symbol: &str) -> Option<f64> {
     PRICE_MANAGER.get_cached_price(symbol)
+}
+
+pub fn get_cached_price_state(symbol: &str) -> PriceState {
+    PRICE_MANAGER.get_cached_price_state(symbol)
 }
 
 /// Get cached 24h change for a symbol (public API)

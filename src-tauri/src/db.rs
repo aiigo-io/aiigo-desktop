@@ -1,4 +1,6 @@
 use crate::wallet::types::WalletInfo;
+use crate::wallet::state::freshness::classify_age;
+use crate::wallet::state::types::FreshnessMetadata;
 use crate::wallet::transaction_types::{BitcoinTransaction, EvmTransaction, TransactionStatus, TransactionType};
 use chrono::Utc;
 use rusqlite::{params, Connection, Result as SqliteResult};
@@ -27,11 +29,19 @@ pub struct AssetBalanceData {
 impl Database {
     pub fn new(db_path: &str) -> SqliteResult<Self> {
         let conn = Connection::open(db_path)?;
+        Self::configure_connection(&conn)?;
+
+        Self::from_connection(conn)
+    }
+
+    fn configure_connection(conn: &Connection) -> SqliteResult<()> {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;",
-        )?;
+        )
+    }
 
+    fn from_connection(conn: Connection) -> SqliteResult<Self> {
         let db = Database {
             conn: Mutex::new(conn),
         };
@@ -189,7 +199,123 @@ impl Database {
             [],
         )?;
 
+        Self::migrate_phase2_sync_metadata(&conn)?;
+
         Ok(())
+    }
+
+    fn migrate_phase2_sync_metadata(conn: &Connection) -> SqliteResult<()> {
+        let additive_columns = [
+            ("bitcoin_wallets", "balance_updated_at", "INTEGER"),
+            ("bitcoin_wallets", "balance_failed_sources", "TEXT DEFAULT '[]'"),
+            ("evm_wallets", "balance_updated_at", "INTEGER"),
+            ("evm_wallets", "balance_failed_sources", "TEXT DEFAULT '[]'"),
+            ("evm_asset_balances", "balance_updated_at", "INTEGER"),
+            ("evm_asset_balances", "price_updated_at", "INTEGER"),
+            ("evm_asset_balances", "price_source", "TEXT"),
+        ];
+
+        for (table, column, definition) in additive_columns {
+            Self::add_column_if_missing(conn, table, column, definition)?;
+        }
+
+        Ok(())
+    }
+
+    fn add_column_if_missing(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> SqliteResult<()> {
+        if Self::table_has_column(conn, table, column)? {
+            return Ok(());
+        }
+
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn table_has_column(conn: &Connection, table: &str, column: &str) -> SqliteResult<bool> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+
+        while let Some(row) = rows.next()? {
+            let existing_column: String = row.get(1)?;
+            if existing_column == column {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    #[allow(dead_code)]
+    fn wallet_balance_freshness_for_table(
+        &self,
+        table: &str,
+        wallet_id: &str,
+        now: i64,
+        fresh_within_secs: i64,
+        stale_after_secs: i64,
+    ) -> SqliteResult<Option<FreshnessMetadata>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!("SELECT balance_updated_at FROM {table} WHERE id = ?1");
+        let mut stmt = conn.prepare(&sql)?;
+
+        let result = stmt.query_row(params![wallet_id], |row| {
+            let updated_at = row.get::<_, Option<i64>>(0)?;
+
+            Ok(FreshnessMetadata {
+                status: classify_age(updated_at, now, fresh_within_secs, stale_after_secs),
+                updated_at,
+                failed_sources: Vec::new(),
+            })
+        });
+
+        match result {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_bitcoin_wallet_balance_freshness(
+        &self,
+        wallet_id: &str,
+        now: i64,
+        fresh_within_secs: i64,
+        stale_after_secs: i64,
+    ) -> SqliteResult<Option<FreshnessMetadata>> {
+        self.wallet_balance_freshness_for_table(
+            "bitcoin_wallets",
+            wallet_id,
+            now,
+            fresh_within_secs,
+            stale_after_secs,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn get_evm_wallet_balance_freshness(
+        &self,
+        wallet_id: &str,
+        now: i64,
+        fresh_within_secs: i64,
+        stale_after_secs: i64,
+    ) -> SqliteResult<Option<FreshnessMetadata>> {
+        self.wallet_balance_freshness_for_table(
+            "evm_wallets",
+            wallet_id,
+            now,
+            fresh_within_secs,
+            stale_after_secs,
+        )
     }
 
     pub fn add_bitcoin_wallet(
@@ -330,10 +456,13 @@ impl Database {
     pub fn update_bitcoin_wallet_balance(&self, wallet_id: &str, balance: f64) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
+        let balance_updated_at = Utc::now().timestamp();
 
         conn.execute(
-            "UPDATE bitcoin_wallets SET balance = ?1, updated_at = ?2 WHERE id = ?3",
-            params![balance, &now, wallet_id],
+            "UPDATE bitcoin_wallets
+             SET balance = ?1, updated_at = ?2, balance_updated_at = ?3
+             WHERE id = ?4",
+            params![balance, &now, balance_updated_at, wallet_id],
         )?;
 
         Ok(())
@@ -497,14 +626,16 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+        let now_ts = Utc::now().timestamp();
 
         conn.execute(
             "INSERT OR REPLACE INTO evm_asset_balances 
-             (id, wallet_id, chain, chain_id, asset_symbol, asset_name, asset_decimals, contract_address, balance, balance_float, usd_price, usd_value, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             (id, wallet_id, chain, chain_id, asset_symbol, asset_name, asset_decimals, contract_address, balance, balance_float, usd_price, usd_value, updated_at, balance_updated_at, price_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 &id, &wallet_id, &chain, chain_id, &asset_symbol, &asset_name,
-                asset_decimals, &contract_address, &balance, balance_float, usd_price, usd_value, &now
+                asset_decimals, &contract_address, &balance, balance_float, usd_price, usd_value, &now,
+                now_ts, now_ts
             ],
         )?;
 
@@ -519,6 +650,7 @@ impl Database {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let now = Utc::now().to_rfc3339();
+        let now_ts = Utc::now().timestamp();
 
         for asset in assets {
             let id = Uuid::new_v4().to_string();
@@ -526,8 +658,8 @@ impl Database {
                 "INSERT OR REPLACE INTO evm_asset_balances (
                     id, wallet_id, chain, chain_id, asset_symbol, asset_name,
                     asset_decimals, contract_address, balance, balance_float,
-                    usd_price, usd_value, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    usd_price, usd_value, updated_at, balance_updated_at, price_updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 params![
                     &id,
                     &asset.wallet_id,
@@ -542,6 +674,8 @@ impl Database {
                     asset.usd_price,
                     asset.usd_value,
                     &now,
+                    now_ts,
+                    now_ts,
                 ],
             )?;
         }
@@ -910,5 +1044,226 @@ impl Database {
         // Reverse to get chronological order (oldest first)
         result.reverse();
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+    use crate::wallet::state::types::FreshnessStatus;
+    use rusqlite::{params, Connection};
+
+    fn legacy_database() -> Database {
+        let conn = Connection::open_in_memory().unwrap();
+        Database::configure_connection(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bitcoin_wallets (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                wallet_type TEXT NOT NULL,
+                address TEXT NOT NULL UNIQUE,
+                balance REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE bitcoin_wallet_secrets (
+                wallet_id TEXT PRIMARY KEY,
+                secret_data TEXT NOT NULL,
+                secret_type TEXT NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES bitcoin_wallets(id)
+            );
+            CREATE TABLE evm_wallets (
+                id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                wallet_type TEXT NOT NULL,
+                address TEXT NOT NULL UNIQUE,
+                balance REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE evm_wallet_secrets (
+                wallet_id TEXT PRIMARY KEY,
+                secret_data TEXT NOT NULL,
+                secret_type TEXT NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES evm_wallets(id)
+            );
+            CREATE TABLE evm_asset_balances (
+                id TEXT PRIMARY KEY,
+                wallet_id TEXT NOT NULL,
+                chain TEXT NOT NULL,
+                chain_id INTEGER NOT NULL,
+                asset_symbol TEXT NOT NULL,
+                asset_name TEXT NOT NULL,
+                asset_decimals INTEGER NOT NULL,
+                contract_address TEXT,
+                balance TEXT NOT NULL,
+                balance_float REAL NOT NULL,
+                usd_price REAL DEFAULT 0,
+                usd_value REAL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES evm_wallets(id),
+                UNIQUE(wallet_id, chain, asset_symbol)
+            );
+            CREATE TABLE bitcoin_transactions (
+                id TEXT PRIMARY KEY,
+                wallet_id TEXT NOT NULL,
+                tx_hash TEXT NOT NULL UNIQUE,
+                tx_type TEXT NOT NULL,
+                from_address TEXT NOT NULL,
+                to_address TEXT NOT NULL,
+                amount REAL NOT NULL,
+                fee REAL NOT NULL,
+                status TEXT NOT NULL,
+                confirmations INTEGER NOT NULL DEFAULT 0,
+                block_height INTEGER,
+                timestamp TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES bitcoin_wallets(id)
+            );
+            CREATE TABLE evm_transactions (
+                id TEXT PRIMARY KEY,
+                wallet_id TEXT NOT NULL,
+                tx_hash TEXT NOT NULL,
+                tx_type TEXT NOT NULL,
+                from_address TEXT NOT NULL,
+                to_address TEXT NOT NULL,
+                amount TEXT NOT NULL,
+                amount_float REAL NOT NULL,
+                asset_symbol TEXT NOT NULL,
+                asset_name TEXT NOT NULL,
+                contract_address TEXT,
+                chain TEXT NOT NULL,
+                chain_id INTEGER NOT NULL,
+                gas_used TEXT NOT NULL,
+                gas_price TEXT NOT NULL,
+                fee REAL NOT NULL,
+                status TEXT NOT NULL,
+                block_number INTEGER,
+                timestamp TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (wallet_id) REFERENCES evm_wallets(id),
+                UNIQUE(wallet_id, tx_hash, chain)
+            );
+            CREATE TABLE dashboard_stats (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                total_balance_usd REAL NOT NULL DEFAULT 0,
+                total_balance_btc REAL NOT NULL DEFAULT 0,
+                change_24h_amount REAL NOT NULL DEFAULT 0,
+                change_24h_percentage REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE portfolio_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL UNIQUE,
+                total_balance_usd REAL NOT NULL,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO bitcoin_wallets (id, label, wallet_type, address, balance, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "btc-wallet-1",
+                "Bitcoin Legacy",
+                "mnemonic",
+                "bc1legacy",
+                1.5_f64,
+                "2026-04-18T00:00:00Z",
+                "2026-04-18T00:00:00Z"
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO evm_wallets (id, label, wallet_type, address, balance, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "evm-wallet-1",
+                "EVM Legacy",
+                "private-key",
+                "0xlegacy",
+                2.5_f64,
+                "2026-04-18T00:00:00Z",
+                "2026-04-18T00:00:00Z"
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO evm_asset_balances (
+                id, wallet_id, chain, chain_id, asset_symbol, asset_name,
+                asset_decimals, contract_address, balance, balance_float,
+                usd_price, usd_value, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                "asset-1",
+                "evm-wallet-1",
+                "ethereum",
+                1_u64,
+                "ETH",
+                "Ethereum",
+                18_u8,
+                Option::<String>::None,
+                "2.5",
+                2.5_f64,
+                3200.0_f64,
+                8000.0_f64,
+                "2026-04-18T00:00:00Z"
+            ],
+        )
+        .unwrap();
+
+        Database::from_connection(conn).unwrap()
+    }
+
+    // M-LG-1
+    #[test]
+    fn migrates_legacy_schema_without_data_loss_or_null_constraint_violations() {
+        let db = legacy_database();
+
+        let bitcoin_wallets = db.get_bitcoin_wallets().unwrap();
+        let evm_wallets = db.get_evm_wallets().unwrap();
+        let evm_assets = db.get_evm_asset_balances("evm-wallet-1").unwrap();
+
+        assert_eq!(bitcoin_wallets.len(), 1);
+        assert_eq!(bitcoin_wallets[0].id, "btc-wallet-1");
+        assert_eq!(bitcoin_wallets[0].address, "bc1legacy");
+
+        assert_eq!(evm_wallets.len(), 1);
+        assert_eq!(evm_wallets[0].id, "evm-wallet-1");
+        assert_eq!(evm_wallets[0].address, "0xlegacy");
+
+        assert_eq!(evm_assets.len(), 1);
+        assert_eq!(evm_assets[0].0, "ethereum");
+        assert_eq!(evm_assets[0].1, "ETH");
+
+        db.add_bitcoin_wallet(
+            "Post Migration".to_string(),
+            "mnemonic".to_string(),
+            "bc1postmigration".to_string(),
+        )
+        .unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        assert!(Database::table_has_column(&conn, "bitcoin_wallets", "balance_updated_at").unwrap());
+        assert!(Database::table_has_column(&conn, "evm_wallets", "balance_updated_at").unwrap());
+        assert!(Database::table_has_column(&conn, "evm_asset_balances", "price_updated_at").unwrap());
+    }
+
+    // M-LG-2
+    #[test]
+    fn legacy_row_without_balance_updated_at_reads_as_cached() {
+        let db = legacy_database();
+
+        let freshness = db
+            .get_bitcoin_wallet_balance_freshness("btc-wallet-1", 1_713_499_200, 60, 300)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(freshness.status, FreshnessStatus::Cached);
+        assert_eq!(freshness.updated_at, None);
+        assert!(freshness.failed_sources.is_empty());
     }
 }

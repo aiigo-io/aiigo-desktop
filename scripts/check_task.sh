@@ -175,6 +175,293 @@ check_gate4() {
 }
 
 # -----------------------------------------------------------------------------
+# Gate 7: wallet/state/* type/trait allowlist
+# Purpose: block type bloat / premature abstraction in wallet/state/*.
+# -----------------------------------------------------------------------------
+check_gate7() {
+  say "Gate 7: wallet/state/* type/trait allowlist"
+  local state_dir="$WALLET_DIR/state"
+  local allowed=(FreshnessStatus FreshnessMetadata PriceStatus PriceState BalanceState PortfolioState)
+
+  if [ ! -d "$state_dir" ]; then
+    fail "wallet/state/ missing"
+    return
+  fi
+
+  local findings
+  findings=$(
+    awk -v allowed_list="${allowed[*]}" '
+      function brace_delta(line,   opens, closes, tmp) {
+        tmp = line
+        opens = gsub(/\{/, "{", tmp)
+        tmp = line
+        closes = gsub(/\}/, "}", tmp)
+        return opens - closes
+      }
+      BEGIN {
+        split(allowed_list, allowed, " ")
+        for (i in allowed) ok[allowed[i]] = 1
+        in_tests = 0
+        depth = 0
+      }
+      /^[[:space:]]*mod[[:space:]]+tests[[:space:]]*\{/ {
+        in_tests = 1
+        depth = brace_delta($0)
+        next
+      }
+      {
+        if (in_tests) {
+          depth += brace_delta($0)
+          if (depth <= 0) {
+            in_tests = 0
+            depth = 0
+          }
+          next
+        }
+        if ($0 ~ /^[[:space:]]*pub[[:space:]]+(enum|struct|trait)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/) {
+          line = $0
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+          split(line, parts, /[[:space:]]+/)
+          kind = parts[2]
+          name = parts[3]
+          sub(/[;{].*$/, "", name)
+          if (!(name in ok)) {
+            print FILENAME ":" FNR ": unexpected public " kind " " name
+          }
+        }
+      }
+    ' "$state_dir"/*.rs 2>/dev/null
+  )
+
+  if [ -z "$findings" ]; then
+    pass "wallet/state/* only exposes allowlisted pub enum/struct/trait items"
+  else
+    while IFS= read -r line; do
+      [ -n "$line" ] && fail "$line"
+    done <<< "$findings"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Gate 8: Additive-only SQL migration
+# Purpose: enforce Plan's "additive SQLite changes only" rule in Phase 2.
+# -----------------------------------------------------------------------------
+check_gate8() {
+  say "Gate 8: db.rs SQL changes must be additive"
+  local db_file="$PROJECT_ROOT/src-tauri/src/db.rs"
+  local db_rel="src-tauri/src/db.rs"
+
+  if [ ! -f "$db_file" ]; then
+    fail "db.rs missing at $db_file"
+    return
+  fi
+
+  if git -C "$PROJECT_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 && git -C "$PROJECT_ROOT" rev-parse --verify main >/dev/null 2>&1; then
+    local added_lines
+    added_lines=$(git -C "$PROJECT_ROOT" diff --unified=0 main -- "$db_rel" | grep '^+' | grep -v '^+++' || true)
+
+    if [ -z "$added_lines" ]; then
+      pass "db.rs has no added SQL drift against main"
+      return
+    fi
+
+    local violations=""
+    local drop_hits rename_hits alter_drop_hits add_not_null_hits
+    drop_hits=$(printf '%s\n' "$added_lines" | grep -niE 'DROP[[:space:]]+(TABLE|COLUMN)' || true)
+    rename_hits=$(printf '%s\n' "$added_lines" | grep -niE 'ALTER[[:space:]]+TABLE.*RENAME' || true)
+    alter_drop_hits=$(printf '%s\n' "$added_lines" | grep -niE 'ALTER[[:space:]]+TABLE.*DROP' || true)
+    add_not_null_hits=$(printf '%s\n' "$added_lines" | awk '
+      BEGIN { IGNORECASE = 1 }
+      /ALTER[[:space:]]+TABLE/ && /ADD[[:space:]]+COLUMN/ && /NOT[[:space:]]+NULL/ && $0 !~ /DEFAULT/ { print NR ":" $0 }
+    ' || true)
+
+    [ -n "$drop_hits" ] && violations="${violations}"$'\n'"forbidden DROP in added db.rs lines: $drop_hits"
+    [ -n "$rename_hits" ] && violations="${violations}"$'\n'"forbidden ALTER TABLE ... RENAME in added db.rs lines: $rename_hits"
+    [ -n "$alter_drop_hits" ] && violations="${violations}"$'\n'"forbidden ALTER TABLE ... DROP in added db.rs lines: $alter_drop_hits"
+    [ -n "$add_not_null_hits" ] && violations="${violations}"$'\n'"forbidden ALTER TABLE ADD COLUMN NOT NULL without DEFAULT: $add_not_null_hits"
+
+    if [ -z "$violations" ]; then
+      pass "db.rs added SQL is additive-only against main"
+    else
+      while IFS= read -r line; do
+        [ -n "$line" ] && fail "$line"
+      done <<< "$violations"
+    fi
+    return
+  fi
+
+  local fallback_hits
+  fallback_hits=$(grep -niE 'DROP[[:space:]]+(TABLE|COLUMN)|ALTER[[:space:]]+TABLE.*RENAME|ALTER[[:space:]]+TABLE.*DROP' "$db_file" || true)
+  if [ -n "$fallback_hits" ]; then
+    pass "main ref missing; fallback db.rs scan found potentially non-additive SQL shapes: $fallback_hits"
+  else
+    pass "main ref missing; fallback db.rs scan found no forbidden SQL shapes"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Gate 9: Tauri command return-shape parity
+# Purpose: block DTO rewriting that silently diverges from frozen contracts.
+# -----------------------------------------------------------------------------
+check_gate9() {
+  say "Gate 9: Phase 2 state commands return frozen struct types"
+  local state_dir="$WALLET_DIR/state"
+  local command_files
+  command_files=$(grep -rl '^[[:space:]]*#\[tauri::command\]' "$state_dir"/*.rs 2>/dev/null || true)
+
+  if [ -z "$command_files" ]; then
+    pass "no state command surface yet, check deferred"
+    return
+  fi
+
+  local results
+  results=$(
+    awk '
+      /^[[:space:]]*#\[tauri::command\]/ {
+        pending = 1
+        signature = ""
+        next
+      }
+      pending {
+        signature = signature " " $0
+        if ($0 ~ /\{[[:space:]]*$/) {
+          if (signature ~ /fn[[:space:]]+/) {
+            name = signature
+            sub(/^.*fn[[:space:]]+/, "", name)
+            sub(/\(.*/, "", name)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+            if (signature ~ /(BalanceState|PortfolioState|PriceState|FreshnessMetadata)/) {
+              print "PASS|" FILENAME "|" name
+            } else {
+              print "FAIL|" FILENAME "|" name "|" signature
+            }
+          }
+          pending = 0
+        }
+      }
+    ' $command_files
+  )
+
+  if [ -z "$results" ]; then
+    pass "no state command surface yet, check deferred"
+    return
+  fi
+
+  local had_fail=0
+  while IFS='|' read -r verdict file name signature; do
+    [ -z "$verdict" ] && continue
+    if [ "$verdict" = "PASS" ]; then
+      pass "$file: $name returns a frozen state contract type"
+    else
+      had_fail=1
+      fail "$file: $name return type diverges from frozen state contracts: $signature"
+    fi
+  done <<< "$results"
+
+  [ "$had_fail" -eq 0 ] || return
+}
+
+# -----------------------------------------------------------------------------
+# Gate 10: Semantic test presence
+# Purpose: prevent "test theater" around freshness/price distinctions.
+# -----------------------------------------------------------------------------
+check_gate10() {
+  say "Gate 10: semantic test coverage for freshness/price distinctions"
+  local state_dir="$WALLET_DIR/state"
+
+  if ! grep -Rqs '^[[:space:]]*#\[test\]' "$state_dir"; then
+    pass "no state logic yet, semantic tests deferred to P2-1"
+    return
+  fi
+
+  local parsed_tests
+  parsed_tests=$(
+    awk '
+      function brace_delta(line,   opens, closes, tmp) {
+        tmp = line
+        opens = gsub(/\{/, "{", tmp)
+        tmp = line
+        closes = gsub(/\}/, "}", tmp)
+        return opens - closes
+      }
+      /^[[:space:]]*#\[test\]/ { pending = 1; next }
+      pending && $0 ~ /^[[:space:]]*(pub[[:space:]]+)?(async[[:space:]]+)?fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/ {
+        name = $0
+        sub(/^.*fn[[:space:]]+/, "", name)
+        sub(/\(.*/, "", name)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+        in_test = 1
+        depth = brace_delta($0)
+        body = $0 "\n"
+        pending = 0
+        next
+      }
+      in_test {
+        body = body $0 "\n"
+        depth += brace_delta($0)
+        if (depth <= 0) {
+          print "TEST|" name "|" body
+          in_test = 0
+          body = ""
+          name = ""
+          depth = 0
+        }
+      }
+    ' "$state_dir"/*.rs
+  )
+
+  local found_partial=0 found_synthetic=0 found_stale=0 found_unavailable_portfolio=0
+  local saw_any=0
+
+  while IFS='|' read -r marker test_name test_body; do
+    [ "$marker" != "TEST" ] && continue
+    saw_any=1
+
+    if printf '%s' "$test_body" | grep -q 'FreshnessStatus::Partial' &&
+       printf '%s' "$test_body" | grep -q 'failed_sources'; then
+      found_partial=1
+    fi
+
+    if ! printf '%s' "$test_name" | grep -q '_fresh' &&
+       printf '%s' "$test_body" | grep -q 'assert' &&
+       printf '%s' "$test_body" | grep -q 'PriceStatus::Synthetic'; then
+      found_synthetic=1
+    fi
+
+    if printf '%s' "$test_body" | grep -q 'PriceStatus::Stale'; then
+      found_stale=1
+    fi
+
+    if printf '%s' "$test_body" | grep -q 'Unavailable' &&
+       printf '%s' "$test_body" | grep -q 'PortfolioState' &&
+       printf '%s' "$test_body" | grep -q 'Fresh'; then
+      found_unavailable_portfolio=1
+    fi
+  done <<< "$parsed_tests"
+
+  if [ "$saw_any" -eq 0 ]; then
+    pass "no state logic yet, semantic tests deferred to P2-1"
+    return
+  fi
+
+  [ "$found_partial" -eq 1 ] \
+    && pass "found test tying FreshnessStatus::Partial to failed_sources" \
+    || fail "missing test with FreshnessStatus::Partial and failed_sources in the same test function"
+
+  [ "$found_synthetic" -eq 1 ] \
+    && pass "found non-fresh test asserting PriceStatus::Synthetic" \
+    || fail "missing assertion for PriceStatus::Synthetic outside a *_fresh* test"
+
+  [ "$found_stale" -eq 1 ] \
+    && pass "found test asserting PriceStatus::Stale" \
+    || fail "missing test coverage for PriceStatus::Stale"
+
+  [ "$found_unavailable_portfolio" -eq 1 ] \
+    && pass "found PortfolioState test covering Unavailable components vs Fresh portfolio status" \
+    || fail "missing PortfolioState semantic test covering Unavailable inputs vs Fresh output"
+}
+
+# -----------------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------------
 case "$PHASE" in
@@ -182,15 +469,38 @@ case "$PHASE" in
     check_gate1
     check_gate2_3
     ;;
-  phase1|phase2|phase3)
+  phase1)
     check_gate1
     check_gate2_3
     check_gate4
     ;;
-  phase4|all)
+  phase2)
     check_gate1
     check_gate2_3
     check_gate4
+    check_gate7
+    check_gate8
+    check_gate9
+    check_gate10
+    ;;
+  phase3)
+    check_gate1
+    check_gate2_3
+    check_gate4
+    ;;
+  phase4)
+    check_gate1
+    check_gate2_3
+    check_gate4
+    ;;
+  all)
+    check_gate1
+    check_gate2_3
+    check_gate4
+    check_gate7
+    check_gate8
+    check_gate9
+    check_gate10
     ;;
   *)
     echo "Usage: $0 [skeleton|phase1|phase2|phase3|phase4|all]" >&2

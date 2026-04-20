@@ -1,14 +1,21 @@
 use once_cell::sync::Lazy;
 use crate::wallet::security::sanitize;
+use crate::wallet::state::price as state_price;
+use crate::wallet::state::types::PriceState;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use chrono::Utc;
 
 const RETRY_ATTEMPTS: u32 = 2;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 const CACHE_DURATION_SECS: u64 = 60; // Cache prices for 60 seconds
+#[allow(dead_code)]
+const PRICE_FRESH_WITHIN_SECS: i64 = 60;
+#[allow(dead_code)]
+const PRICE_STALE_AFTER_SECS: i64 = 300;
 
 #[derive(Debug, Deserialize)]
 struct PriceData {
@@ -23,12 +30,14 @@ struct PriceCache {
     // coin_id -> (price, 24h_change)
     prices: HashMap<String, (f64, f64)>,
     last_update: Option<Instant>,
+    updated_at_unix: Option<i64>,
 }
 
 static PRICE_CACHE: Lazy<Mutex<PriceCache>> = Lazy::new(|| {
     Mutex::new(PriceCache {
         prices: HashMap::new(),
         last_update: None,
+        updated_at_unix: None,
     })
 });
 
@@ -116,6 +125,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
                     let mut cache = PRICE_CACHE.lock().unwrap();
                     cache.prices = response_map.clone();
                     cache.last_update = Some(Instant::now());
+                    cache.updated_at_unix = Some(Utc::now().timestamp());
                 }
 
                 // Map CoinGecko IDs back to symbols
@@ -237,6 +247,37 @@ pub async fn fetch_price(symbol: &str) -> Result<f64, String> {
         .ok_or_else(|| format!("Price not found for {}", symbol))
 }
 
+#[allow(dead_code)]
+pub async fn fetch_price_state(symbol: &str) -> Result<PriceState, String> {
+    let now = Utc::now().timestamp();
+
+    if let Some(price_usd) = get_stablecoin_price(symbol) {
+        return Ok(state_price::synthetic(price_usd, "synthetic-stablecoin", now));
+    }
+
+    let prices = fetch_prices(vec![symbol.to_string()]).await?;
+    let Some((price_usd, _)) = prices.get(symbol).copied() else {
+        return Ok(state_price::unavailable());
+    };
+
+    let updated_at = {
+        let cache = PRICE_CACHE.lock().unwrap();
+        cache.updated_at_unix
+    };
+
+    match updated_at {
+        Some(updated_at) => Ok(state_price::from_fetch(
+            price_usd,
+            "coingecko",
+            updated_at,
+            now,
+            PRICE_FRESH_WITHIN_SECS,
+            PRICE_STALE_AFTER_SECS,
+        )),
+        None => Ok(state_price::unavailable()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +304,7 @@ mod tests {
 }
 
 #[tauri::command]
-pub async fn get_bitcoin_price() -> Result<f64, String> {
-    fetch_price("BTC").await
+#[allow(dead_code)]
+pub async fn get_bitcoin_price() -> Result<PriceState, String> {
+    fetch_price_state("BTC").await
 }
