@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable } from '@/lib/tauri';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -16,7 +16,7 @@ interface BitcoinTransaction {
   to_address: string;
   amount: number;
   fee: number;
-  status: 'pending' | 'confirmed' | 'failed';
+  status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
   confirmations: number;
   block_height: number | null;
   timestamp: string;
@@ -40,7 +40,7 @@ interface EvmTransaction {
   gas_used: string;
   gas_price: string;
   fee: number;
-  status: 'pending' | 'confirmed' | 'failed';
+  status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
   block_number: number | null;
   timestamp: string;
   created_at: string;
@@ -58,15 +58,21 @@ const Transactions: React.FC = () => {
   }, []);
 
   const fetchTransactions = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setBitcoinTransactions([]);
+      setEvmTransactions([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       const [btcTxs, evmTxs] = await Promise.all([
         invoke<BitcoinTransaction[]>('get_all_bitcoin_transactions'),
         invoke<EvmTransaction[]>('get_all_evm_transactions'),
       ]);
-      // Filter out failed transactions
-      setBitcoinTransactions(btcTxs.filter(tx => tx.status !== 'failed'));
-      setEvmTransactions(evmTxs.filter(tx => tx.status !== 'failed'));
+      setBitcoinTransactions(btcTxs);
+      setEvmTransactions(evmTxs);
     } catch (error) {
       console.error('Failed to fetch transactions:', error);
     } finally {
@@ -75,6 +81,10 @@ const Transactions: React.FC = () => {
   };
 
   const syncTransactionsFromBlockchain = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      return;
+    }
+
     setSyncing(true);
     try {
       // Get all wallets
@@ -143,14 +153,37 @@ const Transactions: React.FC = () => {
 
   const getStatusColor = (status: string) => {
     switch (status) {
+      case 'broadcasted':
+        return 'bg-sky-500/10 text-sky-500 border-sky-500/20';
       case 'confirmed':
         return 'bg-green-500/10 text-green-500 border-green-500/20';
       case 'pending':
         return 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20';
       case 'failed':
         return 'bg-red-500/10 text-red-500 border-red-500/20';
+      case 'replaced':
+        return 'bg-orange-500/10 text-orange-500 border-orange-500/20';
+      case 'dropped':
+        return 'bg-slate-500/10 text-slate-500 border-slate-500/20';
       default:
         return 'bg-gray-500/10 text-gray-500 border-gray-500/20';
+    }
+  };
+
+  const formatStatusLabel = (status: BitcoinTransaction['status'] | EvmTransaction['status']) => {
+    switch (status) {
+      case 'broadcasted':
+        return 'Broadcasted';
+      case 'pending':
+        return 'Pending';
+      case 'confirmed':
+        return 'Confirmed';
+      case 'failed':
+        return 'Failed';
+      case 'replaced':
+        return 'Replaced';
+      case 'dropped':
+        return 'Dropped';
     }
   };
 
@@ -178,7 +211,7 @@ const Transactions: React.FC = () => {
                 {isSend ? 'Send Bitcoin' : 'Receive Bitcoin'}
               </span>
               <Badge variant="outline" className={cn("text-xs", getStatusColor(tx.status))}>
-                {tx.status}
+                {formatStatusLabel(tx.status)}
               </Badge>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
@@ -270,7 +303,7 @@ const Transactions: React.FC = () => {
                 {tx.chain}
               </Badge>
               <Badge variant="outline" className={cn("text-xs", getStatusColor(tx.status))}>
-                {tx.status}
+                {formatStatusLabel(tx.status)}
               </Badge>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">

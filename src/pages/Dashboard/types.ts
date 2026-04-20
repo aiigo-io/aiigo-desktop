@@ -1,8 +1,15 @@
+export interface FreshnessMetadata {
+    status: 'fresh' | 'cached' | 'stale' | 'unavailable' | 'partial';
+    updated_at: number | null;
+    failed_sources: string[];
+}
+
 export interface DashboardStats {
     total_balance_usd: string;
     total_balance_btc: string;
     change_24h_amount: string;
     change_24h_percentage: string;
+    freshness: FreshnessMetadata;
 }
 
 export interface PortfolioHistoryPoint {
@@ -28,7 +35,7 @@ export interface BitcoinTransaction {
     to_address: string;
     amount: number;
     fee: number;
-    status: 'pending' | 'confirmed' | 'failed';
+    status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
     confirmations: number;
     block_height: number | null;
     timestamp: string;
@@ -52,7 +59,7 @@ export interface EvmTransaction {
     gas_used: string;
     gas_price: string;
     fee: number;
-    status: 'pending' | 'confirmed' | 'failed';
+    status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
     block_number: number | null;
     timestamp: string;
     created_at: string;

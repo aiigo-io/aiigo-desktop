@@ -15,8 +15,17 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Card, CardContent } from '@/components/ui/card';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable, isTauriUnavailableError, TAURI_UNAVAILABLE_MESSAGE } from '@/lib/tauri';
 import { SlippageSettings } from './SlippageSettings';
+import {
+    EvmWalletBalancesResponse,
+    FreshnessMetadata,
+    formatFreshnessLabel,
+    getChainFreshnessDescription,
+    getEvmChainAssets,
+    getFreshnessBadgeClass,
+    getWalletSyncBanner,
+} from '@/lib/evm-wallet';
 
 interface WalletInfo {
     id: string;
@@ -24,40 +33,6 @@ interface WalletInfo {
     wallet_type: 'mnemonic' | 'private-key';
     address: string;
     balance: number;
-    created_at: string;
-    updated_at: string;
-}
-
-interface EvmAsset {
-    symbol: string;
-    name: string;
-    decimals: number;
-    contract_address: string | null;
-}
-
-interface EvmAssetBalance {
-    chain: string;
-    asset: EvmAsset;
-    balance: string;
-    balance_float: number;
-    usd_price: number;
-    usd_value: number;
-}
-
-interface EvmChainAssets {
-    chain: string;
-    chain_id: number;
-    total_balance_usd: number;
-    assets: EvmAssetBalance[];
-}
-
-interface EvmWalletInfo {
-    id: string;
-    label: string;
-    wallet_type: 'mnemonic' | 'private-key';
-    address: string;
-    chains: EvmChainAssets[];
-    total_balance_usd: number;
     created_at: string;
     updated_at: string;
 }
@@ -97,6 +72,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const [balances, setBalances] = useState<Map<string, number>>(new Map());
     const [isLoadingBalances, setIsLoadingBalances] = useState(false);
     const [showSlippageSettings, setShowSlippageSettings] = useState(false);
+    const [chainFreshness, setChainFreshness] = useState<FreshnessMetadata | null>(null);
+    const [walletResponse, setWalletResponse] = useState<EvmWalletBalancesResponse | null>(null);
 
     // Load balances when wallet or chain changes
     useEffect(() => {
@@ -104,6 +81,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
             loadBalances();
         } else {
             setBalances(new Map());
+            setChainFreshness(null);
+            setWalletResponse(null);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [wallet?.id, fromChain.id]);
@@ -111,16 +90,27 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const loadBalances = async () => {
         if (!wallet) return;
 
+        if (!isTauriRuntimeAvailable()) {
+            setBalances(new Map());
+            setChainFreshness({
+                status: 'unavailable',
+                updated_at: null,
+                failed_sources: ['tauri-runtime'],
+            });
+            setWalletResponse(null);
+            setIsLoadingBalances(false);
+            return;
+        }
+
         setIsLoadingBalances(true);
         try {
-            const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', {
+            const walletWithBalances = await invoke<EvmWalletBalancesResponse>('evm_get_wallet_with_balances', {
                 walletId: wallet.id
             });
+            setWalletResponse(walletWithBalances);
 
             // Find the current chain's assets
-            const chainAssets = walletWithBalances.chains.find(
-                c => c.chain_id === fromChain.id
-            );
+            const chainAssets = getEvmChainAssets(walletWithBalances, fromChain.id);
 
             if (chainAssets) {
                 const newBalances = new Map<string, number>();
@@ -128,18 +118,35 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     newBalances.set(asset.asset.symbol, asset.balance_float);
                 });
                 setBalances(newBalances);
+                setChainFreshness(chainAssets.freshness);
             } else {
                 setBalances(new Map());
+                setChainFreshness({
+                    status: 'unavailable',
+                    updated_at: null,
+                    failed_sources: [fromChain.name.toLowerCase()],
+                });
             }
         } catch (error) {
-            console.error('Error loading balances:', error);
+            if (!isTauriUnavailableError(error)) {
+                console.error('Error loading balances:', error);
+            }
             setBalances(new Map());
+            setChainFreshness({
+                status: 'unavailable',
+                updated_at: null,
+                failed_sources: [fromChain.name.toLowerCase()],
+            });
         } finally {
             setIsLoadingBalances(false);
         }
     };
 
     const getBalance = (tokenSymbol: string): string => {
+        if (chainFreshness?.status === 'unavailable') {
+            return 'Unavailable';
+        }
+
         const balance = balances.get(tokenSymbol);
         if (balance === undefined) {
             return wallet ? '0.00' : '--';
@@ -147,8 +154,21 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         return balance.toFixed(6);
     };
 
+    const getNumericBalance = (tokenSymbol: string): number | undefined => balances.get(tokenSymbol);
+
+    const isChainUnavailable = chainFreshness?.status === 'unavailable';
+    const chainStatusBanner = chainFreshness
+        ? {
+            label: formatFreshnessLabel(chainFreshness.status),
+            description: getChainFreshnessDescription(chainFreshness),
+            className: getFreshnessBadgeClass(chainFreshness.status),
+        }
+        : null;
+    const walletSyncBanner = walletResponse ? getWalletSyncBanner(walletResponse) : null;
+
     const hasInsufficientBalance = (): boolean => {
         if (!wallet || !amount) return false;
+        if (isChainUnavailable) return true;
         const balance = balances.get(fromToken.symbol);
         if (balance === undefined) return false;
         return parseFloat(amount) > balance;
@@ -163,6 +183,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
     const getButtonText = (): string => {
         if (!wallet) return 'Connect Wallet';
+        if (isChainUnavailable) return 'Chain Unavailable';
         if (!amount) return 'Enter Amount';
         if (!isValid) return 'Invalid Pair';
         if (hasInsufficientBalance()) return 'Insufficient Balance';
@@ -175,6 +196,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
     const isButtonDisabled = (): boolean => {
         if (!wallet || !isValid || !amount) return true;
+        if (isChainUnavailable) return true;
         if (hasInsufficientBalance()) return true;
         if (isCheckingApproval || isLoadingQuote) return true;
         if (txStatus.status === 'approving' || txStatus.status === 'swapping') return true;
@@ -193,6 +215,10 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
             }
         } catch (error) {
             console.error('Transaction error:', error);
+            if (isTauriUnavailableError(error)) {
+                return;
+            }
+
             if (parseSecurityError(error) === 'locked') {
                 await requestUnlock({
                     prompt: needsApproval ? `Unlock to approve ${fromToken.symbol}.` : 'Unlock to continue swap.',
@@ -253,15 +279,36 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                         </Button>
                     </div>
 
+                    {chainStatusBanner && chainFreshness?.status !== 'fresh' && (
+                        <div className={`rounded-xl border px-3 py-2 text-xs ${chainStatusBanner.className}`}>
+                            <div className="font-semibold uppercase tracking-wide">{chainStatusBanner.label}</div>
+                            <div className="mt-1 leading-relaxed">
+                                {isTauriRuntimeAvailable() ? chainStatusBanner.description : TAURI_UNAVAILABLE_MESSAGE}
+                            </div>
+                        </div>
+                    )}
+
+                    {walletSyncBanner && (
+                        <div className={`rounded-xl border px-3 py-2 text-xs ${walletSyncBanner.className}`}>
+                            <div className="font-semibold uppercase tracking-wide">{walletSyncBanner.label}</div>
+                            <div className="mt-1 leading-relaxed">{walletSyncBanner.description}</div>
+                        </div>
+                    )}
+
                     {/* From Section */}
                     <div className="space-y-2 p-4 rounded-2xl bg-muted/30 border border-transparent hover:border-border transition-all">
                         <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
                             <span>From</span>
                             <div className="flex items-center gap-2">
                                 <span>Balance: {isLoadingBalances ? '...' : getBalance(fromToken.symbol)}</span>
-                                {wallet && balances.get(fromToken.symbol) !== undefined && balances.get(fromToken.symbol)! > 0 && (
+                                {chainFreshness && (
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${getFreshnessBadgeClass(chainFreshness.status)}`}>
+                                        {formatFreshnessLabel(chainFreshness.status)}
+                                    </span>
+                                )}
+                                {wallet && getNumericBalance(fromToken.symbol) !== undefined && getNumericBalance(fromToken.symbol)! > 0 && !isChainUnavailable && (
                                     <button
-                                        onClick={() => setAmount(getBalance(fromToken.symbol))}
+                                        onClick={() => setAmount(getNumericBalance(fromToken.symbol)!.toFixed(6))}
                                         className="px-2 py-0.5 text-xs bg-primary/10 text-primary hover:bg-primary/20 rounded transition-colors font-semibold cursor-pointer"
                                         title="Use max balance"
                                     >

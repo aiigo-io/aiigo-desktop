@@ -3,8 +3,9 @@ import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw, Send, ExternalLink, HelpCircle } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE, isTauriUnavailableError } from '@/lib/tauri';
 import { parseSecurityError } from '@/lib/security';
+import { formatFreshnessLabel, getFreshnessBadgeClass, FreshnessMetadata } from '@/lib/evm-wallet';
 import { shortAddress, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -21,6 +22,20 @@ interface WalletInfo {
 interface CreateWalletResponse {
   mnemonic: string;
   wallet: WalletInfo;
+}
+
+interface PriceState {
+  price_usd: number | null;
+  price_source: string | null;
+  price_updated_at: number | null;
+  status: 'fresh' | 'stale' | 'unavailable' | 'synthetic';
+}
+
+interface BalanceState {
+  raw_amount: string;
+  display_amount: number;
+  chain_id: string | null;
+  freshness: FreshnessMetadata;
 }
 
 const BitcoinAssets: React.FC = () => {
@@ -41,7 +56,13 @@ const BitcoinAssets: React.FC = () => {
   const [addressCopied, setAddressCopied] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [refreshingBalance, setRefreshingBalance] = useState<string | null>(null);
-  const [btcPrice, setBtcPrice] = useState<number>(0);
+  const [btcPrice, setBtcPrice] = useState<PriceState>({
+    price_usd: null,
+    price_source: null,
+    price_updated_at: null,
+    status: 'unavailable',
+  });
+  const [walletBalanceStates, setWalletBalanceStates] = useState<Map<string, BalanceState>>(new Map());
 
   // Send BTC State
   const [isSendDialogOpen, setIsSendDialogOpen] = useState(false);
@@ -69,15 +90,37 @@ const BitcoinAssets: React.FC = () => {
   }, []);
 
   const loadWallets = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setWallets([]);
+      setWalletBalanceStates(new Map());
+      return;
+    }
+
     try {
       const result = await invoke<WalletInfo[]>('bitcoin_get_wallets');
       setWallets(result);
+
+      const states = new Map<string, BalanceState>();
+      for (const wallet of result) {
+        try {
+          const balanceState = await invoke<BalanceState>('state_get_bitcoin_wallet_balance_state', { walletId: wallet.id });
+          states.set(wallet.id, balanceState);
+        } catch (error) {
+          console.error(`Error loading wallet freshness for ${wallet.id}:`, error);
+        }
+      }
+      setWalletBalanceStates(states);
     } catch (error) {
       console.error('Error loading wallets:', error);
     }
   };
 
   const fetchFeeEstimates = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setEstimatedFees(null);
+      return;
+    }
+
     setIsEstimatingFees(true);
     try {
       const fees = await invoke<{ fast: number; half_hour: number; hour: number }>('bitcoin_estimate_fees');
@@ -113,16 +156,58 @@ const BitcoinAssets: React.FC = () => {
   };
 
   const fetchBtcPrice = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setBtcPrice({
+        price_usd: null,
+        price_source: null,
+        price_updated_at: null,
+        status: 'unavailable',
+      });
+      return;
+    }
+
     try {
-      const price = await invoke<number>('get_bitcoin_price');
+      const price = await invoke<PriceState>('get_bitcoin_price');
       setBtcPrice(price);
     } catch (error) {
       console.error('Error fetching BTC price from backend:', error);
-      // Fallback to a reasonable default if API fails
-      if (btcPrice === 0) {
-        setBtcPrice(95000); // Reasonable fallback
-      }
+      setBtcPrice({
+        price_usd: null,
+        price_source: null,
+        price_updated_at: null,
+        status: 'unavailable',
+      });
     }
+  };
+
+  const getPriceBadgeClass = (status: PriceState['status']) => {
+    switch (status) {
+      case 'fresh':
+        return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600';
+      case 'stale':
+        return 'border-amber-500/30 bg-amber-500/10 text-amber-700';
+      case 'synthetic':
+        return 'border-sky-500/30 bg-sky-500/10 text-sky-700';
+      case 'unavailable':
+        return 'border-red-500/30 bg-red-500/10 text-red-700';
+    }
+  };
+
+  const getPriceStatusLabel = (status: PriceState['status']) => {
+    switch (status) {
+      case 'fresh':
+        return 'Fresh';
+      case 'stale':
+        return 'Stale';
+      case 'synthetic':
+        return 'Synthetic';
+      case 'unavailable':
+        return 'Unavailable';
+    }
+  };
+
+  const formatUpdatedLabel = (updatedAt: number | null | undefined, fallback: string) => {
+    return updatedAt ? `Updated: ${new Date(updatedAt * 1000).toLocaleTimeString()}` : fallback;
   };
 
   const handleCreateMnemonic = async () => {
@@ -258,6 +343,11 @@ const BitcoinAssets: React.FC = () => {
       await invoke<boolean>('bitcoin_delete_wallet', { walletId });
       setWallets(wallets.filter(w => w.id !== walletId));
       setDeleteConfirm(null);
+      setWalletBalanceStates(prev => {
+        const next = new Map(prev);
+        next.delete(walletId);
+        return next;
+      });
     } catch (error) {
       console.error('Error deleting wallet:', error);
       alert(`Error: ${error}`);
@@ -269,8 +359,12 @@ const BitcoinAssets: React.FC = () => {
   const handleRefreshBalance = async (walletId: string) => {
     setRefreshingBalance(walletId);
     try {
-      const updatedWallet = await invoke<WalletInfo>('bitcoin_get_wallet_with_balance', { walletId });
+      const [updatedWallet, updatedBalanceState] = await Promise.all([
+        invoke<WalletInfo>('bitcoin_get_wallet_with_balance', { walletId }),
+        invoke<BalanceState>('state_get_bitcoin_wallet_balance_state', { walletId }),
+      ]);
       setWallets(wallets.map(w => w.id === walletId ? updatedWallet : w));
+      setWalletBalanceStates(prev => new Map(prev).set(walletId, updatedBalanceState));
     } catch (error) {
       console.error('Error refreshing balance:', error);
       alert(`Error refreshing balance: ${error}`);
@@ -281,6 +375,11 @@ const BitcoinAssets: React.FC = () => {
 
   const handleSendBtc = async () => {
     if (!selectedWalletForSend || !sendToAddress || !sendAmount) return;
+
+    if (!isTauriRuntimeAvailable()) {
+      toast.error(TAURI_UNAVAILABLE_MESSAGE);
+      return;
+    }
 
     setIsSending(true);
     try {
@@ -317,6 +416,11 @@ const BitcoinAssets: React.FC = () => {
       handleRefreshBalance(selectedWalletForSend.id);
     } catch (error) {
       console.error('Error sending BTC:', error);
+      if (isTauriUnavailableError(error)) {
+        toast.error(TAURI_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
       if (parseSecurityError(error) === 'locked') {
         void requestUnlock({
           prompt: 'Unlock to continue sending BTC.',
@@ -686,9 +790,9 @@ const BitcoinAssets: React.FC = () => {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label htmlFor="amount">Amount (BTC)</Label>
-                  {btcPrice > 0 && sendAmount && !isNaN(parseFloat(sendAmount)) && (
+                  {btcPrice.price_usd !== null && sendAmount && !isNaN(parseFloat(sendAmount)) && (
                     <span className="text-[10px] text-muted-foreground font-mono">
-                      ≈ ${(parseFloat(sendAmount) * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                      ≈ ${(parseFloat(sendAmount) * btcPrice.price_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                     </span>
                   )}
                 </div>
@@ -784,9 +888,9 @@ const BitcoinAssets: React.FC = () => {
                         {/* Rough estimation for common transactions (input + 2 outputs) */}
                         {truncateBtc((148 * sendFeeRate) / 100_000_000)} BTC
                       </p>
-                      {btcPrice > 0 && (
+                      {btcPrice.price_usd !== null && (
                         <p className="text-[10px] text-muted-foreground">
-                          ≈ ${((148 * sendFeeRate) / 100_000_000 * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ≈ ${((148 * sendFeeRate) / 100_000_000 * btcPrice.price_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                       )}
                     </div>
@@ -836,11 +940,19 @@ const BitcoinAssets: React.FC = () => {
               <p className="text-3xl font-light tracking-tight text-foreground font-mono">
                 {truncateBtc(totalBalance)} BTC
               </p>
-              {btcPrice > 0 && (
+              {btcPrice.price_usd !== null && (
                 <p className="text-sm text-muted-foreground font-mono">
-                  ${(totalBalance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ${(totalBalance * btcPrice.price_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </p>
               )}
+            </div>
+            <div className="mt-3 flex items-center gap-2 text-[10px] uppercase tracking-wide">
+              <Badge variant="outline" className={getPriceBadgeClass(btcPrice.status)}>
+                {getPriceStatusLabel(btcPrice.status)}
+              </Badge>
+              <span className="text-muted-foreground normal-case tracking-normal">
+                {formatUpdatedLabel(btcPrice.price_updated_at, btcPrice.status === 'unavailable' ? 'Price unavailable' : 'Price status pending')}
+              </span>
             </div>
           </div>
         )}
@@ -860,7 +972,11 @@ const BitcoinAssets: React.FC = () => {
               </Dialog>
             </div>
           ) : (
-            wallets.map((wallet) => (
+            wallets.map((wallet) => {
+              const balanceState = walletBalanceStates.get(wallet.id);
+              const balanceFreshness = balanceState?.freshness;
+
+              return (
               <div
                 key={wallet.id}
                 className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors space-y-3"
@@ -897,11 +1013,21 @@ const BitcoinAssets: React.FC = () => {
                       <p className="font-semibold text-base text-foreground font-mono">
                         {truncateBtc(wallet.balance)} BTC
                       </p>
-                      {btcPrice > 0 && (
+                      {btcPrice.price_usd !== null && (
                         <p className="text-xs text-muted-foreground mt-1 font-mono">
-                          ${(wallet.balance * btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ${(wallet.balance * btcPrice.price_usd).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                       )}
+                      <div className="mt-2 flex items-center justify-end gap-2 text-[10px] uppercase tracking-wide">
+                        {balanceFreshness && (
+                          <Badge variant="outline" className={getFreshnessBadgeClass(balanceFreshness.status)}>
+                            {formatFreshnessLabel(balanceFreshness.status)}
+                          </Badge>
+                        )}
+                        <span className="text-muted-foreground normal-case tracking-normal">
+                          {formatUpdatedLabel(balanceFreshness?.updated_at, balanceFreshness?.status === 'cached' ? 'Cached state' : 'Balance status pending')}
+                        </span>
+                      </div>
                     </div>
                     {/* Action Buttons */}
                     <div className="flex gap-1 flex-wrap justify-end">
@@ -998,7 +1124,7 @@ const BitcoinAssets: React.FC = () => {
                   </div>
                 </div>
               </div>
-            ))
+            )})
           )}
         </div>
       </div>

@@ -1,7 +1,12 @@
 use crate::DB;
+use crate::wallet::state::freshness::classify_age;
+use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
 use crate::wallet::sync::engine;
-use crate::wallet::sync::types::SyncReason;
+use crate::wallet::sync::types::{SyncOutcome, SyncReason};
 use serde::{Deserialize, Serialize};
+
+const DASHBOARD_FRESH_WITHIN_SECS: i64 = 60;
+const DASHBOARD_STALE_AFTER_SECS: i64 = 300;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DashboardStats {
@@ -9,6 +14,7 @@ pub struct DashboardStats {
     pub total_balance_btc: String,
     pub change_24h_amount: String,
     pub change_24h_percentage: String,
+    pub freshness: FreshnessMetadata,
 }
 
 // Helper function to format numbers with thousand separators
@@ -32,17 +38,54 @@ fn format_currency(value: f64) -> String {
     format!("{}.{}", formatted_integer, decimal_part)
 }
 
+fn dashboard_freshness_from_row(updated_at: &str) -> FreshnessMetadata {
+    let updated_at_unix = chrono::DateTime::parse_from_rfc3339(updated_at)
+        .map(|dt| dt.timestamp())
+        .ok();
+
+    let now = chrono::Utc::now().timestamp();
+    let status = match updated_at_unix {
+        Some(updated_at) => classify_age(
+            Some(updated_at),
+            now,
+            DASHBOARD_FRESH_WITHIN_SECS,
+            DASHBOARD_STALE_AFTER_SECS,
+        ),
+        None => FreshnessStatus::Cached,
+    };
+
+    FreshnessMetadata {
+        status,
+        updated_at: updated_at_unix,
+        failed_sources: Vec::new(),
+    }
+}
+
+fn dashboard_freshness_from_sync(outcome: &SyncOutcome) -> FreshnessMetadata {
+    FreshnessMetadata {
+        status: if outcome.partial {
+            FreshnessStatus::Partial
+        } else {
+            FreshnessStatus::Fresh
+        },
+        updated_at: Some(outcome.updated_at),
+        failed_sources: outcome.failed_sources.clone(),
+    }
+}
+
 #[tauri::command]
 pub fn get_dashboard_stats() -> Result<DashboardStats, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
     let stats = db.get_dashboard_stats().map_err(|e| e.to_string())?;
 
-    if let Some((usd, btc, change_amt, change_pct, _)) = stats {
+    if let Some((usd, btc, change_amt, change_pct, updated_at)) = stats {
+        let freshness = dashboard_freshness_from_row(&updated_at);
         Ok(DashboardStats {
             total_balance_usd: format!("${}", format_currency(usd)),
             total_balance_btc: format!("≈ {:.4} BTC", btc),
             change_24h_amount: format!("{}${}", if change_amt >= 0.0 { "+" } else { "" }, format_currency(change_amt)),
             change_24h_percentage: format!("{}{:.2}%", if change_pct >= 0.0 { "+" } else { "" }, change_pct),
+            freshness,
         })
     } else {
         Ok(DashboardStats {
@@ -50,19 +93,25 @@ pub fn get_dashboard_stats() -> Result<DashboardStats, String> {
             total_balance_btc: "≈ 0.0000 BTC".to_string(),
             change_24h_amount: "+$0.00".to_string(),
             change_24h_percentage: "+0.00%".to_string(),
+            freshness: FreshnessMetadata {
+                status: FreshnessStatus::Unavailable,
+                updated_at: None,
+                failed_sources: Vec::new(),
+            },
         })
     }
 }
 
 #[tauri::command]
 pub async fn refresh_dashboard_stats() -> Result<DashboardStats, String> {
-    let (result, _outcome) = engine::refresh_dashboard(SyncReason::Manual).await?;
+    let (result, outcome) = engine::refresh_dashboard(SyncReason::Manual).await?;
 
     Ok(DashboardStats {
         total_balance_usd: format!("${}", format_currency(result.total_balance_usd)),
         total_balance_btc: format!("≈ {:.4} BTC", result.total_balance_btc),
         change_24h_amount: format!("{}${}", if result.change_24h_amount >= 0.0 { "+" } else { "" }, format_currency(result.change_24h_amount)),
         change_24h_percentage: format!("{}{:.2}%", if result.change_24h_percentage >= 0.0 { "+" } else { "" }, result.change_24h_percentage),
+        freshness: dashboard_freshness_from_sync(&outcome),
     })
 }
 

@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE } from '@/lib/tauri';
 
 export type SecurityError =
   | 'locked'
@@ -53,13 +53,25 @@ async function invokeSecurityCommand<T>(command: string, args?: Record<string, u
 }
 
 export async function securityUnlock(token: string) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+  }
+
   await invokeSecurityCommand<void>('security_unlock', { token });
 }
 
 export async function securityLock() {
+  if (!isTauriRuntimeAvailable()) {
+    return;
+  }
+
   await invokeSecurityCommand<void>('security_lock');
 }
 
 export async function securityIsUnlocked() {
+  if (!isTauriRuntimeAvailable()) {
+    return false;
+  }
+
   return invokeSecurityCommand<boolean>('security_is_unlocked');
 }

@@ -2,7 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Chain, Token, SUPPORTED_CHAINS, SUPPORTED_TOKENS, DEFAULT_SLIPPAGE, CHAIN_ID_TO_NAME } from '../constants';
 import { openOceanService } from '../services/openocean.service';
 import { QuoteResponse, TransactionStatus } from '../types';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE } from '@/lib/tauri';
 
 interface WalletInfo {
     id: string;
@@ -178,6 +178,10 @@ export const useSwap = (wallet?: WalletInfo | null) => {
 
     // Approve token
     const approveToken = useCallback(async () => {
+        if (!isTauriRuntimeAvailable()) {
+            throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+        }
+
         if (!wallet) {
             throw new Error('No wallet connected');
         }
@@ -233,6 +237,10 @@ export const useSwap = (wallet?: WalletInfo | null) => {
 
     // Execute swap
     const executeSwap = useCallback(async () => {
+        if (!isTauriRuntimeAvailable()) {
+            throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+        }
+
         if (!wallet || !isValid) {
             throw new Error('Invalid swap parameters');
         }

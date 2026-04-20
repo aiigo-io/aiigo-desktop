@@ -133,6 +133,7 @@ pub fn run() {
             dashboard::commands::get_portfolio_history,
             dashboard::commands::get_asset_allocation,
             dashboard::commands::get_unified_recent_transactions,
+            wallet::evm::price::get_bitcoin_price,
             // State handlers
             state_commands::state_get_bitcoin_wallet_balance_state,
             state_commands::state_get_bitcoin_price_state,

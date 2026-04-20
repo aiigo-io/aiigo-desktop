@@ -3,8 +3,18 @@ import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge, Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, Send, ChevronRight, HelpCircle, ExternalLink } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE, isTauriUnavailableError } from '@/lib/tauri';
 import { parseSecurityError } from '@/lib/security';
+import {
+  EvmAssetBalance,
+  EvmWalletBalancesResponse,
+  getChainFreshnessDescription,
+  getFreshnessBadgeClass,
+  getWalletMainnetBalance,
+  getWalletSyncBanner,
+  getWalletUpdatedLabel,
+  formatFreshnessLabel,
+} from '@/lib/evm-wallet';
 import { shortAddress, getEvmExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -14,40 +24,6 @@ interface WalletInfo {
   wallet_type: 'mnemonic' | 'private-key';
   address: string;
   balance: number;
-  created_at: string;
-  updated_at: string;
-}
-
-interface EvmAsset {
-  symbol: string;
-  name: string;
-  decimals: number;
-  contract_address: string | null;
-}
-
-interface EvmAssetBalance {
-  chain: string;
-  asset: EvmAsset;
-  balance: string;
-  balance_float: number;
-  usd_price: number;
-  usd_value: number;
-}
-
-interface EvmChainAssets {
-  chain: string;
-  chain_id: number;
-  total_balance_usd: number;
-  assets: EvmAssetBalance[];
-}
-
-interface EvmWalletInfo {
-  id: string;
-  label: string;
-  wallet_type: 'mnemonic' | 'private-key';
-  address: string;
-  chains: EvmChainAssets[];
-  total_balance_usd: number;
   created_at: string;
   updated_at: string;
 }
@@ -63,7 +39,7 @@ type RefreshScope = 'single' | 'all';
 const EvmAssets: React.FC = () => {
   const { requestUnlock } = useSecuritySession();
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
-  const [walletsWithBalances, setWalletsWithBalances] = useState<Map<string, EvmWalletInfo>>(new Map());
+  const [walletsWithBalances, setWalletsWithBalances] = useState<Map<string, EvmWalletBalancesResponse>>(new Map());
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [showMnemonicDialog, setShowMnemonicDialog] = useState(false);
   const [generatedMnemonic, setGeneratedMnemonic] = useState<CreateWalletResponse | null>(null);
@@ -192,11 +168,15 @@ const EvmAssets: React.FC = () => {
   const fetchWalletWithMetrics = async (
     walletId: string,
     scope: RefreshScope
-  ): Promise<EvmWalletInfo> => {
+  ): Promise<EvmWalletBalancesResponse> => {
+    if (!isTauriRuntimeAvailable()) {
+      throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+    }
+
     const cacheHit = isCacheHit(walletId);
     const start = performance.now();
     try {
-      const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', { walletId });
+      const walletWithBalances = await invoke<EvmWalletBalancesResponse>('evm_get_wallet_with_balances', { walletId });
       logRefreshMetrics({
         walletId,
         scope,
@@ -217,15 +197,21 @@ const EvmAssets: React.FC = () => {
   };
 
   const loadWallets = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setWallets([]);
+      setWalletsWithBalances(new Map());
+      return;
+    }
+
     try {
       const result = await invoke<WalletInfo[]>('evm_get_wallets');
       setWallets(result);
 
       // Load balance data for each wallet
-      const balances = new Map<string, EvmWalletInfo>();
+      const balances = new Map<string, EvmWalletBalancesResponse>();
       for (const wallet of result) {
         try {
-          const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', { walletId: wallet.id });
+          const walletWithBalances = await invoke<EvmWalletBalancesResponse>('evm_get_wallet_with_balances', { walletId: wallet.id });
           balances.set(wallet.id, walletWithBalances);
           setLastRefreshTime(prev => new Map(prev).set(wallet.id, new Date()));
         } catch (error) {
@@ -234,7 +220,9 @@ const EvmAssets: React.FC = () => {
       }
       setWalletsWithBalances(balances);
     } catch (error) {
-      console.error('Error loading wallets:', error);
+      if (!isTauriUnavailableError(error)) {
+        console.error('Error loading wallets:', error);
+      }
     }
   };
 
@@ -249,7 +237,7 @@ const EvmAssets: React.FC = () => {
         setLastRefreshTime(prev => new Map(prev).set(walletId, new Date()));
       } else {
         // Refresh all wallets
-        const balances = new Map<string, EvmWalletInfo>();
+        const balances = new Map<string, EvmWalletBalancesResponse>();
         const refreshTimes = new Map<string, Date>();
         for (const wallet of wallets) {
           try {
@@ -264,8 +252,12 @@ const EvmAssets: React.FC = () => {
         setLastRefreshTime(refreshTimes);
       }
     } catch (error) {
-      console.error('Error refreshing balance:', error);
-      alert(`Error refreshing balance: ${error}`);
+      if (isTauriUnavailableError(error)) {
+        toast.error(TAURI_UNAVAILABLE_MESSAGE);
+      } else {
+        console.error('Error refreshing balance:', error);
+        alert(`Error refreshing balance: ${error}`);
+      }
     } finally {
       setIsRefreshing(false);
       setRefreshingWalletId(null);
@@ -407,6 +399,11 @@ const EvmAssets: React.FC = () => {
         newMap.delete(walletId);
         return newMap;
       });
+      setLastRefreshTime(prev => {
+        const next = new Map(prev);
+        next.delete(walletId);
+        return next;
+      });
     } catch (error) {
       console.error('Error deleting wallet:', error);
       alert(`Error: ${error}`);
@@ -417,6 +414,11 @@ const EvmAssets: React.FC = () => {
 
   const handleSendEvm = async () => {
     if (!selectedWalletForSend || !selectedAssetForSend || !sendToAddress || !sendAmount) return;
+
+    if (!isTauriRuntimeAvailable()) {
+      toast.error(TAURI_UNAVAILABLE_MESSAGE);
+      return;
+    }
 
     setIsSending(true);
     try {
@@ -479,6 +481,11 @@ const EvmAssets: React.FC = () => {
       handleRefreshBalance(selectedWalletForSend.id);
     } catch (error) {
       console.error('Error sending EVM asset:', error);
+      if (isTauriUnavailableError(error)) {
+        toast.error(TAURI_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
       if (parseSecurityError(error) === 'locked') {
         void requestUnlock({
           prompt: 'Unlock to continue sending assets.',
@@ -502,12 +509,6 @@ const EvmAssets: React.FC = () => {
     setSelectedWalletForSend(wallet);
     setSelectedAssetForSend({ chain, chainId, asset });
     setIsSendDialogOpen(true);
-  };
-
-  const getWalletMainnetBalance = (wallet: EvmWalletInfo) => {
-    return wallet.chains
-      .filter(chain => chain.chain_id !== 11155111) // Exclude Sepolia
-      .reduce((sum, chain) => sum + chain.total_balance_usd, 0);
   };
 
   const totalBalance = Array.from(walletsWithBalances.values()).reduce(
@@ -961,7 +962,7 @@ const EvmAssets: React.FC = () => {
                         </p>
                         {selectedAssetForSend?.asset.usd_price && (
                           <p className="text-[10px] text-muted-foreground">
-                            ≈ ${((Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18) * (walletsWithBalances.get(selectedWalletForSend?.id || '')?.chains.find(c => c.chain_id === selectedAssetForSend.chainId)?.assets.find(a => a.asset.contract_address === null)?.usd_price || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            ≈ ${((Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18) * (walletsWithBalances.get(selectedWalletForSend?.id || '')?.wallet.chains.find(c => c.chain_id === selectedAssetForSend.chainId)?.assets.find(a => a.asset.contract_address === null)?.usd_price || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </p>
                         )}
                       </>
@@ -1047,8 +1048,9 @@ const EvmAssets: React.FC = () => {
             </div>
           ) : (
             wallets.map((wallet) => {
-              const walletWithBalances = walletsWithBalances.get(wallet.id);
-              const lastRefresh = lastRefreshTime.get(wallet.id);
+              const walletResponse = walletsWithBalances.get(wallet.id);
+              const walletWithBalances = walletResponse?.wallet;
+              const walletSyncBanner = walletResponse ? getWalletSyncBanner(walletResponse) : null;
               return (
                 <div
                   key={wallet.id}
@@ -1085,10 +1087,10 @@ const EvmAssets: React.FC = () => {
                     <div className="text-right ml-4 flex flex-col items-end gap-2">
                       <div>
                         <p className="font-semibold text-base text-foreground font-mono">
-                          ${(walletWithBalances ? getWalletMainnetBalance(walletWithBalances) : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ${(walletResponse ? getWalletMainnetBalance(walletResponse) : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                         <p className="text-xs text-muted-foreground mt-1">
-                          {lastRefresh ? `Updated: ${lastRefresh.toLocaleTimeString()}` : 'Loading...'}
+                          {getWalletUpdatedLabel(walletResponse)}
                         </p>
                       </div>
                       {/* Action Buttons */}
@@ -1174,6 +1176,13 @@ const EvmAssets: React.FC = () => {
                     </div>
                   </div>
 
+                  {walletSyncBanner && (
+                    <div className={`rounded-lg border px-3 py-2 text-xs ${walletSyncBanner.className}`}>
+                      <p className="font-semibold uppercase tracking-wide">{walletSyncBanner.label}</p>
+                      <p className="mt-1 leading-relaxed">{walletSyncBanner.description}</p>
+                    </div>
+                  )}
+
                   {/* Chain Assets */}
                   {walletWithBalances && walletWithBalances.chains.length > 0 && (
                     <div className="border-t border-border pt-4 space-y-2">
@@ -1189,11 +1198,28 @@ const EvmAssets: React.FC = () => {
                                 </div>
                                 <div className="text-right">
                                   <p className="font-semibold text-foreground text-sm font-mono">${chainAssets.total_balance_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                                  <Badge variant="outline" className={`mt-1 text-[10px] uppercase ${getFreshnessBadgeClass(chainAssets.freshness.status)}`}>
+                                    {formatFreshnessLabel(chainAssets.freshness.status)}
+                                  </Badge>
                                 </div>
                               </div>
                             </AccordionTrigger>
                             <AccordionContent>
                               <div className="space-y-2 pt-2">
+                                {chainAssets.freshness.status !== 'fresh' && (
+                                  <div className={`rounded-lg border px-3 py-2 text-xs ${getFreshnessBadgeClass(chainAssets.freshness.status)}`}>
+                                    {getChainFreshnessDescription(chainAssets.freshness)}
+                                  </div>
+                                )}
+
+                                {chainAssets.assets.length === 0 && (
+                                  <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">
+                                    {chainAssets.freshness.status === 'unavailable'
+                                      ? 'No cached assets are available for this chain right now.'
+                                      : 'No assets were found on this chain.'}
+                                  </div>
+                                )}
+
                                 {chainAssets.assets.map((assetBalance, assetIndex) => (
                                   <div key={assetIndex} className="flex items-center justify-between px-2 py-2 bg-muted/30 rounded group">
                                     <div className="flex items-center gap-3">
