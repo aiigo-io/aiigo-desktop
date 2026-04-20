@@ -1,6 +1,8 @@
 use crate::wallet::bitcoin::transaction as bitcoin_transaction;
 use crate::wallet::evm::transaction as evm_transaction;
 use crate::wallet::security::commands::AppSecurity;
+use crate::wallet::sync::engine;
+use crate::wallet::sync::types::SyncReason;
 use crate::wallet::transaction_types::{
     BitcoinFeeEstimationResponse, BitcoinTransaction, EvmTransaction, SendBitcoinRequest,
     SendEvmRequest, SendTransactionResponse,
@@ -46,7 +48,9 @@ pub async fn fetch_bitcoin_history(
     wallet_id: String,
     address: String,
 ) -> Result<Vec<BitcoinTransaction>, String> {
-    bitcoin_transaction::fetch_bitcoin_transaction_history(wallet_id, address).await
+    engine::refresh_bitcoin_history(wallet_id, address, SyncReason::Manual)
+        .await
+        .map(|(transactions, _)| transactions)
 }
 
 // EVM Transaction Commands
@@ -92,7 +96,9 @@ pub async fn fetch_evm_history(
     chain: String,
     chain_id: u64,
 ) -> Result<Vec<EvmTransaction>, String> {
-    evm_transaction::fetch_evm_transaction_history(wallet_id, address, chain, chain_id).await
+    engine::refresh_evm_history(wallet_id, address, chain, chain_id, SyncReason::Manual)
+        .await
+        .map(|(transactions, _)| transactions)
 }
 
 #[tauri::command]

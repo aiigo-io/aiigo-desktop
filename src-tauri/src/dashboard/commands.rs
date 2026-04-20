@@ -1,4 +1,6 @@
 use crate::DB;
+use crate::wallet::sync::engine;
+use crate::wallet::sync::types::SyncReason;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -54,134 +56,13 @@ pub fn get_dashboard_stats() -> Result<DashboardStats, String> {
 
 #[tauri::command]
 pub async fn refresh_dashboard_stats() -> Result<DashboardStats, String> {
-    // 1. Get BTC price from cache (background task keeps it fresh)
-    let btc_price = crate::wallet::evm::price_manager::get_cached_price("BTC")
-        .unwrap_or(95000.0); // Fallback if cache not ready yet
-    
-    // Use a scope to drop the lock before fetching fresh EVM prices
-    let (total_btc_balance, wallet_assets_map, symbols_to_price) = {
-        let db = DB.lock().map_err(|e| e.to_string())?;
-        
-        // 2. Refresh BTC Balance
-        let btc_wallets = db.get_bitcoin_wallets().map_err(|e| e.to_string())?;
-        let total_btc_balance: f64 = btc_wallets.iter().map(|w| w.balance).sum();
+    let (result, _outcome) = engine::refresh_dashboard(SyncReason::Manual).await?;
 
-        // 3. Prepare EVM Balances and Prices
-        let evm_wallets = db.get_evm_wallets().map_err(|e| e.to_string())?;
-        let mut wallet_assets_map = Vec::new(); // (wallet_id, assets)
-        let mut symbols_to_price = std::collections::HashSet::new();
-
-        for wallet in &evm_wallets {
-            let assets = db.get_evm_asset_balances(&wallet.id).map_err(|e| e.to_string())?;
-            for asset in &assets {
-                symbols_to_price.insert(asset.1.clone()); // symbol
-            }
-            wallet_assets_map.push((wallet.id.clone(), assets));
-        }
-        (total_btc_balance, wallet_assets_map, symbols_to_price)
-    };
-
-    let btc_value_usd = total_btc_balance * btc_price;
-
-    // Fetch fresh prices for all EVM symbols from cache (Lock is dropped here)
-    let mut fresh_prices = std::collections::HashMap::new();
-    for symbol in symbols_to_price {
-        if let Some(price) = crate::wallet::evm::price_manager::get_cached_price(&symbol) {
-            fresh_prices.insert(symbol, price);
-        }
-    }
-
-    let mut total_evm_usd = 0.0;
-    let mut all_assets_to_update = Vec::new();
-    
-    // Update EVM assets with fresh prices and sum them up
-    for (wallet_id, assets) in wallet_assets_map {
-        for asset in assets {
-            let chain_id = asset.2;
-            let symbol = &asset.1;
-            
-            let mut usd_price = asset.8;
-            let mut usd_value = asset.9;
-
-            if let Some(&fresh_price) = fresh_prices.get(symbol) {
-                usd_price = fresh_price;
-                usd_value = asset.7 * fresh_price; // balance_float * fresh_price
-            }
-
-            if chain_id != 11155111 {
-                total_evm_usd += usd_value;
-            }
-
-            // Prepare for DB update
-            all_assets_to_update.push(crate::db::AssetBalanceData {
-                wallet_id: wallet_id.clone(),
-                chain: asset.0,
-                chain_id,
-                symbol: symbol.clone(),
-                name: asset.3,
-                decimals: asset.5,
-                contract_address: asset.4,
-                balance: asset.6,
-                balance_float: asset.7,
-                usd_price,
-                usd_value,
-            });
-        }
-    }
-
-    let total_portfolio_usd = btc_value_usd + total_evm_usd;
-    let total_portfolio_btc = if btc_price > 0.0 { total_portfolio_usd / btc_price } else { 0.0 };
-
-    // 4. Calculate 24h Change (Include both BTC and EVM)
-    // BTC contribution
-    let btc_24h_change = crate::wallet::evm::price_manager::get_cached_24h_change("BTC")
-        .unwrap_or(0.0);
-    let btc_change_amount = btc_value_usd * (btc_24h_change / 100.0);
-    
-    // EVM contribution
-    let mut evm_change_amount = 0.0;
-    for asset in &all_assets_to_update {
-        // Exclude testnet/untracked assets (though price_manager should handle them)
-        if let Some(change) = crate::wallet::evm::price_manager::get_cached_24h_change(&asset.symbol) {
-            evm_change_amount += asset.usd_value * (change / 100.0);
-        }
-    }
-
-    let total_change_amount = btc_change_amount + evm_change_amount; 
-    
-    let total_change_percentage = if total_portfolio_usd > 0.0 {
-        (total_change_amount / total_portfolio_usd) * 100.0
-    } else {
-        0.0
-    };
-
-    // 5. Update DB (Re-acquire lock)
-    {
-        let db = DB.lock().map_err(|e| e.to_string())?;
-        
-        // Update DB with fresh prices
-        if !all_assets_to_update.is_empty() {
-            db.batch_save_evm_asset_balances(&all_assets_to_update)
-                .map_err(|e| format!("Failed to update fresh prices in DB: {}", e))?;
-        }
-
-        db.update_dashboard_stats(
-            total_portfolio_usd,
-            total_portfolio_btc,
-            total_change_amount,
-            total_change_percentage
-        ).map_err(|e| e.to_string())?;
-
-        // 6. Save daily snapshot for historical chart
-        db.save_portfolio_snapshot(total_portfolio_usd).map_err(|e| e.to_string())?;
-    }
-
-    // 7. Return Stats
     Ok(DashboardStats {
-        total_balance_usd: format!("${}", format_currency(total_portfolio_usd)),
-        total_balance_btc: format!("≈ {:.4} BTC", total_portfolio_btc),
-        change_24h_amount: format!("{}${}", if total_change_amount >= 0.0 { "+" } else { "" }, format_currency(total_change_amount)),
-        change_24h_percentage: format!("{}{:.2}%", if total_change_percentage >= 0.0 { "+" } else { "" }, total_change_percentage),
+        total_balance_usd: format!("${}", format_currency(result.total_balance_usd)),
+        total_balance_btc: format!("≈ {:.4} BTC", result.total_balance_btc),
+        change_24h_amount: format!("{}${}", if result.change_24h_amount >= 0.0 { "+" } else { "" }, format_currency(result.change_24h_amount)),
+        change_24h_percentage: format!("{}{:.2}%", if result.change_24h_percentage >= 0.0 { "+" } else { "" }, result.change_24h_percentage),
     })
 }
 

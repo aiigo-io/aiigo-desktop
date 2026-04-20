@@ -1,3 +1,5 @@
+use crate::wallet::state::types::FreshnessMetadata;
+use crate::wallet::sync::types::SyncOutcome;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +141,7 @@ pub struct EvmChainAssets {
     pub chain: String,
     pub chain_id: u64,
     pub total_balance_usd: f64,
+    pub freshness: FreshnessMetadata,
     pub assets: Vec<EvmAssetBalance>,
 }
 
@@ -152,4 +155,83 @@ pub struct EvmWalletInfo {
     pub total_balance_usd: f64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvmWalletBalancesResponse {
+    pub wallet: EvmWalletInfo,
+    pub sync: SyncOutcome,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EvmAsset, EvmAssetBalance, EvmChainAssets, EvmWalletBalancesResponse, EvmWalletInfo,
+    };
+    use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
+    use crate::wallet::sync::types::{SyncOutcome, SyncReason, SyncTarget};
+    use serde_json::Value;
+
+    fn top_level_keys(value: &Value) -> Vec<String> {
+        let mut keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn evm_wallet_balances_response_serializes_wallet_sync_and_chain_freshness() {
+        let response = EvmWalletBalancesResponse {
+            wallet: EvmWalletInfo {
+                id: "wallet-1".to_string(),
+                label: "Main".to_string(),
+                wallet_type: "mnemonic".to_string(),
+                address: "0xabc".to_string(),
+                chains: vec![EvmChainAssets {
+                    chain: "ethereum".to_string(),
+                    chain_id: 1,
+                    total_balance_usd: 12.5,
+                    freshness: FreshnessMetadata {
+                        status: FreshnessStatus::Stale,
+                        updated_at: None,
+                        failed_sources: vec!["ethereum".to_string()],
+                    },
+                    assets: vec![EvmAssetBalance {
+                        chain: "ethereum".to_string(),
+                        asset: EvmAsset::new("ETH", "Ethereum", 18, None),
+                        balance: "1000000000000000000".to_string(),
+                        balance_float: 1.0,
+                        usd_price: 12.5,
+                        usd_value: 12.5,
+                    }],
+                }],
+                total_balance_usd: 12.5,
+                created_at: "2026-04-20T00:00:00Z".to_string(),
+                updated_at: "2026-04-20T00:00:00Z".to_string(),
+            },
+            sync: SyncOutcome {
+                reason: SyncReason::Manual,
+                target: SyncTarget::EvmWalletBalances,
+                updated_at: 1_713_571_200,
+                partial: true,
+                failed_sources: vec!["ethereum".to_string()],
+            },
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(top_level_keys(&json), vec!["sync", "wallet"]);
+
+        let chain = &json["wallet"]["chains"][0];
+        assert_eq!(
+            top_level_keys(chain),
+            vec!["assets", "chain", "chain_id", "freshness", "total_balance_usd"]
+        );
+        assert_eq!(chain["freshness"]["status"], "stale");
+        assert_eq!(json["sync"]["partial"], true);
+        assert_eq!(json["sync"]["failed_sources"][0], "ethereum");
+    }
 }

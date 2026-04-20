@@ -1,32 +1,6 @@
+pub use crate::wallet::sync::types::LifecycleStatus as TransactionStatus;
+
 use serde::{Deserialize, Serialize};
-
-/// Transaction status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum TransactionStatus {
-    Pending,
-    Confirmed,
-    Failed,
-}
-
-impl TransactionStatus {
-    pub fn as_str(&self) -> &str {
-        match self {
-            TransactionStatus::Pending => "pending",
-            TransactionStatus::Confirmed => "confirmed",
-            TransactionStatus::Failed => "failed",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "pending" => TransactionStatus::Pending,
-            "confirmed" => TransactionStatus::Confirmed,
-            "failed" => TransactionStatus::Failed,
-            _ => TransactionStatus::Pending,
-        }
-    }
-}
 
 /// Transaction type (send or receive)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -158,4 +132,37 @@ pub struct RawTransactionRequest {
     pub value: String,
     pub gas_limit: String,
     pub gas_price: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TransactionStatus;
+
+    #[test]
+    fn transaction_status_from_str_accepts_phase3_and_legacy_values() {
+        assert_eq!(TransactionStatus::from_str("broadcasted"), TransactionStatus::Broadcasted);
+        assert_eq!(TransactionStatus::from_str("pending"), TransactionStatus::Pending);
+        assert_eq!(TransactionStatus::from_str("confirmed"), TransactionStatus::Confirmed);
+        assert_eq!(TransactionStatus::from_str("failed"), TransactionStatus::Failed);
+        assert_eq!(TransactionStatus::from_str("replaced"), TransactionStatus::Replaced);
+        assert_eq!(TransactionStatus::from_str("dropped"), TransactionStatus::Dropped);
+        assert_eq!(TransactionStatus::from_str("unknown"), TransactionStatus::Pending);
+    }
+
+    #[test]
+    fn transaction_status_broadcasted_does_not_equal_confirmed() {
+        assert_ne!(TransactionStatus::after_broadcast(), TransactionStatus::Confirmed);
+        assert_eq!(TransactionStatus::after_broadcast().as_str(), "broadcasted");
+    }
+
+    #[test]
+    fn replaced_and_dropped_states_survive_round_trip_without_collapsing() {
+        for status in [TransactionStatus::Replaced, TransactionStatus::Dropped] {
+            let wire = serde_json::to_string(&status).unwrap();
+
+            assert_eq!(TransactionStatus::from_str(status.as_str()), status);
+            assert_eq!(serde_json::from_str::<TransactionStatus>(&wire).unwrap(), status);
+            assert_ne!(status, TransactionStatus::Pending);
+        }
+    }
 }

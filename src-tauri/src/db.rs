@@ -468,6 +468,21 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_bitcoin_wallet_sync_metadata(
+        &self,
+        wallet_id: &str,
+        failed_sources: &[String],
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE bitcoin_wallets SET balance_failed_sources = ?1 WHERE id = ?2",
+            params![serde_json::to_string(failed_sources).unwrap_or_else(|_| "[]".to_string()), wallet_id],
+        )?;
+
+        Ok(())
+    }
+
     // EVM Wallet Methods
     pub fn add_evm_wallet(
         &self,
@@ -606,6 +621,32 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn update_evm_wallet_sync_metadata(
+        &self,
+        wallet_id: &str,
+        balance: f64,
+        failed_sources: &[String],
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let balance_updated_at = Utc::now().timestamp();
+
+        conn.execute(
+            "UPDATE evm_wallets
+             SET balance = ?1, updated_at = ?2, balance_updated_at = ?3, balance_failed_sources = ?4
+             WHERE id = ?5",
+            params![
+                balance,
+                &now,
+                balance_updated_at,
+                serde_json::to_string(failed_sources).unwrap_or_else(|_| "[]".to_string()),
+                wallet_id
+            ],
+        )?;
+
+        Ok(())
     }
 
     // EVM Asset Balance Methods

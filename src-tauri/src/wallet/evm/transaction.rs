@@ -2,6 +2,7 @@ use crate::wallet::transaction_types::{
     EvmTransaction, SendEvmRequest, SendTransactionResponse,
     TransactionStatus, TransactionType,
 };
+use crate::wallet::sync::types::EVM_MIN_BLOCK_DEPTH;
 use crate::wallet::evm::config::get_chain_by_id;
 use crate::wallet::evm::private_key::{
     load_authorized_mnemonic, load_authorized_private_key,
@@ -148,13 +149,12 @@ pub async fn fetch_evm_transaction_history(
             TransactionType::Receive
         };
 
-        let status = if tx.is_error == "0" {
-            TransactionStatus::Confirmed
-        } else {
-            TransactionStatus::Failed
-        };
-
         let block_number = tx.block_number.parse::<u64>().ok();
+        let status = TransactionStatus::from_evm_receipt(
+            Some(tx.is_error == "0"),
+            Some(EVM_MIN_BLOCK_DEPTH),
+            EVM_MIN_BLOCK_DEPTH,
+        );
         
         let timestamp_secs = tx.timestamp.parse::<i64>()
             .unwrap_or_else(|_| Utc::now().timestamp());
@@ -439,10 +439,6 @@ pub async fn send_evm_transaction(
     let gas_used_str: String;
     let gas_price_str: String;
     let fee: f64;
-    let _status: TransactionStatus;
-    // Set status to confirmed for now (mocking immediate confirmation)
-    _status = TransactionStatus::Confirmed;
-
     // Check if it's a native token or ERC20 transfer
     if request.contract_address.is_none() {
         // Native token transfer (ETH, etc.)
@@ -546,7 +542,7 @@ pub async fn send_evm_transaction(
         gas_used: gas_used_str,
         gas_price: gas_price_str,
         fee,
-        status: TransactionStatus::Confirmed,
+        status: TransactionStatus::after_broadcast(),
         block_number: None,
         timestamp: now.clone(),
         created_at: now,
@@ -759,7 +755,8 @@ pub async fn approve_erc20_token(
     let tx_hash = *pending_tx;
     let tx_hash_str = format!("{:?}", tx_hash);
 
-    // Wait for confirmation
+    // Approval refresh stays inline until the Phase 3 sync engine consumes
+    // approval polling as a first-class flow.
     let _receipt = pending_tx
         .await
         .map_err(|e| format!("Failed to get receipt: {}", e))?

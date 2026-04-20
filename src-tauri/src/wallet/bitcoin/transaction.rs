@@ -2,6 +2,7 @@ use crate::wallet::transaction_types::{
     BitcoinFeeEstimationResponse, BitcoinTransaction, SendBitcoinRequest, SendTransactionResponse,
     TransactionStatus, TransactionType,
 };
+use crate::wallet::sync::types::BITCOIN_MIN_CONFIRMATIONS;
 use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
@@ -215,12 +216,6 @@ pub async fn fetch_bitcoin_transaction_history(
 
         let fee = (tx.fee as f64) / 100_000_000.0;
 
-        let status = if tx.status.confirmed {
-            TransactionStatus::Confirmed
-        } else {
-            TransactionStatus::Pending
-        };
-
         let confirmations = if let Some(block_height) = tx.status.block_height {
             if current_height > 0 {
                 current_height.saturating_sub(block_height)
@@ -230,6 +225,11 @@ pub async fn fetch_bitcoin_transaction_history(
         } else {
             0
         };
+
+        let status = TransactionStatus::from_bitcoin_confirmations(
+            confirmations,
+            BITCOIN_MIN_CONFIRMATIONS,
+        );
 
         let timestamp = if let Some(block_time) = tx.status.block_time {
             chrono::DateTime::from_timestamp(block_time as i64, 0)
@@ -529,7 +529,7 @@ pub async fn send_bitcoin_transaction(
         to_address: request.to_address,
         amount: request.amount,
         fee,
-        status: TransactionStatus::Pending,
+        status: TransactionStatus::after_broadcast(),
         confirmations: 0,
         block_height: None,
         timestamp: now.clone(),

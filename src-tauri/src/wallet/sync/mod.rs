@@ -5,4 +5,4 @@
 #![allow(dead_code)]
 
 pub mod types;
-// pub mod engine; // Phase 3
+pub mod engine;
