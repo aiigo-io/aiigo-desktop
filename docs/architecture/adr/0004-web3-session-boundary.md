@@ -43,6 +43,16 @@ This means:
 
 Even while WalletConnect and EIP-1193 remain out of scope for the current runtime, the architecture reserves a strict boundary for them so they do not distort the core wallet design later.
 
+### Current Runtime Anchor
+
+The current runtime already has a local security boundary for product-owned actions:
+
+- send, approve, and export flows pass through `wallet/security/*`
+- unlock state is tracked by `SessionManager`
+- secret reads are routed through `SqliteKeystore`
+
+That boundary is not a Web3 session layer, but it is the authority future dApp-facing session code must call into rather than bypass.
+
 ## Consequences
 
 ### Positive

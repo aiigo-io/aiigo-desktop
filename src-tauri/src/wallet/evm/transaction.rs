@@ -755,7 +755,7 @@ pub async fn approve_erc20_token(
     let tx_hash = *pending_tx;
     let tx_hash_str = format!("{:?}", tx_hash);
 
-    // Approval refresh stays inline until the Phase 3 sync engine consumes
+    // Approval refresh stays inline until the shared sync engine consumes
     // approval polling as a first-class flow.
     let _receipt = pending_tx
         .await

@@ -61,7 +61,7 @@ pub fn evm_create_wallet_from_private_key(
         .add_evm_wallet(label, "private-key".to_string(), address_str)
         .map_err(|e| format!("Failed to save wallet: {}", e))?;
 
-    // Secret writes remain DB-backed in Phase 1; Keystore write API is deferred.
+    // Secret writes remain DB-backed in the current MVP; keystore writes are deferred.
     // Store private key
     db.add_evm_wallet_secret(
         wallet_info.id.clone(),

@@ -1,6 +1,7 @@
 //! Security boundary subsystem.
-//! Filled in Phase 1 of the wallet foundation hardening plan.
-//! Plan reference: docs/superpowers/plans/2026-04-18-wallet-foundation-hardening.md
+//! This module owns the signer-session and authorized secret-read boundary
+//! used by the current wallet MVP.
+//! Reference: docs/architecture/executable-wallet-runtime-blueprint.md
 
 #![allow(dead_code)]
 

@@ -1,8 +1,7 @@
 //! ChainAdapter trait.
 //!
-//! The method set is finalized during Phase 3 implementation. This skeleton
-//! exists so sync engine code and transaction lifecycle code can type-depend
-//! on the trait today, and so Gate 1 can see the module on disk.
+//! This trait defines the current normalized chain boundary used by the MVP
+//! sync engine and transaction flows.
 
 #![allow(dead_code)]
 
@@ -35,13 +34,11 @@ impl ChainBalanceSnapshot {
 }
 
 /// Common interface that BTC (`wallet/bitcoin/*`) and EVM (`wallet/evm/*`)
-/// wallet modules must implement. Phase 3 expands the method set to cover:
+/// wallet modules must implement. Future extensions may add support for:
 ///   - native balance reads
 ///   - receipt / transaction status reads
 ///   - broadcast
 ///   - per-chain finality thresholds
-///
-/// Phase 3 may add an async variant; do not reorder existing methods.
 pub trait ChainAdapter: Send + Sync {
     /// Short identifier for the chain family, e.g. "bitcoin" or "evm".
     fn chain_family(&self) -> &'static str;
@@ -61,8 +58,7 @@ pub trait ChainAdapter: Send + Sync {
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<ChainBalanceSnapshot, String>> + Send + 'a>>;
 
-    // Phase 3 method additions go below this line.
-    // Keep `chain_family` first to preserve trait object layout expectations.
+    // Add future methods below this line while preserving existing callers.
 }
 
 #[cfg(test)]

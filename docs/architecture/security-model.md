@@ -79,7 +79,7 @@ After import or generation, secret material is written into SQLite-backed secret
 
 ### Current Architectural Problem
 
-The application already treats secret material as usable runtime input, but does not yet isolate it behind a hardened key-security layer.
+The application now has a dedicated `wallet/security/*` subsystem, but that subsystem is still an extraction boundary rather than a hardened keystore. Secret writes remain SQLite-backed, at-rest encryption is not in place yet, and signing modules still derive keys after authorized secret loads.
 
 ### Target Lifecycle
 
@@ -101,7 +101,12 @@ Secret material is currently persisted in SQLite-backed secret tables:
 - `bitcoin_wallet_secrets`
 - `evm_wallet_secrets`
 
-The current codebase also contains explicit comments indicating that at least some paths still store values in plaintext "for now" with a future encryption TODO.
+At runtime, Tauri manages an `AppSecurity` state object that owns:
+
+- a `SessionManager` with a 300-second TTL
+- a `SqliteKeystore` read layer for mnemonic and private-key lookup
+
+The current codebase still contains explicit comments indicating that at least some paths store secret material in plaintext "for now" with a future encryption TODO.
 
 ### Current Risks
 
@@ -122,15 +127,24 @@ The target storage strategy should introduce a dedicated key-security abstractio
 
 ### Current Reality
 
-The current architecture does not yet model unlock state as a first-class concept.
+The current architecture does model unlock state as a first-class concept.
 
-This means the wallet currently behaves closer to:
+Today the runtime exposes:
 
-- "secret is locally available and can be read when needed"
+- `security_unlock`
+- `security_lock`
+- `security_is_unlocked`
+- `SessionManager::authorize(SignerOperation)` for send, approve, and export operations
 
-than to:
+This means the wallet no longer behaves like unconstrained secret access. Instead it behaves closer to:
 
 - "secret access is mediated by an explicit unlock session"
+
+Current limitations still matter:
+
+- unlock currently treats any non-empty token as acceptable input
+- per-operation policy branches are not yet materially different
+- unlock state is in-memory only and not backed by OS credentials
 
 ### Target Model
 
@@ -149,14 +163,15 @@ The wallet should eventually support:
 
 ### Current Boundary
 
-Today, signing paths are effectively implemented by:
+Today, send, approve, and export paths are effectively implemented by:
 
 1. look up wallet metadata
-2. read secret material from SQLite
-3. derive or reconstruct signing key
-4. sign and broadcast
+2. check unlock state through `SessionManager::authorize(...)`
+3. read secret material through `SqliteKeystore`
+4. derive or reconstruct signing key in the domain module
+5. sign, broadcast, or export
 
-This boundary is too thin for a mature wallet.
+This boundary is materially better than direct DB reads from arbitrary call sites, but it is still too thin for a mature wallet because key derivation and signing still happen inside business modules after secret material is loaded.
 
 ### Target Boundary
 
@@ -177,7 +192,7 @@ The wallet exposes direct Tauri commands for:
 - mnemonic export
 - private-key export
 
-These commands are part of the registered command surface today.
+These commands are part of the registered command surface today, and they are gated by unlock state via `SignerOperation::ExportMnemonic` and `SignerOperation::ExportPrivateKey`.
 
 ### Security Concern
 
@@ -191,6 +206,8 @@ Exports should eventually require:
 - stronger user intent confirmation
 - clear risk messaging
 - optional platform-level restrictions or feature gating
+
+Only the first item is implemented today. The latter three remain future hardening work.
 
 ## Recovery And Backup Model
 
@@ -220,7 +237,7 @@ The wallet should explicitly document and enforce:
 
 ### Current Risk
 
-The current codebase includes direct console and logging usage in transaction and refresh paths. Even without obvious secret logging today, the architecture does not yet formally constrain what may or may not be logged around sensitive operations.
+The current codebase includes direct console and tracing usage in transaction and refresh paths. The repository now also contains a sanitization helper, but the architecture still does not guarantee that every sensitive code path consistently routes through one redaction policy.
 
 ### Required Policy
 
@@ -265,17 +282,17 @@ The most important currently visible risks are:
 
 The codebase explicitly contains plaintext-storage TODO comments for secret persistence paths. This is the clearest sign that the key-security layer is not yet complete.
 
-### 2. No First-Class Unlock Model
+### 2. Unlock Exists But Policy Is Still Coarse
 
-The runtime does not yet model secret access through a lock/unlock session abstraction.
+The runtime now models secret access through a lock/unlock session abstraction, but current authorization is still coarse-grained. Unlock does not yet differentiate export from send beyond the operation label passed into `authorize(...)`, and it does not integrate platform credentials.
 
 ### 3. Export And Signing Share The Same Fundamental Secret Access Pattern
 
-Both exporting and signing rely on direct secret retrieval from persistence, rather than a hardened signing boundary.
+Both exporting and signing rely on authorized secret retrieval from the same SQLite-backed keystore, rather than a hardened signing boundary with distinct export friction.
 
 ### 4. Security Boundary Is Not Yet Separated From Business Logic
 
-Wallet creation, export, transaction signing, and approval signing still cross through business logic modules rather than a dedicated security subsystem.
+The security subsystem exists, but wallet creation, key derivation, transaction signing, and approval signing still cross through business logic modules after secret access is authorized.
 
 ## Security Hardening Roadmap
 

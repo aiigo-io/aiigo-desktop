@@ -80,24 +80,32 @@ The wallet state should be divided into the following categories:
 
 ### Intended Balance Fields
 
-The UI-facing balance model should eventually include:
+The repository now has one frozen balance contract and one wallet-specific EVM response surface.
+
+The frozen Rust contract is:
+
+- `raw_amount`
+- `display_amount`
+- `chain_id`
+- `freshness`
+
+The EVM wallet response additionally carries per-chain asset groups and wallet-level sync outcome.
+
+Future extensions may still add richer balance metadata such as:
 
 - `asset_id`
 - `wallet_id`
-- `chain_id`
-- `raw_amount`
-- `display_amount`
 - `balance_source`
 - `balance_updated_at`
 - `balance_status`
   - fresh
   - stale
-  - failed
+  - unavailable
   - partial
 
 ### Current Problem
 
-Balance data exists, but it does not yet have explicit freshness or failure semantics beyond ad hoc UI state.
+Bitcoin balance state now has explicit freshness semantics through `BalanceState`, and EVM wallet responses carry chain-level `FreshnessMetadata`. The remaining gap is that balance-related UI surfaces do not all consume the same frozen contract yet.
 
 ## Price State Model
 
@@ -106,7 +114,7 @@ Balance data exists, but it does not yet have explicit freshness or failure sema
 - Prices are fetched from CoinGecko.
 - Prices are cached in-process in the EVM price manager.
 - Stablecoins are synthetically fixed at `1.0`.
-- Bitcoin price is separately requested from the frontend, but the command registration is currently inconsistent with that expectation.
+- Bitcoin price is available through both `get_bitcoin_price` and `state_get_bitcoin_price_state`, each returning `PriceState`.
 
 ### Intended Price Fields
 
@@ -122,12 +130,13 @@ Balance data exists, but it does not yet have explicit freshness or failure sema
 
 ### Current Problem
 
-The application currently uses price values as if they were normal product state, but does not yet surface:
+The application now surfaces explicit price state in the Bitcoin portfolio UI and dashboard-adjacent flows, including:
 
 - whether they are cached
 - whether they are synthetic
 - whether the latest refresh failed
-- whether a fallback value is being shown
+
+The remaining gap is that not every pricing consumer uses the same `PriceState` contract yet.
 
 ## Portfolio State Model
 
@@ -136,6 +145,8 @@ The application currently uses price values as if they were normal product state
 - Dashboard aggregates are stored in `dashboard_stats`.
 - Portfolio history snapshots are stored in `portfolio_history`.
 - EVM asset rows also persist per-asset USD values.
+- `state_get_bitcoin_portfolio_state` exposes a frozen `PortfolioState` contract for BTC-only aggregation.
+- `DashboardStats` now also carries freshness metadata for the dashboard aggregate.
 
 ### Intended Portfolio Fields
 
@@ -155,31 +166,28 @@ Portfolio state is currently derived from a mix of:
 - wallet balances from SQLite
 - token asset rows from SQLite
 - in-process cached prices
-- frontend reconciliation logic
+- backend aggregation paths
 
-This means portfolio state exists, but it is not yet produced by a single explicit valuation model with explicit freshness semantics.
+This means portfolio state exists and freshness is explicit for BTC and dashboard views, but the repository still exposes more than one aggregate contract rather than one universal wallet-state facade.
 
 ## Transaction State Model
 
 ### Current Model
 
-The current transaction enum only models:
+The current transaction lifecycle models:
 
+- `broadcasted`
 - `pending`
 - `confirmed`
 - `failed`
+- `replaced`
+- `dropped`
 
 ### Current Problems
 
-- Bitcoin sends are stored as `pending`.
-- EVM sends are stored as `confirmed`.
-- The application does not yet have one unified updater that advances transaction state after broadcast.
-- There is no first-class concept for:
-  - replaced
-  - dropped
-  - nonce conflict
-  - receipt missing
-  - finality depth
+- BTC and EVM now share the same six-state vocabulary through `LifecycleStatus` / `TransactionStatus`.
+- Send paths insert `broadcasted` at send time and history/lifecycle refresh paths advance state later.
+- The remaining gaps are around richer receipt-specific metadata and a single end-to-end lifecycle facade for every transaction surface.
 
 ### Intended Transaction Fields
 
@@ -218,9 +226,9 @@ This state is largely missing today, but it should exist as a first-class domain
 
 ## Freshness Semantics
 
-Freshness is the missing glue between backend truth and user trust.
+Freshness is now an explicit backend contract.
 
-The wallet state model should explicitly support:
+The wallet state model explicitly supports:
 
 - `fresh`
   The value was synchronized recently enough to satisfy the relevant UI surface.
@@ -233,12 +241,13 @@ The wallet state model should explicitly support:
 - `partial`
   Some sources succeeded and others failed.
 
-Every UI-facing aggregate should eventually carry:
+The frozen freshness contract currently carries:
 
 - `updated_at`
 - `status`
-- `source_count`
 - `failed_sources`
+
+Some higher-level response types still add source-specific context outside this frozen struct.
 
 ## Partial Failure Semantics
 
@@ -305,30 +314,26 @@ The target wallet state model should preserve the following invariants:
 
 ## Known Violations In Current Code
 
-### 1. Dashboard Consistency Is Partially Reconstructed In The Frontend
+### 1. State Contracts Are Still Split By Surface
 
-The dashboard hook recomputes total USD from allocation and infers BTC equivalent from previously returned values. This indicates the state contract is not yet explicit enough.
+The dashboard hook no longer reconstructs totals locally, but the repository still exposes multiple state shapes:
 
-### 2. Bitcoin Price Fallback Is Silent
+- frozen `BalanceState`, `PriceState`, and `PortfolioState`
+- wallet-specific `EvmWalletBalancesResponse`
+- dashboard-specific `DashboardStats`
 
-The Bitcoin frontend applies a default price fallback without surfacing that it is a fallback or stale value.
+### 2. EVM And BTC Do Not Yet Share One Read Facade
 
-### 3. Transaction Status Semantics Diverge By Chain Type
+Bitcoin has dedicated state commands, while EVM freshness is surfaced through wallet-specific balance responses. The semantics are compatible, but the transport shape still differs.
 
-Bitcoin send flow and EVM send flow do not currently use one consistent transaction lifecycle model.
+### 3. Derived State And Cached State Are Still Exposed Through Multiple APIs
 
-### 4. Freshness Is Mostly Local UI State
-
-Refresh timestamps are tracked in individual components, but not carried as a general backend state model.
-
-### 5. Derived State And Cached State Are Mixed
-
-SQLite currently stores both raw wallet state and derived dashboard state, but the state model does not yet classify them clearly for the UI.
+SQLite classification is documented in the architecture set, but command surfaces still expose BTC wallet state, EVM wallet balances, dashboard aggregates, and history through separate read paths instead of one consolidated wallet-state API.
 
 ## Open Questions
 
 - Should SQLite be treated as the canonical local read model for wallet state, or only as a persistence cache behind a separate in-memory state engine?
 - What freshness thresholds should exist for balances, prices, and portfolio totals?
-- Should transaction lifecycle state be unified across BTC and EVM before any Web3 interaction surface is added?
-- How should partial failure be represented in Tauri command responses?
+- Should the frozen state contracts expand to cover EVM wallet and portfolio views directly?
+- How should partial failure be represented across swap-market data as well as wallet-owned state?
 - Which state should be computed only in Rust, and which state may be safely derived in the frontend?

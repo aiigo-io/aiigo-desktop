@@ -1,20 +1,17 @@
 //! Frozen public contracts for the sync engine and unified transaction lifecycle.
 //!
-//! `LifecycleStatus` is the 6-state vocabulary that will REPLACE the 3-state
-//! `TransactionStatus` in `wallet/transaction_types.rs`. Phase 3 performs the
-//! migration; until Phase 3 completes, both types coexist intentionally.
-//! Gate 3 (scripts/check_task.sh) verifies the variant count is exactly six.
+//! These types define the current MVP sync and lifecycle vocabulary.
+//! Reference: docs/architecture/executable-wallet-runtime-blueprint.md
 
 use serde::{Deserialize, Serialize};
 
-/// Default BTC finality threshold used by Phase 3 lifecycle mapping.
+/// Default BTC finality threshold used by the current lifecycle mapping.
 pub const BITCOIN_MIN_CONFIRMATIONS: u32 = 1;
 
-/// Default EVM receipt-depth threshold used by Phase 3 lifecycle mapping.
+/// Default EVM receipt-depth threshold used by the current lifecycle mapping.
 pub const EVM_MIN_BLOCK_DEPTH: u64 = 1;
 
 /// Unified transaction lifecycle vocabulary for BTC and EVM.
-/// Variant count is frozen at six; additions require plan update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleStatus {
@@ -80,7 +77,6 @@ impl LifecycleStatus {
 }
 
 /// Reason a sync operation was triggered.
-/// Phase 3 may extend this enum; existing variants must not be renamed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncReason {
@@ -104,7 +100,7 @@ pub enum SyncTarget {
     ApprovalState,
 }
 
-/// Outcome of a sync pass. Body filled in Phase 3.
+/// Outcome of a sync pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncOutcome {
     pub reason: SyncReason,

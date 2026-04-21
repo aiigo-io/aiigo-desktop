@@ -15,6 +15,8 @@ The current application uses Tauri IPC as the primary frontend-to-backend integr
 - wallet lookup and balance refresh
 - transaction send and history fetch
 - dashboard read and refresh
+- state read commands for BTC balance, price, and portfolio
+- security session commands for unlock and lock state
 - swap-side transaction actions
 
 ### High-Level Concern
@@ -26,6 +28,8 @@ The command surface currently mixes:
 - signing commands
 
 This is functional, but it is not yet expressed as a strongly separated permission model.
+
+The important current nuance is that send, approve, and export commands are now unlock-gated through the security subsystem even though they still travel over the same Tauri IPC channel as read commands.
 
 ## Bitcoin External Dependencies
 
@@ -69,6 +73,7 @@ The provider layer supports:
 - optional WSS pool
 - WSS health checks
 - fallback from WSS to HTTP
+- per-chain env override with built-in public RPC defaults
 
 ### Current Architectural Role
 
@@ -94,7 +99,7 @@ The wallet currently uses CoinGecko as the price provider for tracked symbols.
 
 ### Current Architectural Concern
 
-Price integration is already separated from chain balance integration, but the resulting freshness state is not yet explicitly surfaced to the UI.
+Price integration is already separated from chain balance integration, and the resulting freshness state is now surfaced to the UI on dashboard, BTC wallet, and EVM chain-balance surfaces. The remaining gap is that swap market data does not participate in the same freshness contract.
 
 ## Swap Provider Surface
 
@@ -172,6 +177,8 @@ This means there is currently no explicit model for:
 
 The closest existing approximation is swap allowance and approval behavior, but this is still flow-specific rather than a general permission system.
 
+Separately, local product-owned actions already use a security boundary with unlock TTL and per-operation authorization labels. That boundary is not a dApp session layer, but it is the boundary future Web3 session code must call into rather than bypass.
+
 ### Target Direction
 
 The future architecture should treat session and permission boundaries as first-class integration concerns, not UI-only concerns.
@@ -237,7 +244,7 @@ The current system already includes a patchwork of resilience behaviors.
 
 ### Architectural Gap
 
-These resilience mechanisms exist, but they are not yet surfaced through one unified failure model to the UI.
+These resilience mechanisms exist, and wallet-owned surfaces now expose freshness and partial-failure metadata in several places. The remaining architectural gap is that swap market data and some history surfaces still do not share one unified health contract.
 
 ## Testing Strategy For Integrations
 
@@ -266,12 +273,14 @@ The wallet can send transactions, but does not yet expose a general message-sign
 
 ### 3. Unified Integration Health Model
 
-The wallet does not yet expose one UI-facing model for:
+The wallet now partially exposes a UI-facing model for:
 
 - source health
 - freshness
 - fallback mode
 - partial integration failure
+
+That model is still incomplete across swap-market integrations and some history/update paths.
 
 ### 4. Separation Of Market Data And Authority Data
 

@@ -72,6 +72,14 @@ Data written into SQLite must be understood as one of three categories:
 - sync engine must own how synchronized external state gets refreshed and marked stale
 - dashboard and portfolio code must stop pretending derived rows are the same as source rows
 
+### Current Runtime Anchor
+
+The current repository already reflects this decision in several concrete ways:
+
+- wallet metadata and secrets live in SQLite tables, but secret-handling policy lives in `wallet/security/*`
+- synchronized external state is persisted in wallet balance and transaction tables, then interpreted through freshness-aware state contracts
+- derived state is persisted in `dashboard_stats` and `portfolio_history`, and dashboard freshness is surfaced explicitly rather than reconstructed in the frontend
+
 ## Alternatives Considered
 
 ### 1. SQLite As Pure Cache

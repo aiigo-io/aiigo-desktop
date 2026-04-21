@@ -2,199 +2,83 @@
 
 ## Purpose
 
-This document defines the testing strategy for the wallet architecture. Its role is to turn “we should test this” into explicit test surfaces that future plans can reference without repeating the same reasoning.
+This document defines the minimum reviewer-enforced test surfaces for the wallet MVP.
 
-## Testing Principles
+## Testing Rules
 
-- Test by architectural risk, not by file count.
-- Prefer testing behavior at subsystem boundaries, not only helper functions.
-- Every new system layer must define:
-  - what can fail
-  - what must remain true
-  - how failure is surfaced
-- Use the smallest test shape that can prove the architectural claim.
+1. Test architectural risks, not file counts.
+2. Prefer boundary behavior over helper-level coverage when tradeoffs are needed.
+3. New runtime layers must define failure shape, invariants, and visibility.
+4. Use the smallest test shape that proves the contract.
 
-## Test Categories
+## Required Coverage
 
-The wallet architecture should be tested across four categories.
+### Security boundary
 
-### 1. Unit Tests
+Must cover:
 
-Purpose:
-
-- validate pure logic
-- validate type conversion and status mapping
-- validate policy and lifecycle rules
-
-Examples:
-
-- transaction status enum round-trip
-- freshness state mapping
-- signer operation policy checks
-- chain-independent transformation logic
-
-### 2. Integration Tests
-
-Purpose:
-
-- validate subsystem contracts
-- validate persistence behavior
-- validate command surfaces
-
-Examples:
-
-- wallet creation persists expected metadata
-- keystore abstraction stores and retrieves expected secret kinds
-- wallet-state command returns the expected typed shape
-- sync engine updates persistence and metadata together
-
-### 3. Lifecycle Tests
-
-Purpose:
-
-- validate multi-step state transitions
-- prevent semantic drift across BTC and EVM
-
-Examples:
-
-- send -> broadcasted -> pending -> confirmed
-- send -> broadcasted -> failed
-- transaction replacement becomes `replaced`
-- stale balance becomes fresh after sync
-- dashboard state transitions from cached to refreshed
-
-### 4. Failure-Path Tests
-
-Purpose:
-
-- validate timeout, retry, fallback, and partial-failure semantics
-- prove the system fails honestly, not silently
-
-Examples:
-
-- BTC explorer primary fails and secondary succeeds
-- EVM WSS fails and HTTP fallback succeeds
-- CoinGecko fresh request fails and stale cache is used
-- dashboard recompute runs with partial chain refresh failure
-- BTC price command unavailable does not silently appear as fresh state
-
-## Test Surface By Subsystem
-
-### Security Boundary
-
-Must test:
-
-- secret persistence routing
 - unlock session expiry
+- refusal behavior while locked
+- signer authorization checks
 - export policy checks
-- signer operation checks
-- refusal behavior when locked
 
-### Wallet State Model
+### Wallet state model
 
-Must test:
+Must cover:
 
-- freshness shape
-- partial failure shape
-- price state shape
-- transaction lifecycle state shape
-- compatibility defaults for old persisted rows
+- freshness status serialization
+- partial-failure metadata shape
+- price status serialization, including `Synthetic`
+- balance state compatibility across Bitcoin and EVM
+- portfolio aggregation degradation when any component is non-fresh
+- legacy SQLite reads after additive migration
 
-### Sync Engine
+Rules for legacy compatibility:
 
-Must test:
+1. Old rows must remain readable after migration.
+2. Missing historical freshness metadata defaults to cached, not fresh.
+
+### Sync boundary
+
+Must cover:
 
 - sync reason and target handling
-- persistence updates after sync
-- metadata updates after sync
-- transaction/receipt refresh coordination
-- explicit handling of deferred approval refresh if not yet implemented
+- persistence updates after refresh
+- freshness metadata updates after refresh
+- partial-failure recording when external sources fail
 
-### Transaction Lifecycle
+### Transaction lifecycle
 
-Must test:
+Must cover:
 
-- BTC and EVM use the same lifecycle vocabulary
-- broadcast does not equal confirmed
-- pending and confirmed semantics are consistent
-- replaced and dropped semantics do not regress
+- shared BTC/EVM lifecycle vocabulary
+- `broadcasted` is distinct from `confirmed`
+- replacement and failure semantics do not collapse into success states
 
-### UI Consumption Layer
+### UI consumption
 
-Must test:
+Must cover when relevant UI surfaces change:
 
-- dashboard no longer performs hidden consistency repair
-- freshness state is visible in presentation components
-- stale or fallback price state is distinguishable from fresh state
-- transaction lifecycle labels render correctly
+- freshness is visible, not hidden
+- fallback or unavailable state is distinguishable from fresh state
+- transaction lifecycle labels remain correct
 
-## Minimum Required Coverage For “Foundation Hardened”
+## Minimum Validation Commands
 
-The wallet cannot be considered “foundation hardened” unless all of the following are covered:
+- `npm run build`
+- `bash scripts/check_task.sh phase5`
 
-1. secret access boundary tests
-2. wallet-state freshness tests
-3. transaction lifecycle transition tests
-4. at least one failure-path test per external dependency class:
-   - Bitcoin explorer
-   - EVM RPC / WSS
-   - CoinGecko
-   - swap-market integration where applicable
+Add targeted Rust or frontend tests whenever a change touches security, state contracts, sync behavior, or lifecycle semantics.
 
-## Test Tooling Expectations
+## Review Gate
 
-### Rust
+A wallet runtime change is not complete if it introduces any of the following:
 
-Use Rust tests for:
+1. hidden refresh inside a read path
+2. fresh-looking state produced from unavailable inputs
+3. legacy row breakage after additive migration
+4. security-sensitive behavior without locked-state refusal coverage
 
-- state types
-- security logic
-- sync engine behavior
-- transaction lifecycle rules
-- persistence-level integration checks where feasible
+## Why This Exists
 
-### Frontend
-
-At minimum:
-
-- `npm run build` must pass
-
-When freshness and lifecycle UI surfaces are introduced, add component-level tests for:
-
-- dashboard state display
-- transaction status display
-- fallback / unavailable state rendering
-
-## Test Exit Criteria Per Phase
-
-### Security Phase Exit
-
-- security unit tests pass
-- compile passes
-
-### State Model Phase Exit
-
-- freshness and partial-failure tests pass
-- persistence compatibility path is covered
-
-### Sync / Lifecycle Phase Exit
-
-- lifecycle tests pass
-- sync engine integration tests pass
-- no chain-family-specific semantic drift remains
-
-### UI Phase Exit
-
-- build passes
-- UI no longer hides freshness or fallback state
-
-## What This Document Prevents
-
-Without this document, plans tend to regress into:
-
-- compile-check-only validation
-- no explicit failure-path coverage
-- no lifecycle semantic coverage
-- no shared definition of what “done” means
-
-This document exists to keep future implementation plans honest.
+Without this file, validation regresses toward compile-only checks. This document keeps review focused on wallet runtime truthfulness: freshness, lifecycle, migration safety, and locked-state behavior.

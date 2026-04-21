@@ -132,8 +132,8 @@ The current system uses separate flows for wallet state, pricing, portfolio aggr
    - cached wallet balances from SQLite
    - cached token asset rows from SQLite
    - cached prices from the price manager
-5. Rust writes fresh dashboard aggregates and portfolio snapshots into SQLite.
-6. Frontend re-reads history and allocation.
+5. Rust writes fresh dashboard aggregates and portfolio snapshots into SQLite and returns `DashboardStats` with freshness metadata.
+6. Frontend re-reads history and allocation after refresh, but it no longer recomputes totals locally.
 
 ### Swap Flow
 
@@ -144,40 +144,65 @@ The current system uses separate flows for wallet state, pricing, portfolio aggr
 
 ### Bitcoin Wallet Domain
 
-- mnemonic creation and import
-- wallet creation from mnemonic or private key
-- mnemonic export
-- private key export
-- wallet list and wallet lookup
-- wallet balance refresh
-- wallet delete
+- `bitcoin_create_mnemonic`
+- `bitcoin_import_mnemonic`
+- `bitcoin_create_wallet_from_mnemonic`
+- `bitcoin_create_wallet_from_private_key`
+- `bitcoin_export_mnemonic`
+- `bitcoin_export_private_key`
+- `bitcoin_get_wallets`
+- `bitcoin_get_wallet`
+- `bitcoin_get_wallet_with_balance`
+- `bitcoin_delete_wallet`
 
 ### EVM Wallet Domain
 
-- mnemonic creation and import
-- wallet creation from mnemonic or private key
-- mnemonic export
-- private key export
-- wallet list and wallet lookup
-- multichain wallet balance refresh
-- wallet delete
+- `evm_create_mnemonic`
+- `evm_import_mnemonic`
+- `evm_create_wallet_from_mnemonic`
+- `evm_create_wallet_from_private_key`
+- `evm_export_mnemonic`
+- `evm_export_private_key`
+- `evm_get_wallets`
+- `evm_get_wallet`
+- `evm_get_wallet_with_balances`
+- `evm_delete_wallet`
 
 ### Transaction Domain
 
-- Bitcoin send and fee estimation
-- Bitcoin transaction history fetch and query
-- EVM send and gas estimation
-- EVM transaction history fetch and query
-- token approval
-- raw EVM transaction support used by swap flows
+- `send_bitcoin`
+- `bitcoin_estimate_fees`
+- `get_bitcoin_transactions`
+- `get_all_bitcoin_transactions`
+- `fetch_bitcoin_history`
+- `send_evm`
+- `evm_estimate_gas`
+- `get_evm_transactions`
+- `get_all_evm_transactions`
+- `fetch_evm_history`
+- `evm_send_transaction`
+- `evm_approve_token`
 
 ### Dashboard Domain
 
-- cached stats read
-- dashboard refresh
-- portfolio history read
-- asset allocation read
-- unified recent transaction read
+- `get_dashboard_stats`
+- `refresh_dashboard_stats`
+- `get_portfolio_history`
+- `get_asset_allocation`
+- `get_unified_recent_transactions`
+- `get_bitcoin_price`
+
+### State Domain
+
+- `state_get_bitcoin_wallet_balance_state`
+- `state_get_bitcoin_price_state`
+- `state_get_bitcoin_portfolio_state`
+
+### Security Domain
+
+- `security_unlock`
+- `security_lock`
+- `security_is_unlocked`
 
 ## Current Database Responsibilities
 
@@ -239,24 +264,24 @@ This role is powerful but currently under-specified. The current implementation 
 
 ## Current Refresh Model
 
-The current refresh model is decentralized rather than unified.
+The current refresh model is partially unified.
 
 ### What Is Centralized Today
 
 - EVM token prices are periodically refreshed in the background by the price manager.
+- dashboard refresh and history refresh routes use the sync engine
+- BTC and EVM transaction lifecycle helpers share one six-state vocabulary
 
-### What Is Not Centralized Today
+### What Is Still Not Centralized Today
 
 - Bitcoin wallet balances refresh only on explicit wallet refresh or transaction-related actions.
 - EVM wallet balances refresh on page load and explicit refresh.
-- Dashboard values refresh through a separate aggregation flow.
-- Transaction state progression is not managed by a shared lifecycle updater.
 
-This means the wallet currently has multiple refresh entry points, but not a single wallet sync engine.
+This means the wallet has meaningful shared state semantics, but not yet one universal sync trigger owner for every wallet surface.
 
 ## Current State Feedback Problems
 
-The current implementation already shows several state-feedback weaknesses.
+The current implementation is materially more explicit than the original wallet baseline, but a few state-feedback weaknesses remain.
 
 ### 1. Cached And Refreshed Truth Are Mixed
 
@@ -265,31 +290,19 @@ Dashboard data is intentionally loaded in two phases:
 - cached values first
 - refreshed values later
 
-But the user is not told which values are cached, which values are stale, and which values were recomputed in the background.
+The dashboard now carries freshness metadata, but the application still exposes cached and refreshed truth through multiple read paths rather than one consolidated wallet-state facade.
 
-### 2. Frontend Re-derives Consistency
+### 2. State Contracts Differ By Surface
 
-The dashboard frontend derives a synchronized total balance from allocation data, rather than treating backend state as a single explicit state model. This is a sign that consistency is inferred rather than modeled.
+BTC state commands use frozen `BalanceState` / `PriceState` / `PortfolioState` contracts, while EVM wallet screens consume `EvmWalletBalancesResponse` with wallet- and chain-level freshness. The semantics are compatible, but the transport shape still varies.
 
-### 3. Price Failure Is Not Explicit
+### 3. Swap Market Data Sits Outside The Wallet Freshness Model
 
-Bitcoin price lookup has a frontend fallback path that silently substitutes a reasonable default. This produces a usable UI, but not an explicit stale or unavailable state.
+Wallet-owned state now surfaces freshness and partial failure, but OpenOcean quote and allowance flows are still frontend-owned and do not participate in the same contract.
 
-### 4. Transaction Status Semantics Are Not Unified
+### 4. SQLite Still Carries Mixed Categories Of State
 
-- Bitcoin sends are inserted as `pending`
-- EVM sends are inserted as `confirmed`
-
-This means transaction status today is not governed by one consistent lifecycle model.
-
-### 5. No Freshness Metadata Is Surfaced
-
-The UI does not yet consume a common model for:
-
-- last refreshed time
-- stale state
-- partial failure
-- failed sources
+SQLite stores durable local state, synchronized external state, and derived dashboard state together. ADR-0002 clarifies the semantics, but command surfaces still expose those categories through separate APIs.
 
 ## Mismatch Between Product Semantics And Implementation
 

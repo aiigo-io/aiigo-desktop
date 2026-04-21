@@ -1,8 +1,9 @@
 //! Frozen public contracts for the wallet state model.
 //!
-//! Derived verbatim from Phase 2 Acceptance Criteria in the plan.
-//! Fields and variants MUST match the plan code block byte-for-byte.
-//! Gate 2 (scripts/check_task.sh) verifies this mechanically.
+//! These are the current wallet MVP state contracts.
+//! Keep them stable enough for the active UI surfaces, but do not treat this
+//! file as a mechanically frozen plan artifact.
+//! Reference: docs/architecture/executable-wallet-runtime-blueprint.md
 
 use serde::{Deserialize, Serialize};
 

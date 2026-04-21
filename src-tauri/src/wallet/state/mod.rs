@@ -1,6 +1,6 @@
 //! Wallet state model subsystem.
-//! Filled in Phase 2 of the wallet foundation hardening plan.
-//! Plan reference: docs/superpowers/plans/2026-04-18-wallet-foundation-hardening.md
+//! This module exposes the current wallet MVP state layer.
+//! Reference: docs/architecture/executable-wallet-runtime-blueprint.md
 
 #![allow(dead_code)]
 
