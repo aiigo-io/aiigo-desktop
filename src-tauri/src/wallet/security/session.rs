@@ -4,9 +4,15 @@ use std::time::{Duration, Instant};
 
 type NowFn = Arc<dyn Fn() -> Instant + Send + Sync>;
 
+enum SessionState {
+    Locked,
+    Unlocked(Instant),
+    Expired,
+}
+
 pub struct SessionManager {
     ttl: Duration,
-    unlocked_at: Mutex<Option<Instant>>,
+    state: Mutex<SessionState>,
     now: NowFn,
 }
 
@@ -21,7 +27,7 @@ impl SessionManager {
     {
         Self {
             ttl,
-            unlocked_at: Mutex::new(None),
+            state: Mutex::new(SessionState::Locked),
             now: Arc::new(now),
         }
     }
@@ -31,11 +37,11 @@ impl SessionManager {
             return Err(SecurityError::PolicyDenied);
         }
 
-        let mut unlocked_at = self
-            .unlocked_at
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| SecurityError::OperationNotAllowed)?;
-        *unlocked_at = Some(self.now());
+        *state = SessionState::Unlocked(self.now());
         Ok(())
     }
 
@@ -44,21 +50,21 @@ impl SessionManager {
     }
 
     pub fn lock(&self) {
-        if let Ok(mut unlocked_at) = self.unlocked_at.lock() {
-            *unlocked_at = None;
+        if let Ok(mut state) = self.state.lock() {
+            *state = SessionState::Locked;
         }
     }
 
     pub fn authorize(&self, op: SignerOperation) -> Result<(), SecurityError> {
-        // TODO(phase1): per-op policy branch wired in Task 6 when command
-        // sites supply real SignerOperation values. Parameter is accepted
-        // now so the signature stays stable across phase.
-        let _ = op;
-
-        if self.refresh_state().unwrap_or(false) {
-            Ok(())
-        } else {
-            Err(SecurityError::Locked)
+        match self.authorization_state()? {
+            AuthorizationState::Locked => Err(SecurityError::Locked),
+            AuthorizationState::Expired => Err(SecurityError::Expired),
+            AuthorizationState::Unlocked => match op {
+                SignerOperation::Send | SignerOperation::Approve => Ok(()),
+                SignerOperation::ExportMnemonic | SignerOperation::ExportPrivateKey => {
+                    Err(SecurityError::PolicyDenied)
+                }
+            },
         }
     }
 
@@ -67,22 +73,34 @@ impl SessionManager {
     }
 
     fn refresh_state(&self) -> Result<bool, SecurityError> {
-        let mut unlocked_at = self
-            .unlocked_at
+        Ok(matches!(self.authorization_state()?, AuthorizationState::Unlocked))
+    }
+
+    fn authorization_state(&self) -> Result<AuthorizationState, SecurityError> {
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| SecurityError::OperationNotAllowed)?;
 
-        let Some(last_unlocked_at) = *unlocked_at else {
-            return Ok(false);
-        };
-
-        if self.now().saturating_duration_since(last_unlocked_at) < self.ttl {
-            return Ok(true);
+        match &*state {
+            SessionState::Locked => Ok(AuthorizationState::Locked),
+            SessionState::Expired => Ok(AuthorizationState::Expired),
+            SessionState::Unlocked(last_unlocked_at) => {
+                if self.now().saturating_duration_since(*last_unlocked_at) < self.ttl {
+                    Ok(AuthorizationState::Unlocked)
+                } else {
+                    *state = SessionState::Expired;
+                    Ok(AuthorizationState::Expired)
+                }
+            }
         }
-
-        *unlocked_at = None;
-        Ok(false)
     }
+}
+
+enum AuthorizationState {
+    Locked,
+    Expired,
+    Unlocked,
 }
 
 #[cfg(test)]
@@ -131,7 +149,10 @@ mod tests {
 
         session.unlock("token").unwrap();
 
-        assert_eq!(session.authorize(SignerOperation::ExportMnemonic), Ok(()));
+        assert_eq!(
+            session.authorize(SignerOperation::ExportMnemonic),
+            Err(SecurityError::PolicyDenied)
+        );
     }
 
     #[test]
@@ -140,17 +161,31 @@ mod tests {
 
         session.unlock("token").unwrap();
 
-        assert_eq!(session.authorize(SignerOperation::ExportPrivateKey), Ok(()));
+        assert_eq!(
+            session.authorize(SignerOperation::ExportPrivateKey),
+            Err(SecurityError::PolicyDenied)
+        );
     }
 
     #[test]
-    fn authorize_returns_locked_after_ttl_expiry() {
+    fn authorize_returns_expired_after_ttl_expiry() {
         let (session, clock) = test_session(Duration::from_secs(30));
 
         session.unlock("token").unwrap();
         *clock.lock().unwrap() += Duration::from_secs(31);
 
-        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Locked));
+        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Expired));
+    }
+
+    #[test]
+    fn expired_state_survives_is_unlocked_polling() {
+        let (session, clock) = test_session(Duration::from_secs(30));
+
+        session.unlock("token").unwrap();
+        *clock.lock().unwrap() += Duration::from_secs(31);
+
+        assert!(!session.is_unlocked());
+        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Expired));
     }
 
     #[test]

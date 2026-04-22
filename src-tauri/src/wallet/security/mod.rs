@@ -7,9 +7,11 @@
 
 pub mod types;
 pub mod keystore;
+pub mod backend;
 pub mod session;
 pub mod log_sanitize;
 pub mod commands;
+pub mod secret_envelope;
 #[allow(unused_imports)]
 pub use crate::safe_log;
 #[allow(unused_imports)]

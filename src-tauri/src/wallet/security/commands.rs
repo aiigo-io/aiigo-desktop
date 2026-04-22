@@ -1,3 +1,4 @@
+use super::backend::SecretBackend;
 use super::keystore::Keystore;
 use super::session::SessionManager;
 use super::types::SecurityError;
@@ -6,6 +7,7 @@ use std::sync::Arc;
 pub struct AppSecurity {
     pub session_manager: Arc<SessionManager>,
     pub keystore: Arc<dyn Keystore + Send + Sync>,
+    pub secret_backend: Arc<SecretBackend>,
 }
 
 impl AppSecurity {
@@ -15,6 +17,10 @@ impl AppSecurity {
 
     pub fn keystore(&self) -> &(dyn Keystore + Send + Sync) {
         self.keystore.as_ref()
+    }
+
+    pub fn secret_backend(&self) -> &SecretBackend {
+        self.secret_backend.as_ref()
     }
 }
 
@@ -58,6 +64,7 @@ mod tests {
     use super::{
         security_is_unlocked_inner, security_lock_inner, security_unlock_inner, AppSecurity,
     };
+    use crate::wallet::security::backend::SecretBackend;
     use crate::wallet::security::keystore::Keystore;
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{SecurityError, SignerOperation};
@@ -81,6 +88,7 @@ mod tests {
         let state = AppSecurity {
             session_manager: Arc::new(SessionManager::new(Duration::from_secs(30))),
             keystore: Arc::new(DummyKeystore),
+            secret_backend: Arc::new(SecretBackend::new()),
         };
 
         assert_eq!(security_is_unlocked_inner(&state), Ok(false));
@@ -89,6 +97,10 @@ mod tests {
         assert_eq!(
             state.session_manager().authorize(SignerOperation::Send),
             Ok(())
+        );
+        assert_eq!(
+            state.session_manager().authorize(SignerOperation::ExportMnemonic),
+            Err(SecurityError::PolicyDenied)
         );
         assert_eq!(security_lock_inner(&state), Ok(()));
         assert_eq!(security_is_unlocked_inner(&state), Ok(false));

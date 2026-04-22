@@ -10,9 +10,61 @@ use std::str::FromStr;
 pub(crate) fn map_security_error(error: SecurityError) -> String {
     match error {
         SecurityError::Locked => "locked".to_string(),
+        SecurityError::Expired => "expired".to_string(),
         SecurityError::PolicyDenied => "policy_denied".to_string(),
         SecurityError::OperationNotAllowed => "operation_not_allowed".to_string(),
         SecurityError::UnknownWallet => "unknown_wallet".to_string(),
+        SecurityError::SecretBackendUnavailable => "secret_backend_unavailable".to_string(),
+    }
+}
+
+fn export_mnemonic_inner(
+    wallet_type: &str,
+    address: &str,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
+) -> Result<String, String> {
+    if wallet_type != "mnemonic" {
+        return Err("This wallet was imported from a private key, not a mnemonic.".to_string());
+    }
+
+    load_authorized_mnemonic(
+        address,
+        keystore,
+        session_manager,
+        SignerOperation::ExportMnemonic,
+    )
+    .map_err(map_security_error)?
+    .ok_or_else(|| "Wallet secret not found".to_string())
+}
+
+fn export_private_key_inner(
+    wallet_type: &str,
+    address: &str,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
+) -> Result<String, String> {
+    match wallet_type {
+        "private-key" | "private_key" => load_authorized_private_key(
+            address,
+            keystore,
+            session_manager,
+            SignerOperation::ExportPrivateKey,
+        )
+        .map_err(map_security_error)?
+        .ok_or_else(|| "Wallet secret not found".to_string()),
+        "mnemonic" => {
+            let mnemonic = load_authorized_mnemonic(
+                address,
+                keystore,
+                session_manager,
+                SignerOperation::ExportPrivateKey,
+            )
+            .map_err(map_security_error)?
+            .ok_or_else(|| "Wallet secret not found".to_string())?;
+            derive_private_key_from_mnemonic(&mnemonic)
+        }
+        _ => Err("Unknown wallet type".to_string()),
     }
 }
 
@@ -78,6 +130,8 @@ fn validate_private_key(
 pub fn bitcoin_create_wallet_from_private_key(
     private_key: String,
     wallet_label: Option<String>,
+    reveal_secret: Option<bool>,
+    state: tauri::State<'_, AppSecurity>,
 ) -> Result<CreateWalletResponse, String> {
     // Validate and parse private key
     let (_secret, public_key) = validate_private_key(&private_key)?;
@@ -91,28 +145,34 @@ pub fn bitcoin_create_wallet_from_private_key(
     let address = Address::p2tr(&secp, xonly_public_key, None, Network::Bitcoin);
     let address_str = address.to_string();
     let label = wallet_label.unwrap_or_else(|| "Bitcoin Wallet".to_string());
+    let stored_secret = state
+        .secret_backend()
+        .prepare_encrypted_secret(&private_key)
+        .map_err(map_security_error)?;
 
     // Store wallet in database
     let db = DB.lock().unwrap();
     let wallet = db
-        .add_bitcoin_wallet(label, "private-key".to_string(), address_str)
+        .insert_bitcoin_wallet_with_secret(
+            label,
+            "private-key".to_string(),
+            address_str,
+            stored_secret,
+            "private-key".to_string(),
+        )
         .map_err(|e| format!("Failed to save wallet: {}", e))?;
-
-    // Secret writes remain DB-backed in the current MVP; keystore writes are deferred.
-    // Store private key (for now, storing as plain text - TODO: add encryption)
-    db.add_wallet_secret(
-        wallet.id.clone(),
-        private_key.clone(),
-        "private-key".to_string(),
-    )
-    .map_err(|e| format!("Failed to save private key: {}", e))?;
 
     drop(db);
 
-    Ok(CreateWalletResponse {
-        mnemonic: private_key, // Return the private key as "mnemonic" for compatibility
-        wallet,
-    })
+    if reveal_secret.unwrap_or(false) {
+        Ok(CreateWalletResponse::with_revealed_secret(
+            wallet,
+            private_key,
+            "private-key",
+        ))
+    } else {
+        Ok(CreateWalletResponse::without_revealed_secret(wallet))
+    }
 }
 
 #[tauri::command]
@@ -128,22 +188,11 @@ pub fn bitcoin_export_mnemonic(
         .map_err(|e| format!("Failed to get wallet: {}", e))?
         .ok_or_else(|| "Wallet not found".to_string())?;
 
-    // Only allow exporting if it's a mnemonic wallet
-    if wallet.wallet_type != "mnemonic" {
-        return Err("This wallet was imported from a private key, not a mnemonic.".to_string());
-    }
-
     let address = wallet.address.clone();
+    let wallet_type = wallet.wallet_type.clone();
     drop(db);
 
-    load_authorized_mnemonic(
-        &address,
-        state.keystore(),
-        state.session_manager(),
-        SignerOperation::ExportMnemonic,
-    )
-    .map_err(map_security_error)?
-    .ok_or_else(|| "Wallet secret not found".to_string())
+    export_mnemonic_inner(&wallet_type, &address, state.keystore(), state.session_manager())
 }
 
 #[tauri::command]
@@ -163,29 +212,7 @@ pub fn bitcoin_export_private_key(
     let wallet_type = wallet.wallet_type.clone();
     drop(db);
 
-    match wallet_type.as_str() {
-        "private-key" | "private_key" => load_authorized_private_key(
-            &address,
-            state.keystore(),
-            state.session_manager(),
-            SignerOperation::ExportPrivateKey,
-        )
-        .map_err(map_security_error)?
-        .ok_or_else(|| "Wallet secret not found".to_string()),
-        "mnemonic" => {
-            // For mnemonic-based wallets, we need to derive the private key from mnemonic
-            let mnemonic = load_authorized_mnemonic(
-                &address,
-                state.keystore(),
-                state.session_manager(),
-                SignerOperation::ExportPrivateKey,
-            )
-            .map_err(map_security_error)?
-            .ok_or_else(|| "Wallet secret not found".to_string())?;
-            derive_private_key_from_mnemonic(&mnemonic)
-        }
-        _ => Err("Unknown wallet type".to_string()),
-    }
+    export_private_key_inner(&wallet_type, &address, state.keystore(), state.session_manager())
 }
 
 /// Derive the private key from a mnemonic phrase
@@ -222,7 +249,7 @@ fn derive_private_key_from_mnemonic(mnemonic_str: &str) -> Result<String, String
 
 #[cfg(test)]
 mod tests {
-    use super::{load_authorized_mnemonic, load_authorized_private_key};
+    use super::{export_mnemonic_inner, export_private_key_inner, load_authorized_mnemonic, load_authorized_private_key};
     use crate::wallet::security::keystore::Keystore;
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{SecurityError, SignerOperation};
@@ -288,13 +315,42 @@ mod tests {
         session.unlock("token").unwrap();
 
         assert_eq!(
-            load_authorized_mnemonic(
-                "bc1ptestaddress",
-                &StubKeystore,
-                &session,
-                SignerOperation::ExportMnemonic
-            ),
+            load_authorized_mnemonic("bc1ptestaddress", &StubKeystore, &session, SignerOperation::Send),
             Ok(Some("seed words".to_string()))
+        );
+    }
+
+    #[test]
+    fn export_mnemonic_returns_policy_denied_when_session_unlocked() {
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        assert_eq!(
+            export_mnemonic_inner("mnemonic", "bc1ptestaddress", &PanicKeystore, &session),
+            Err("policy_denied".to_string())
+        );
+    }
+
+    #[test]
+    fn export_mnemonic_returns_expired_after_ttl() {
+        let session = SessionManager::new(Duration::from_millis(1));
+        session.unlock("token").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert_eq!(
+            export_mnemonic_inner("mnemonic", "bc1ptestaddress", &PanicKeystore, &session),
+            Err("expired".to_string())
+        );
+    }
+
+    #[test]
+    fn export_private_key_returns_policy_denied_when_session_unlocked() {
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        assert_eq!(
+            export_private_key_inner("private-key", "bc1ptestaddress", &PanicKeystore, &session),
+            Err("policy_denied".to_string())
         );
     }
 }

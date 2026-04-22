@@ -27,5 +27,7 @@ aiigo_*
 .vscode
 .omx
 AGENTS.MD
-CLAUDE.md
 docs/superpowers/plans/
+.plan/
+CLAUDE.md
+.github/

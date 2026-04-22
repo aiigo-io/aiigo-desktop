@@ -1,3 +1,7 @@
+use crate::wallet::security::commands::AppSecurity;
+use crate::wallet::bitcoin::private_key::map_security_error;
+use crate::wallet::security::backend::SecretBackend;
+use crate::wallet::security::secret_envelope::StoredSecret;
 use crate::wallet::types::CreateWalletResponse;
 use crate::DB;
 use bip39::{Language, Mnemonic};
@@ -5,10 +9,21 @@ use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::Network;
 use std::str::FromStr;
 
+fn prepare_mnemonic_secret(
+    secret_backend: &SecretBackend,
+    mnemonic: &str,
+) -> Result<StoredSecret, String> {
+    secret_backend
+        .prepare_encrypted_secret(mnemonic)
+        .map_err(map_security_error)
+}
+
 #[tauri::command]
 pub fn bitcoin_create_wallet_from_mnemonic(
     mnemonic_phrase: String,
     wallet_label: Option<String>,
+    reveal_secret: Option<bool>,
+    state: tauri::State<'_, AppSecurity>,
 ) -> Result<CreateWalletResponse, String> {
     // Validate and parse mnemonic
     let mnemonic = Mnemonic::parse_in_normalized(Language::English, &mnemonic_phrase)
@@ -41,25 +56,67 @@ pub fn bitcoin_create_wallet_from_mnemonic(
 
     let address_str = address.to_string();
     let label = wallet_label.unwrap_or_else(|| "Bitcoin Wallet".to_string());
+    let stored_secret = prepare_mnemonic_secret(state.secret_backend(), &mnemonic.to_string())?;
 
     // Store wallet in database
     let db = DB.lock().unwrap();
     let wallet = db
-        .add_bitcoin_wallet(label, "mnemonic".to_string(), address_str)
+        .insert_bitcoin_wallet_with_secret(
+            label,
+            "mnemonic".to_string(),
+            address_str,
+            stored_secret,
+            "mnemonic".to_string(),
+        )
         .map_err(|e| format!("Failed to save wallet: {}", e))?;
-
-    // Store encrypted mnemonic (for now, storing as plain text - TODO: add encryption)
-    db.add_wallet_secret(
-        wallet.id.clone(),
-        mnemonic.to_string(),
-        "mnemonic".to_string(),
-    )
-    .map_err(|e| format!("Failed to save mnemonic: {}", e))?;
 
     drop(db);
 
-    Ok(CreateWalletResponse {
-        mnemonic: mnemonic.to_string(),
-        wallet,
-    })
+    if reveal_secret.unwrap_or(false) {
+        Ok(CreateWalletResponse::with_revealed_secret(
+            wallet,
+            mnemonic.to_string(),
+            "mnemonic",
+        ))
+    } else {
+        Ok(CreateWalletResponse::without_revealed_secret(wallet))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_mnemonic_secret;
+    use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
+    use crate::wallet::security::secret_envelope::{SecretEnvelopeError, StoredSecret};
+    use std::sync::Arc;
+
+    struct UnavailableSecretBackendAdapter;
+
+    impl SecretBackendAdapter for UnavailableSecretBackendAdapter {
+        fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Err(SecretEnvelopeError::Keyring("offline".to_string()))
+        }
+
+        fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+            Err(SecretEnvelopeError::Keyring("offline".to_string()))
+        }
+
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
+            Err(SecretEnvelopeError::Keyring("offline".to_string()))
+        }
+    }
+
+    #[test]
+    fn mnemonic_create_maps_backend_unavailable_to_machine_readable_error() {
+        let secret_backend = SecretBackend::with_adapter(Arc::new(UnavailableSecretBackendAdapter));
+
+        assert_eq!(
+            prepare_mnemonic_secret(&secret_backend, "seed words"),
+            Err("secret_backend_unavailable".to_string())
+        );
+    }
 }

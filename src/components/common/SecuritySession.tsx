@@ -84,6 +84,7 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       case 'unknown_wallet':
         toast.error('Wallet was not found. Refresh and try again.');
         break;
+      case 'expired':
       case 'locked':
         setStatus('locked');
         break;

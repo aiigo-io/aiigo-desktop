@@ -15,8 +15,27 @@ pub struct WalletInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWalletResponse {
-    pub mnemonic: String,
+    pub revealed_secret: Option<String>,
+    pub revealed_secret_type: Option<String>,
     pub wallet: WalletInfo,
+}
+
+impl CreateWalletResponse {
+    pub fn with_revealed_secret(wallet: WalletInfo, secret: String, secret_type: &str) -> Self {
+        Self {
+            revealed_secret: Some(secret),
+            revealed_secret_type: Some(secret_type.to_string()),
+            wallet,
+        }
+    }
+
+    pub fn without_revealed_secret(wallet: WalletInfo) -> Self {
+        Self {
+            revealed_secret: None,
+            revealed_secret_type: None,
+            wallet,
+        }
+    }
 }
 
 // EVM Types

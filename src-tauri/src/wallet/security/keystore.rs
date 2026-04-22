@@ -1,7 +1,12 @@
+use super::backend::SecretBackend;
+#[cfg(test)]
+use super::backend::SecretBackendAdapter;
+#[cfg(test)]
+use super::secret_envelope::{decrypt_secret, SecretEnvelopeError, StoredSecret};
 use super::types::SecurityError;
 use crate::db::Database;
 use rusqlite::{params, Connection};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub trait Keystore {
     fn load_mnemonic(&self, address: &str) -> Result<Option<String>, SecurityError>;
@@ -10,6 +15,7 @@ pub trait Keystore {
 
 pub struct SqliteKeystore {
     backend: Backend,
+    secret_backend: Arc<SecretBackend>,
 }
 
 enum Backend {
@@ -18,9 +24,10 @@ enum Backend {
 }
 
 impl SqliteKeystore {
-    pub fn new(db: &'static Mutex<Database>) -> Self {
+    pub fn new(db: &'static Mutex<Database>, secret_backend: Arc<SecretBackend>) -> Self {
         Self {
             backend: Backend::ExistingDb(db),
+            secret_backend,
         }
     }
 
@@ -28,10 +35,13 @@ impl SqliteKeystore {
     fn from_connection(conn: Connection) -> Self {
         Self {
             backend: Backend::Connection(Mutex::new(conn)),
+            secret_backend: Arc::new(SecretBackend::with_adapter(Arc::new(
+                TestSecretBackendAdapter,
+            ))),
         }
     }
 
-    fn load_secret(&self, address: &str) -> Result<Option<(String, String)>, SecurityError> {
+    fn load_secret(&self, address: &str) -> Result<Option<(String, String, String)>, SecurityError> {
         match &self.backend {
             Backend::ExistingDb(db) => {
                 let db = db.lock().map_err(|_| SecurityError::OperationNotAllowed)?;
@@ -48,23 +58,31 @@ impl SqliteKeystore {
 impl Keystore for SqliteKeystore {
     fn load_mnemonic(&self, address: &str) -> Result<Option<String>, SecurityError> {
         let secret = self.load_secret(address)?;
-        Ok(secret.and_then(|(secret_data, secret_type)| {
-            (secret_type == "mnemonic").then_some(secret_data)
-        }))
+        Ok(secret
+            .and_then(|(secret_data, secret_type, secret_format)| {
+                (secret_type == "mnemonic").then_some((secret_data, secret_format))
+            })
+            .map(|(secret_data, secret_format)| self.secret_backend.decrypt_for_command(&secret_data, &secret_format))
+            .transpose()
+            ?) 
     }
 
     fn load_private_key(&self, address: &str) -> Result<Option<String>, SecurityError> {
         let secret = self.load_secret(address)?;
-        Ok(secret.and_then(|(secret_data, secret_type)| {
-            (secret_type == "private-key").then_some(secret_data)
-        }))
+        Ok(secret
+            .and_then(|(secret_data, secret_type, secret_format)| {
+                (secret_type == "private-key").then_some((secret_data, secret_format))
+            })
+            .map(|(secret_data, secret_format)| self.secret_backend.decrypt_for_command(&secret_data, &secret_format))
+            .transpose()
+            ?)
     }
 }
 
 fn load_secret_from_database(
     db: &Database,
     address: &str,
-) -> Result<Option<(String, String)>, SecurityError> {
+) -> Result<Option<(String, String, String)>, SecurityError> {
     if let Some(wallet_id) = find_wallet_id(
         db.get_bitcoin_wallets()
             .map_err(|_| SecurityError::OperationNotAllowed)?,
@@ -98,7 +116,7 @@ fn find_wallet_id(wallets: Vec<crate::wallet::types::WalletInfo>, address: &str)
 fn load_secret_from_connection(
     conn: &Connection,
     address: &str,
-) -> Result<Option<(String, String)>, SecurityError> {
+) -> Result<Option<(String, String, String)>, SecurityError> {
     if let Some(secret) = query_secret(
         conn,
         "bitcoin_wallets",
@@ -125,9 +143,9 @@ fn query_secret(
     wallet_table: &str,
     secret_table: &str,
     address: &str,
-) -> rusqlite::Result<Option<Option<(String, String)>>> {
+) -> rusqlite::Result<Option<Option<(String, String, String)>>> {
     let sql = format!(
-        "SELECT s.secret_data, s.secret_type
+        "SELECT s.secret_data, s.secret_type, COALESCE(s.secret_format, 'plaintext_v0')
          FROM {wallet_table} w
          LEFT JOIN {secret_table} s ON s.wallet_id = w.id
          WHERE w.address = ?1"
@@ -136,13 +154,40 @@ fn query_secret(
     let row = stmt.query_row(params![address], |row| {
         let secret_data: Option<String> = row.get(0)?;
         let secret_type: Option<String> = row.get(1)?;
-        Ok(secret_data.zip(secret_type))
+        let secret_format: Option<String> = row.get(2)?;
+        Ok(match (secret_data, secret_type, secret_format) {
+            (Some(secret_data), Some(secret_type), Some(secret_format)) => {
+                Some((secret_data, secret_type, secret_format))
+            }
+            _ => None,
+        })
     });
 
     match row {
         Ok(secret) => Ok(Some(secret)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+struct TestSecretBackendAdapter;
+
+#[cfg(test)]
+impl SecretBackendAdapter for TestSecretBackendAdapter {
+    fn probe(&self) -> Result<(), SecretEnvelopeError> {
+        Ok(())
+    }
+
+    fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+        Ok(StoredSecret {
+            secret_data: plaintext.to_string(),
+            secret_format: "plaintext_v0".to_string(),
+        })
+    }
+
+    fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        decrypt_secret(secret_data, secret_format)
     }
 }
 
@@ -166,7 +211,8 @@ mod tests {
             CREATE TABLE bitcoin_wallet_secrets (
                 wallet_id TEXT PRIMARY KEY,
                 secret_data TEXT NOT NULL,
-                secret_type TEXT NOT NULL
+                secret_type TEXT NOT NULL,
+                secret_format TEXT NOT NULL DEFAULT 'plaintext_v0'
             );
             CREATE TABLE evm_wallets (
                 id TEXT PRIMARY KEY,
@@ -180,7 +226,8 @@ mod tests {
             CREATE TABLE evm_wallet_secrets (
                 wallet_id TEXT PRIMARY KEY,
                 secret_data TEXT NOT NULL,
-                secret_type TEXT NOT NULL
+                secret_type TEXT NOT NULL,
+                secret_format TEXT NOT NULL DEFAULT 'plaintext_v0'
             );",
         )
         .unwrap();
@@ -218,9 +265,9 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO bitcoin_wallet_secrets (wallet_id, secret_data, secret_type)
-             VALUES (?1, ?2, ?3)",
-            params!["btc-wallet-1", "seed words", "mnemonic"],
+            "INSERT INTO bitcoin_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["btc-wallet-1", "seed words", "mnemonic", "plaintext_v0"],
         )
         .unwrap();
 
@@ -251,9 +298,9 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO evm_wallet_secrets (wallet_id, secret_data, secret_type)
-             VALUES (?1, ?2, ?3)",
-            params!["evm-wallet-1", "0xdeadbeef", "private-key"],
+            "INSERT INTO evm_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["evm-wallet-1", "0xdeadbeef", "private-key", "plaintext_v0"],
         )
         .unwrap();
 

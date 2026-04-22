@@ -1,3 +1,5 @@
+use crate::wallet::security::backend::SecretBackend;
+use crate::wallet::security::secret_envelope::{StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
 use crate::wallet::types::WalletInfo;
 use crate::wallet::state::freshness::classify_age;
 use crate::wallet::state::types::FreshnessMetadata;
@@ -9,6 +11,14 @@ use uuid::Uuid;
 
 pub struct Database {
     conn: Mutex<Connection>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SecretMigrationReport {
+    pub attempted_rows: usize,
+    pub migrated_rows: usize,
+    pub skipped_rows: usize,
+    pub failed_rows: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +210,7 @@ impl Database {
         )?;
 
         Self::migrate_phase2_sync_metadata(&conn)?;
+        Self::migrate_secret_storage_metadata(&conn)?;
 
         Ok(())
     }
@@ -220,6 +231,44 @@ impl Database {
         }
 
         Ok(())
+    }
+
+    fn migrate_secret_storage_metadata(conn: &Connection) -> SqliteResult<()> {
+        let additive_columns = [
+            (
+                "bitcoin_wallet_secrets",
+                "secret_format",
+                "TEXT NOT NULL DEFAULT 'plaintext_v0'",
+            ),
+            (
+                "evm_wallet_secrets",
+                "secret_format",
+                "TEXT NOT NULL DEFAULT 'plaintext_v0'",
+            ),
+        ];
+
+        for (table, column, definition) in additive_columns {
+            Self::add_column_if_missing(conn, table, column, definition)?;
+        }
+
+        Ok(())
+    }
+
+    fn legacy_secret_rows(conn: &Connection, table: &str) -> SqliteResult<Vec<(String, String)>> {
+        let select_sql = format!(
+            "SELECT wallet_id, secret_data FROM {table} WHERE secret_format = ?1 OR secret_format IS NULL OR TRIM(secret_format) = ''"
+        );
+        let mut stmt = conn.prepare(&select_sql)?;
+        let rows = stmt.query_map(params![SECRET_FORMAT_PLAINTEXT_V0], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        let mut legacy_rows = Vec::new();
+        for row in rows {
+            legacy_rows.push(row?);
+        }
+
+        Ok(legacy_rows)
     }
 
     fn add_column_if_missing(
@@ -318,21 +367,32 @@ impl Database {
         )
     }
 
-    pub fn add_bitcoin_wallet(
+    pub fn insert_bitcoin_wallet_with_secret(
         &self,
         label: String,
         wallet_type: String,
         address: String,
+        stored_secret: StoredSecret,
+        secret_type: String,
     ) -> SqliteResult<WalletInfo> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        conn.execute(
+        tx.execute(
             "INSERT INTO bitcoin_wallets (id, label, wallet_type, address, balance, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![&id, &label, &wallet_type, &address, 0.0, &now, &now],
         )?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO bitcoin_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&id, &stored_secret.secret_data, &secret_type, &stored_secret.secret_format],
+        )?;
+
+        tx.commit()?;
 
         Ok(WalletInfo {
             id,
@@ -345,34 +405,22 @@ impl Database {
         })
     }
 
-    pub fn add_wallet_secret(
-        &self,
-        wallet_id: String,
-        secret_data: String,
-        secret_type: String,
-    ) -> SqliteResult<()> {
-        let conn = self.conn.lock().unwrap();
-
-        conn.execute(
-            "INSERT OR REPLACE INTO bitcoin_wallet_secrets (wallet_id, secret_data, secret_type)
-             VALUES (?1, ?2, ?3)",
-            params![&wallet_id, &secret_data, &secret_type],
-        )?;
-
-        Ok(())
-    }
-
     pub(crate) fn load_bitcoin_wallet_secret(
         &self,
         wallet_id: &str,
-    ) -> SqliteResult<Option<(String, String)>> {
+    ) -> SqliteResult<Option<(String, String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT secret_data, secret_type FROM bitcoin_wallet_secrets WHERE wallet_id = ?1",
+            "SELECT secret_data, secret_type, COALESCE(secret_format, 'plaintext_v0')
+             FROM bitcoin_wallet_secrets WHERE wallet_id = ?1",
         )?;
 
         let result = stmt.query_row(params![wallet_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         });
 
         match result {
@@ -484,21 +532,32 @@ impl Database {
     }
 
     // EVM Wallet Methods
-    pub fn add_evm_wallet(
+    pub fn insert_evm_wallet_with_secret(
         &self,
         label: String,
         wallet_type: String,
         address: String,
+        stored_secret: StoredSecret,
+        secret_type: String,
     ) -> SqliteResult<WalletInfo> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        conn.execute(
+        tx.execute(
             "INSERT INTO evm_wallets (id, label, wallet_type, address, balance, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![&id, &label, &wallet_type, &address, 0.0, &now, &now],
         )?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO evm_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&id, &stored_secret.secret_data, &secret_type, &stored_secret.secret_format],
+        )?;
+
+        tx.commit()?;
 
         Ok(WalletInfo {
             id,
@@ -511,34 +570,22 @@ impl Database {
         })
     }
 
-    pub fn add_evm_wallet_secret(
-        &self,
-        wallet_id: String,
-        secret_data: String,
-        secret_type: String,
-    ) -> SqliteResult<()> {
-        let conn = self.conn.lock().unwrap();
-
-        conn.execute(
-            "INSERT OR REPLACE INTO evm_wallet_secrets (wallet_id, secret_data, secret_type)
-             VALUES (?1, ?2, ?3)",
-            params![&wallet_id, &secret_data, &secret_type],
-        )?;
-
-        Ok(())
-    }
-
     pub(crate) fn load_evm_wallet_secret(
         &self,
         wallet_id: &str,
-    ) -> SqliteResult<Option<(String, String)>> {
+    ) -> SqliteResult<Option<(String, String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT secret_data, secret_type FROM evm_wallet_secrets WHERE wallet_id = ?1",
+            "SELECT secret_data, secret_type, COALESCE(secret_format, 'plaintext_v0')
+             FROM evm_wallet_secrets WHERE wallet_id = ?1",
         )?;
 
         let result = stmt.query_row(params![wallet_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         });
 
         match result {
@@ -1086,13 +1133,80 @@ impl Database {
         result.reverse();
         Ok(result)
     }
+
+    pub fn run_secret_storage_migration(
+        &self,
+        secret_backend: &SecretBackend,
+    ) -> SqliteResult<SecretMigrationReport> {
+        let status = secret_backend.refresh_status();
+        let mut conn = self.conn.lock().unwrap();
+        let mut report = SecretMigrationReport::default();
+
+        let mut bitcoin_rows = Self::legacy_secret_rows(&conn, "bitcoin_wallet_secrets")?;
+        let mut evm_rows = Self::legacy_secret_rows(&conn, "evm_wallet_secrets")?;
+        report.attempted_rows = bitcoin_rows.len() + evm_rows.len();
+
+        if report.attempted_rows == 0 {
+            return Ok(report);
+        }
+
+        if !matches!(status, crate::wallet::security::types::SecretBackendStatus::Ready) {
+            report.skipped_rows = report.attempted_rows;
+            return Ok(report);
+        }
+
+        let tx = conn.transaction()?;
+        for (wallet_id, secret_data) in bitcoin_rows.drain(..) {
+            match secret_backend.prepare_encrypted_secret(&secret_data) {
+                Ok(stored_secret) => {
+                    tx.execute(
+                        "UPDATE bitcoin_wallet_secrets SET secret_data = ?1, secret_format = ?2 WHERE wallet_id = ?3",
+                        params![stored_secret.secret_data, stored_secret.secret_format, wallet_id],
+                    )?;
+                    report.migrated_rows += 1;
+                }
+                Err(_) => {
+                    report.failed_rows += 1;
+                }
+            }
+        }
+
+        for (wallet_id, secret_data) in evm_rows.drain(..) {
+            match secret_backend.prepare_encrypted_secret(&secret_data) {
+                Ok(stored_secret) => {
+                    tx.execute(
+                        "UPDATE evm_wallet_secrets SET secret_data = ?1, secret_format = ?2 WHERE wallet_id = ?3",
+                        params![stored_secret.secret_data, stored_secret.secret_format, wallet_id],
+                    )?;
+                    report.migrated_rows += 1;
+                }
+                Err(_) => {
+                    report.failed_rows += 1;
+                }
+            }
+        }
+
+        tx.commit()?;
+        report.skipped_rows = report.attempted_rows - report.migrated_rows - report.failed_rows;
+        Ok(report)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, SecretMigrationReport};
+    use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
+    use crate::wallet::security::secret_envelope::{
+        decrypt_secret,
+        encrypt_secret,
+        SecretEnvelopeError,
+        SECRET_FORMAT_KEYRING_AES256_GCM_V1,
+        SECRET_FORMAT_PLAINTEXT_V0,
+        StoredSecret,
+    };
     use crate::wallet::state::types::FreshnessStatus;
     use rusqlite::{params, Connection};
+    use std::sync::Arc;
 
     fn legacy_database() -> Database {
         let conn = Connection::open_in_memory().unwrap();
@@ -1280,10 +1394,15 @@ mod tests {
         assert_eq!(evm_assets[0].0, "ethereum");
         assert_eq!(evm_assets[0].1, "ETH");
 
-        db.add_bitcoin_wallet(
+        db.insert_bitcoin_wallet_with_secret(
             "Post Migration".to_string(),
             "mnemonic".to_string(),
             "bc1postmigration".to_string(),
+            StoredSecret {
+                secret_data: "encrypted".to_string(),
+                secret_format: SECRET_FORMAT_KEYRING_AES256_GCM_V1.to_string(),
+            },
+            "mnemonic".to_string(),
         )
         .unwrap();
 
@@ -1306,5 +1425,142 @@ mod tests {
         assert_eq!(freshness.status, FreshnessStatus::Cached);
         assert_eq!(freshness.updated_at, None);
         assert!(freshness.failed_sources.is_empty());
+    }
+
+    struct StubAdapter {
+        encrypt_should_fail: bool,
+    }
+
+    impl SecretBackendAdapter for StubAdapter {
+        fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            if self.encrypt_should_fail {
+                Err(SecretEnvelopeError::Keyring("offline".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+            if self.encrypt_should_fail {
+                Err(SecretEnvelopeError::Keyring("offline".to_string()))
+            } else {
+                encrypt_secret(plaintext)
+            }
+        }
+
+        fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+            decrypt_secret(secret_data, secret_format)
+        }
+    }
+
+    #[test]
+    fn migration_skips_rows_when_backend_unavailable() {
+        let db = legacy_database();
+
+        let conn = db.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO bitcoin_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["btc-wallet-1", "seed words", "mnemonic", SECRET_FORMAT_PLAINTEXT_V0],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO evm_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["evm-wallet-1", "0xdeadbeef", "private-key", SECRET_FORMAT_PLAINTEXT_V0],
+        )
+        .unwrap();
+
+        drop(conn);
+
+        let backend = SecretBackend::with_adapter(Arc::new(StubAdapter {
+            encrypt_should_fail: true,
+        }));
+
+        let report = db.run_secret_storage_migration(&backend).unwrap();
+
+        assert_eq!(report.attempted_rows, 2);
+        assert_eq!(report.migrated_rows, 0);
+        assert_eq!(report.skipped_rows, 2);
+        assert_eq!(report.failed_rows, 0);
+
+        let conn = db.conn.lock().unwrap();
+        let formats: Vec<String> = ["bitcoin_wallet_secrets", "evm_wallet_secrets"]
+            .iter()
+            .map(|table| {
+                conn.query_row(
+                    &format!("SELECT secret_format FROM {table} LIMIT 1"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+            })
+            .collect();
+
+        assert!(formats.iter().all(|format| format == SECRET_FORMAT_PLAINTEXT_V0));
+        drop(conn);
+
+        let bitcoin_secret = db.load_bitcoin_wallet_secret("btc-wallet-1").unwrap().unwrap();
+        let evm_secret = db.load_evm_wallet_secret("evm-wallet-1").unwrap().unwrap();
+
+        assert_eq!(decrypt_secret(&bitcoin_secret.0, &bitcoin_secret.2).unwrap(), "seed words");
+        assert_eq!(decrypt_secret(&evm_secret.0, &evm_secret.2).unwrap(), "0xdeadbeef");
+    }
+
+    #[test]
+    fn migrates_legacy_secret_rows_to_encrypted_format() {
+        let db = legacy_database();
+
+        let conn = db.conn.lock().unwrap();
+
+        conn.execute(
+            "INSERT INTO bitcoin_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["btc-wallet-1", "seed words", "mnemonic", SECRET_FORMAT_PLAINTEXT_V0],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO evm_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["evm-wallet-1", "0xdeadbeef", "private-key", SECRET_FORMAT_PLAINTEXT_V0],
+        )
+        .unwrap();
+
+        drop(conn);
+
+        let backend = SecretBackend::with_adapter(Arc::new(StubAdapter {
+            encrypt_should_fail: false,
+        }));
+
+        let report: SecretMigrationReport = db.run_secret_storage_migration(&backend).unwrap();
+
+        assert_eq!(report.attempted_rows, 2);
+        assert_eq!(report.migrated_rows, 2);
+        assert_eq!(report.skipped_rows, 0);
+        assert_eq!(report.failed_rows, 0);
+
+        let conn = db.conn.lock().unwrap();
+        let bitcoin_secret: (String, String, String) = conn
+            .query_row(
+                "SELECT secret_data, secret_type, secret_format FROM bitcoin_wallet_secrets WHERE wallet_id = ?1",
+                params!["btc-wallet-1"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let evm_secret: (String, String, String) = conn
+            .query_row(
+                "SELECT secret_data, secret_type, secret_format FROM evm_wallet_secrets WHERE wallet_id = ?1",
+                params!["evm-wallet-1"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(bitcoin_secret.2, SECRET_FORMAT_KEYRING_AES256_GCM_V1);
+        assert_eq!(evm_secret.2, SECRET_FORMAT_KEYRING_AES256_GCM_V1);
+        assert_eq!(decrypt_secret(&bitcoin_secret.0, &bitcoin_secret.2).unwrap(), "seed words");
+        assert_eq!(decrypt_secret(&evm_secret.0, &evm_secret.2).unwrap(), "0xdeadbeef");
     }
 }

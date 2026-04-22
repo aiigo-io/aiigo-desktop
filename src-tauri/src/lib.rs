@@ -4,6 +4,7 @@ mod dashboard;
 
 use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
 use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
+use wallet::security::backend::SecretBackend;
 use wallet::security::commands::{security_is_unlocked, security_lock, security_unlock, AppSecurity};
 use wallet::security::keystore::{Keystore, SqliteKeystore};
 use wallet::security::session::SessionManager;
@@ -17,6 +18,30 @@ use std::time::Duration;
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
 
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
+
+enum SecretMigrationLogEntry {
+    Info(String),
+    Error(String),
+}
+
+fn build_secret_migration_log_entry(
+    result: Result<db::SecretMigrationReport, String>,
+) -> SecretMigrationLogEntry {
+    match result {
+        Ok(report) => SecretMigrationLogEntry::Info(format!(
+            "Secret migration attempted={} migrated={} skipped={} failed={}",
+            report.attempted_rows, report.migrated_rows, report.skipped_rows, report.failed_rows
+        )),
+        Err(error) => SecretMigrationLogEntry::Error(error),
+    }
+}
+
+fn emit_secret_migration_log(entry: SecretMigrationLogEntry) {
+    match entry {
+        SecretMigrationLogEntry::Info(message) => safe_log!("[INFO] {}", message),
+        SecretMigrationLogEntry::Error(message) => safe_log!("[ERROR] {}", message),
+    }
+}
 
 pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
     let db_path = if cfg!(debug_assertions) {
@@ -74,10 +99,25 @@ pub fn run() {
     init_tracing();
 
     let _ = &*DB;
+    let secret_backend = Arc::new(SecretBackend::new());
     let app_security = AppSecurity {
         session_manager: Arc::new(SessionManager::new(Duration::from_secs(300))),
-        keystore: Arc::new(SqliteKeystore::new(&DB)) as Arc<dyn Keystore + Send + Sync>,
+        keystore: Arc::new(SqliteKeystore::new(&DB, secret_backend.clone())) as Arc<dyn Keystore + Send + Sync>,
+        secret_backend: secret_backend.clone(),
     };
+
+    let _ = secret_backend.refresh_status();
+    let migration_log_entry = match DB.lock() {
+        Ok(db) => build_secret_migration_log_entry(
+            db.run_secret_storage_migration(secret_backend.as_ref())
+                .map_err(|error| format!("Secret migration failed: {}", error)),
+        ),
+        Err(error) => build_secret_migration_log_entry(Err(format!(
+            "Failed to acquire database lock for secret migration: {}",
+            error
+        ))),
+    };
+    emit_secret_migration_log(migration_log_entry);
 
     tauri::Builder::default()
         .manage(app_security)
@@ -145,4 +185,48 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_secret_migration_log_entry, SecretMigrationLogEntry};
+    use crate::db::SecretMigrationReport;
+
+    #[test]
+    fn secret_migration_success_produces_info_entry() {
+        let entry = build_secret_migration_log_entry(Ok(SecretMigrationReport {
+            attempted_rows: 3,
+            migrated_rows: 2,
+            skipped_rows: 1,
+            failed_rows: 0,
+        }));
+
+        match entry {
+            SecretMigrationLogEntry::Info(message) => {
+                assert_eq!(
+                    message,
+                    "Secret migration attempted=3 migrated=2 skipped=1 failed=0"
+                );
+            }
+            SecretMigrationLogEntry::Error(message) => {
+                panic!("expected info entry, got error: {}", message);
+            }
+        }
+    }
+
+    #[test]
+    fn secret_migration_failure_produces_error_entry() {
+        let entry = build_secret_migration_log_entry(Err(
+            "Secret migration failed: database is locked".to_string(),
+        ));
+
+        match entry {
+            SecretMigrationLogEntry::Info(message) => {
+                panic!("expected error entry, got info: {}", message);
+            }
+            SecretMigrationLogEntry::Error(message) => {
+                assert_eq!(message, "Secret migration failed: database is locked");
+            }
+        }
+    }
 }

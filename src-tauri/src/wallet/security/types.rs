@@ -22,7 +22,35 @@ pub enum SignerOperation {
 #[serde(rename_all = "snake_case")]
 pub enum SecurityError {
     Locked,
+    Expired,
     PolicyDenied,
     OperationNotAllowed,
     UnknownWallet,
+    SecretBackendUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretBackendUnavailableKind {
+    KeyringUnavailable,
+    SecretServiceUnreachable,
+    KeyDecodeFailed,
+    AccessDenied,
+    UnknownBackendError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretBackendUnavailableReason {
+    pub kind: SecretBackendUnavailableKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretBackendStatus {
+    Ready,
+    Unavailable {
+        reason: SecretBackendUnavailableReason,
+    },
+    Unknown,
 }

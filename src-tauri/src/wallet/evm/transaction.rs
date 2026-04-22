@@ -692,6 +692,28 @@ pub async fn approve_erc20_token(
             .ok_or_else(|| "Wallet not found".to_string())?
     };
 
+    approve_erc20_token_with_wallet(
+        wallet_info,
+        chain_id,
+        token_address,
+        spender_address,
+        amount,
+        keystore,
+        session_manager,
+    )
+    .await
+}
+
+async fn approve_erc20_token_with_wallet(
+    wallet_info: WalletInfo,
+    chain_id: u64,
+    token_address: String,
+    spender_address: String,
+    amount: String,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
+) -> Result<SendTransactionResponse, String> {
+
     let signing_secret = load_signing_secret(
         &wallet_info,
         keystore,
@@ -821,14 +843,24 @@ fn wallet_from_signing_secret(
 
 #[cfg(test)]
 mod tests {
-    use super::load_signing_secret;
-    use crate::wallet::security::keystore::Keystore;
+    use super::{approve_erc20_token, load_signing_secret, EvmSigningSecret};
+    use crate::db::Database;
+    use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
+    use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
+    use crate::wallet::security::secret_envelope::{encrypt_secret, decrypt_secret, SecretEnvelopeError, StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{SecurityError, SignerOperation};
     use crate::wallet::types::WalletInfo;
+    use crate::DB;
+    use std::sync::Arc;
     use std::time::Duration;
+    use uuid::Uuid;
 
     struct PanicKeystore;
+
+    struct DatabaseBackedKeystore {
+        db: Database,
+    }
 
     impl Keystore for PanicKeystore {
         fn load_mnemonic(&self, _address: &str) -> Result<Option<String>, SecurityError> {
@@ -838,6 +870,110 @@ mod tests {
         fn load_private_key(&self, _address: &str) -> Result<Option<String>, SecurityError> {
             panic!("keystore should not be called while session is locked");
         }
+    }
+
+    impl DatabaseBackedKeystore {
+        fn load_secret(&self, address: &str) -> Result<Option<(String, String, String)>, SecurityError> {
+            if let Some(wallet_id) = self
+                .db
+                .get_evm_wallets()
+                .map_err(|_| SecurityError::OperationNotAllowed)?
+                .into_iter()
+                .find(|wallet| wallet.address == address)
+                .map(|wallet| wallet.id)
+            {
+                return self
+                    .db
+                    .load_evm_wallet_secret(&wallet_id)
+                    .map_err(|_| SecurityError::OperationNotAllowed);
+            }
+
+            Err(SecurityError::UnknownWallet)
+        }
+    }
+
+    impl Keystore for DatabaseBackedKeystore {
+        fn load_mnemonic(&self, address: &str) -> Result<Option<String>, SecurityError> {
+            Ok(self
+                .load_secret(address)?
+                .and_then(|(secret_data, secret_type, secret_format)| {
+                    (secret_type == "mnemonic").then_some((secret_data, secret_format))
+                })
+                .map(|(secret_data, secret_format)| {
+                    decrypt_secret(&secret_data, &secret_format)
+                        .map_err(|_| SecurityError::OperationNotAllowed)
+                })
+                .transpose()?)
+        }
+
+        fn load_private_key(&self, address: &str) -> Result<Option<String>, SecurityError> {
+            Ok(self
+                .load_secret(address)?
+                .and_then(|(secret_data, secret_type, secret_format)| {
+                    (secret_type == "private-key").then_some((secret_data, secret_format))
+                })
+                .map(|(secret_data, secret_format)| {
+                    decrypt_secret(&secret_data, &secret_format)
+                        .map_err(|_| SecurityError::OperationNotAllowed)
+                })
+                .transpose()?)
+        }
+    }
+
+    struct TestSecretBackendAdapter;
+
+    impl SecretBackendAdapter for TestSecretBackendAdapter {
+        fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Ok(())
+        }
+
+        fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+            encrypt_secret(plaintext)
+        }
+
+        fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+            decrypt_secret(secret_data, secret_format)
+        }
+    }
+
+    fn insert_evm_wallet_with_secret(stored_secret: StoredSecret) -> (WalletInfo, DatabaseBackedKeystore) {
+        let db = Database::new(":memory:").unwrap();
+        let wallet = db
+            .insert_evm_wallet_with_secret(
+                "EVM Wallet".to_string(),
+                "private-key".to_string(),
+                "0x1234".to_string(),
+                stored_secret,
+                "private-key".to_string(),
+            )
+            .unwrap();
+
+        (wallet, DatabaseBackedKeystore { db })
+    }
+
+    fn insert_global_evm_wallet_with_secret(stored_secret: StoredSecret) -> WalletInfo {
+        let unique = Uuid::new_v4().simple().to_string();
+        let suffix = &unique[..40.min(unique.len())];
+        let address = format!("0x{:0<40}", suffix);
+
+        let wallet = {
+            let db = DB.lock().unwrap();
+            db.insert_evm_wallet_with_secret(
+                format!("EVM Command {unique}"),
+                "private-key".to_string(),
+                address,
+                stored_secret,
+                "private-key".to_string(),
+            )
+            .unwrap()
+        };
+
+        wallet
+    }
+
+    fn cleanup_global_evm_wallet(wallet_id: &str) {
+        let db = DB.lock().unwrap();
+        let _ = db.delete_evm_wallet(wallet_id);
     }
 
     fn test_wallet(wallet_type: &str) -> WalletInfo {
@@ -880,5 +1016,110 @@ mod tests {
             ),
             Err(SecurityError::Locked)
         ));
+    }
+
+    #[test]
+    fn approve_signing_returns_expired_without_keystore_access() {
+        let session = SessionManager::new(Duration::from_millis(1));
+        session.unlock("token").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert!(matches!(
+            load_signing_secret(
+                &test_wallet("mnemonic"),
+                &PanicKeystore,
+                &session,
+                SignerOperation::Approve
+            ),
+            Err(SecurityError::Expired)
+        ));
+    }
+
+    #[test]
+    fn approve_signing_reads_plaintext_secret_row_after_unlock() {
+        let (wallet, keystore) = insert_evm_wallet_with_secret(StoredSecret {
+            secret_data: "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e".to_string(),
+            secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+        });
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = load_signing_secret(&wallet, &keystore, &session, SignerOperation::Approve).unwrap();
+
+        assert!(matches!(
+            result,
+            Some(EvmSigningSecret::PrivateKey(secret))
+                if secret == "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e"
+        ));
+    }
+
+    #[test]
+    fn approve_signing_reads_migrated_secret_row_after_unlock() {
+        let (wallet, keystore) = insert_evm_wallet_with_secret(
+            encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e").unwrap(),
+        );
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = load_signing_secret(&wallet, &keystore, &session, SignerOperation::Approve).unwrap();
+
+        assert!(matches!(
+            result,
+            Some(EvmSigningSecret::PrivateKey(secret))
+                if secret == "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e"
+        ));
+    }
+
+    #[tokio::test]
+    async fn approve_command_path_reads_plaintext_secret_row_before_spender_validation_failure() {
+        let wallet = insert_global_evm_wallet_with_secret(StoredSecret {
+            secret_data: "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e".to_string(),
+            secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+        });
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let keystore = SqliteKeystore::new(&DB, secret_backend);
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = approve_erc20_token(
+            wallet.id.clone(),
+            1,
+            "0x0000000000000000000000000000000000000001".to_string(),
+            "not-an-address".to_string(),
+            "1".to_string(),
+            &keystore,
+            &session,
+        )
+        .await;
+
+        cleanup_global_evm_wallet(&wallet.id);
+
+        assert!(matches!(result, Err(message) if message.starts_with("Invalid spender address:")));
+    }
+
+    #[tokio::test]
+    async fn approve_command_path_reads_migrated_secret_row_before_spender_validation_failure() {
+        let wallet = insert_global_evm_wallet_with_secret(
+            encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e").unwrap(),
+        );
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let keystore = SqliteKeystore::new(&DB, secret_backend);
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = approve_erc20_token(
+            wallet.id.clone(),
+            1,
+            "0x0000000000000000000000000000000000000001".to_string(),
+            "not-an-address".to_string(),
+            "1".to_string(),
+            &keystore,
+            &session,
+        )
+        .await;
+
+        cleanup_global_evm_wallet(&wallet.id);
+
+        assert!(matches!(result, Err(message) if message.starts_with("Invalid spender address:")));
     }
 }

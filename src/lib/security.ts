@@ -2,18 +2,21 @@ import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE } from '@/li
 
 export type SecurityError =
   | 'locked'
+  | 'expired'
   | 'policy_denied'
   | 'operation_not_allowed'
   | 'unknown_wallet';
 
 const SECURITY_ERRORS: SecurityError[] = [
   'locked',
+  'expired',
   'policy_denied',
   'operation_not_allowed',
   'unknown_wallet',
 ];
 
 export const SECURITY_STATE_EVENT = 'app-security-changed';
+export const EXPORT_UNAVAILABLE_MESSAGE = 'Export is currently unavailable in this wallet MVP.';
 
 export function isSecurityError(value: unknown): value is SecurityError {
   return typeof value === 'string' && SECURITY_ERRORS.includes(value as SecurityError);

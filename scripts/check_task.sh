@@ -9,6 +9,7 @@
 #   - phase1: signer/session command registration is wired into Tauri
 #   - phase2: SQLite schema changes remain additive-only
 #   - phase4: dashboard and BTC price-state commands are wired into Tauri
+#   - phase5: run the current MVP gate set required by testing-strategy.md
 #   - all: run every active MVP gate
 #
 # Reference:
@@ -18,7 +19,7 @@
 # hardening contract. It is intentionally narrowed to MVP runtime safety checks.
 #
 # Usage:
-#   scripts/check_task.sh [phase1|phase2|phase4|all]
+#   scripts/check_task.sh [phase1|phase2|phase4|phase5|all]
 #
 # Exits 0 if all gates pass, non-zero on any failure.
 
@@ -49,7 +50,7 @@ check_gate4() {
   local required=()
   case "$PHASE" in
     phase1) required+=(security_unlock security_lock security_is_unlocked) ;;
-    phase4|all) required+=(get_dashboard_stats refresh_dashboard_stats state_get_bitcoin_price_state) ;;
+    phase4|phase5|all) required+=(get_dashboard_stats refresh_dashboard_stats state_get_bitcoin_price_state) ;;
   esac
 
   if [ ${#required[@]} -eq 0 ]; then
@@ -160,12 +161,16 @@ case "$PHASE" in
   phase4)
     check_gate4
     ;;
+  phase5)
+    check_gate4
+    check_gate8
+    ;;
   all)
     check_gate4
     check_gate8
     ;;
   *)
-    echo "Usage: $0 [phase1|phase2|phase4|all]" >&2
+    echo "Usage: $0 [phase1|phase2|phase4|phase5|all]" >&2
     exit 2
     ;;
 esac

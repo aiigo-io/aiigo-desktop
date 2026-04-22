@@ -219,10 +219,11 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                 return;
             }
 
-            if (parseSecurityError(error) === 'locked') {
+            const securityError = parseSecurityError(error);
+            if (securityError === 'locked' || securityError === 'expired') {
                 await requestUnlock({
                     prompt: needsApproval ? `Unlock to approve ${fromToken.symbol}.` : 'Unlock to continue swap.',
-                    reason: 'expired',
+                    reason: securityError,
                     onUnlockSuccess: handleButtonClick,
                 });
             }

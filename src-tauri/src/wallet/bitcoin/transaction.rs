@@ -382,6 +382,31 @@ pub async fn send_bitcoin_transaction(
             })?
     };
 
+    send_bitcoin_transaction_resolved(request, wallet_info, keystore, session_manager, connect_electrum_blockchain).await
+}
+
+fn connect_electrum_blockchain() -> Result<ElectrumBlockchain, String> {
+    crate::safe_log!("[INFO] Connecting to Electrum server...");
+    let client = Client::new("ssl://electrum.blockstream.info:50002")
+        .map_err(|e| {
+            crate::safe_log!("[ERROR] Failed to connect to Electrum: {}", e);
+            format!("Failed to connect to Electrum: {}", e)
+        })?;
+    crate::safe_log!("[INFO] Connected to Electrum server");
+    Ok(ElectrumBlockchain::from(client))
+}
+
+async fn send_bitcoin_transaction_resolved<F>(
+    request: SendBitcoinRequest,
+    wallet_info: WalletInfo,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
+    connect_blockchain: F,
+) -> Result<SendTransactionResponse, String>
+where
+    F: FnOnce() -> Result<ElectrumBlockchain, String>,
+{
+
     let signing_secret =
         load_signing_secret(&wallet_info, keystore, session_manager)
             .map_err(map_security_error)?
@@ -406,15 +431,7 @@ pub async fn send_bitcoin_transaction(
             format!("Failed to create wallet: {}", e)
         })?;
 
-    // Connect to Electrum server
-    crate::safe_log!("[INFO] Connecting to Electrum server...");
-    let client = Client::new("ssl://electrum.blockstream.info:50002")
-        .map_err(|e| {
-            crate::safe_log!("[ERROR] Failed to connect to Electrum: {}", e);
-            format!("Failed to connect to Electrum: {}", e)
-        })?;
-    let blockchain = ElectrumBlockchain::from(client);
-    crate::safe_log!("[INFO] Connected to Electrum server");
+    let blockchain = connect_blockchain()?;
 
     // Sync wallet
     crate::safe_log!("[INFO] Syncing wallet...");
@@ -554,6 +571,33 @@ pub async fn send_bitcoin_transaction(
     })
 }
 
+#[cfg(test)]
+async fn send_bitcoin_transaction_with_blockchain_factory<F>(
+    request: SendBitcoinRequest,
+    keystore: &(dyn Keystore + Send + Sync),
+    session_manager: &SessionManager,
+    connect_blockchain: F,
+) -> Result<SendTransactionResponse, String>
+where
+    F: FnOnce() -> Result<ElectrumBlockchain, String>,
+{
+    let wallet_info = {
+        let db = DB.lock().unwrap();
+        db.get_bitcoin_wallet(&request.wallet_id)
+            .map_err(|e| format!("Failed to get wallet info: {}", e))?
+            .ok_or_else(|| "Wallet not found".to_string())?
+    };
+
+    send_bitcoin_transaction_resolved(
+        request,
+        wallet_info,
+        keystore,
+        session_manager,
+        connect_blockchain,
+    )
+    .await
+}
+
 fn load_signing_secret(
     wallet_info: &WalletInfo,
     keystore: &(dyn Keystore + Send + Sync),
@@ -605,15 +649,26 @@ fn descriptor_from_signing_secret(
 
 #[cfg(test)]
 mod tests {
-    use super::load_signing_secret;
-    use crate::wallet::security::keystore::Keystore;
+    use super::{load_signing_secret, send_bitcoin_transaction_with_blockchain_factory, BitcoinSigningSecret};
+    use crate::db::Database;
+    use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
+    use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
     use crate::wallet::security::log_sanitize::take_test_log_lines;
+    use crate::wallet::security::secret_envelope::{encrypt_secret, decrypt_secret, SecretEnvelopeError, StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::SecurityError;
+    use crate::wallet::transaction_types::SendBitcoinRequest;
     use crate::wallet::types::WalletInfo;
+    use crate::DB;
+    use std::sync::Arc;
     use std::time::Duration;
+    use uuid::Uuid;
 
     struct PanicKeystore;
+
+    struct DatabaseBackedKeystore {
+        db: Database,
+    }
 
     impl Keystore for PanicKeystore {
         fn load_mnemonic(&self, _address: &str) -> Result<Option<String>, SecurityError> {
@@ -623,6 +678,107 @@ mod tests {
         fn load_private_key(&self, _address: &str) -> Result<Option<String>, SecurityError> {
             panic!("keystore should not be called while session is locked");
         }
+    }
+
+    impl DatabaseBackedKeystore {
+        fn load_secret(&self, address: &str) -> Result<Option<(String, String, String)>, SecurityError> {
+            if let Some(wallet_id) = self
+                .db
+                .get_bitcoin_wallets()
+                .map_err(|_| SecurityError::OperationNotAllowed)?
+                .into_iter()
+                .find(|wallet| wallet.address == address)
+                .map(|wallet| wallet.id)
+            {
+                return self
+                    .db
+                    .load_bitcoin_wallet_secret(&wallet_id)
+                    .map_err(|_| SecurityError::OperationNotAllowed);
+            }
+
+            Err(SecurityError::UnknownWallet)
+        }
+    }
+
+    impl Keystore for DatabaseBackedKeystore {
+        fn load_mnemonic(&self, address: &str) -> Result<Option<String>, SecurityError> {
+            Ok(self
+                .load_secret(address)?
+                .and_then(|(secret_data, secret_type, secret_format)| {
+                    (secret_type == "mnemonic").then_some((secret_data, secret_format))
+                })
+                .map(|(secret_data, secret_format)| {
+                    decrypt_secret(&secret_data, &secret_format)
+                        .map_err(|_| SecurityError::OperationNotAllowed)
+                })
+                .transpose()?)
+        }
+
+        fn load_private_key(&self, address: &str) -> Result<Option<String>, SecurityError> {
+            Ok(self
+                .load_secret(address)?
+                .and_then(|(secret_data, secret_type, secret_format)| {
+                    (secret_type == "private-key").then_some((secret_data, secret_format))
+                })
+                .map(|(secret_data, secret_format)| {
+                    decrypt_secret(&secret_data, &secret_format)
+                        .map_err(|_| SecurityError::OperationNotAllowed)
+                })
+                .transpose()?)
+        }
+    }
+
+    struct TestSecretBackendAdapter;
+
+    impl SecretBackendAdapter for TestSecretBackendAdapter {
+        fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Ok(())
+        }
+
+        fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+            encrypt_secret(plaintext)
+        }
+
+        fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+            decrypt_secret(secret_data, secret_format)
+        }
+    }
+
+    fn insert_bitcoin_wallet_with_secret(stored_secret: StoredSecret) -> (WalletInfo, DatabaseBackedKeystore) {
+        let db = Database::new(":memory:").unwrap();
+        let wallet = db
+            .insert_bitcoin_wallet_with_secret(
+                "Bitcoin Wallet".to_string(),
+                "mnemonic".to_string(),
+                "bc1ptestaddress".to_string(),
+                stored_secret,
+                "mnemonic".to_string(),
+            )
+            .unwrap();
+
+        (wallet, DatabaseBackedKeystore { db })
+    }
+
+    fn insert_global_bitcoin_wallet_with_secret(stored_secret: StoredSecret) -> WalletInfo {
+        let unique = Uuid::new_v4().simple().to_string();
+        let wallet = {
+            let db = DB.lock().unwrap();
+            db.insert_bitcoin_wallet_with_secret(
+                format!("BTC Command {unique}"),
+                "mnemonic".to_string(),
+                format!("btc-command-{unique}"),
+                stored_secret,
+                "mnemonic".to_string(),
+            )
+            .unwrap()
+        };
+
+        wallet
+    }
+
+    fn cleanup_global_bitcoin_wallet(wallet_id: &str) {
+        let db = DB.lock().unwrap();
+        let _ = db.delete_bitcoin_wallet(wallet_id);
     }
 
     fn test_wallet(wallet_type: &str) -> WalletInfo {
@@ -645,6 +801,118 @@ mod tests {
             load_signing_secret(&test_wallet("mnemonic"), &PanicKeystore, &session),
             Err(SecurityError::Locked)
         ));
+    }
+
+    #[test]
+    fn send_signing_returns_expired_without_keystore_access() {
+        let session = SessionManager::new(Duration::from_millis(1));
+        session.unlock("token").unwrap();
+        std::thread::sleep(Duration::from_millis(5));
+
+        assert!(matches!(
+            load_signing_secret(&test_wallet("mnemonic"), &PanicKeystore, &session),
+            Err(SecurityError::Expired)
+        ));
+    }
+
+    #[test]
+    fn send_signing_reads_plaintext_secret_row_after_unlock() {
+        let (wallet, keystore) = insert_bitcoin_wallet_with_secret(StoredSecret {
+            secret_data: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+            secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+        });
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = load_signing_secret(&wallet, &keystore, &session).unwrap();
+
+        assert!(matches!(
+            result,
+            Some(BitcoinSigningSecret::Mnemonic(secret))
+                if secret == "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ));
+    }
+
+    #[test]
+    fn send_signing_reads_migrated_secret_row_after_unlock() {
+        let (wallet, keystore) = insert_bitcoin_wallet_with_secret(
+            encrypt_secret(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+            )
+            .unwrap(),
+        );
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = load_signing_secret(&wallet, &keystore, &session).unwrap();
+
+        assert!(matches!(
+            result,
+            Some(BitcoinSigningSecret::Mnemonic(secret))
+                if secret == "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        ));
+    }
+
+    #[tokio::test]
+    async fn send_command_path_reads_plaintext_secret_row_before_injected_blockchain_failure() {
+        let wallet = insert_global_bitcoin_wallet_with_secret(StoredSecret {
+            secret_data: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+            secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+        });
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let keystore = SqliteKeystore::new(&DB, secret_backend);
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = send_bitcoin_transaction_with_blockchain_factory(
+            SendBitcoinRequest {
+                wallet_id: wallet.id.clone(),
+                to_address: "bc1ptestrecipient".to_string(),
+                amount: 0.0001,
+                fee_rate: None,
+                send_all: None,
+            },
+            &keystore,
+            &session,
+            || Err("injected electrum failure".to_string()),
+        )
+        .await;
+
+        cleanup_global_bitcoin_wallet(&wallet.id);
+
+        assert!(matches!(result, Err(message) if message == "injected electrum failure"));
+    }
+
+    #[tokio::test]
+    async fn send_command_path_reads_migrated_secret_row_before_injected_blockchain_failure() {
+        let wallet = insert_global_bitcoin_wallet_with_secret(
+            encrypt_secret(
+                "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+            )
+            .unwrap(),
+        );
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let keystore = SqliteKeystore::new(&DB, secret_backend);
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock("token").unwrap();
+
+        let result = send_bitcoin_transaction_with_blockchain_factory(
+            SendBitcoinRequest {
+                wallet_id: wallet.id.clone(),
+                to_address: "bc1ptestrecipient".to_string(),
+                amount: 0.0001,
+                fee_rate: None,
+                send_all: None,
+            },
+            &keystore,
+            &session,
+            || Err("injected electrum failure".to_string()),
+        )
+        .await;
+
+        cleanup_global_bitcoin_wallet(&wallet.id);
+
+        assert!(matches!(result, Err(message) if message == "injected electrum failure"));
     }
 
     #[test]
