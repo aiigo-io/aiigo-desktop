@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import RecoveryPanel from '@/components/common/RecoveryPanel';
 import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge, Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui';
@@ -15,6 +16,7 @@ import {
   getWalletUpdatedLabel,
   formatFreshnessLabel,
 } from '@/lib/evm-wallet';
+import { describeWalletRecovery, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 import { shortAddress, getEvmExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -219,6 +221,8 @@ const EvmAssets: React.FC = () => {
   const [estimatedGasLimit, setEstimatedGasLimit] = useState<number | null>(null);
   const [estimatedGasPrice, setEstimatedGasPrice] = useState<string | null>(null); // wei as string
   const [gasEstimationError, setGasEstimationError] = useState<string | null>(null);
+  const [walletFlowRecovery, setWalletFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
+  const [sendFlowRecovery, setSendFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
 
   // Load wallets on mount
   useEffect(() => {
@@ -411,6 +415,7 @@ const EvmAssets: React.FC = () => {
 
   const handleCreateMnemonic = async () => {
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
       const mnemonic = await invoke<string>('evm_create_mnemonic');
 
@@ -428,7 +433,7 @@ const EvmAssets: React.FC = () => {
       loadWallets();
     } catch (error) {
       console.error('Error creating wallet:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'evm' }));
     } finally {
       setIsLoading(false);
     }
@@ -438,6 +443,7 @@ const EvmAssets: React.FC = () => {
     if (!mnemonicInput.trim()) return;
 
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
       const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_mnemonic', {
         mnemonicPhrase: mnemonicInput,
@@ -451,7 +457,7 @@ const EvmAssets: React.FC = () => {
       loadWallets();
     } catch (error) {
       console.error('Error importing mnemonic:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'evm' }));
     } finally {
       setIsLoading(false);
     }
@@ -461,6 +467,7 @@ const EvmAssets: React.FC = () => {
     if (!privateKeyInput.trim()) return;
 
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
       const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_private_key', {
         privateKey: privateKeyInput,
@@ -474,7 +481,7 @@ const EvmAssets: React.FC = () => {
       loadWallets();
     } catch (error) {
       console.error('Error importing private key:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'evm' }));
     } finally {
       setIsLoading(false);
     }
@@ -502,6 +509,7 @@ const EvmAssets: React.FC = () => {
     setShowMnemonicDialog(false);
     setGeneratedMnemonic(null);
     setIsDialogOpen(false);
+    setWalletFlowRecovery(null);
   };
 
   const handleExportPrivateKey = async (walletId: string) => {
@@ -573,6 +581,7 @@ const EvmAssets: React.FC = () => {
     setEstimatedGasLimit(null);
     setEstimatedGasPrice(null);
     setGasEstimationError(null);
+    setSendFlowRecovery(null);
     setSelectedWalletForSend(null);
     setSelectedAssetForSend(null);
     setIsSendDialogOpen(false);
@@ -595,6 +604,7 @@ const EvmAssets: React.FC = () => {
 
   const handlePrepareSendReview = () => {
     try {
+      setSendFlowRecovery(null);
       const reviewedIntent = buildCurrentReviewedSendIntent();
       setPendingSendReview(reviewedIntent);
     } catch (error) {
@@ -628,6 +638,7 @@ const EvmAssets: React.FC = () => {
     }
 
     setIsSending(true);
+    setSendFlowRecovery(null);
     try {
       const response = await invoke<{ tx_hash: string; message: string }>('send_evm', {
         request: pendingSendReview.request
@@ -669,13 +680,14 @@ const EvmAssets: React.FC = () => {
 
       const securityError = parseSecurityError(error);
       if (securityError === 'locked' || securityError === 'expired') {
+        setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'evm' }));
         void requestUnlock({
           prompt: 'Unlock to continue sending assets.',
           reason: securityError,
           onUnlockSuccess: handleConfirmReviewedSend,
         });
       } else {
-        alert(`Error: ${error}`);
+        setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'evm' }));
       }
     } finally {
       setIsSending(false);
@@ -741,7 +753,12 @@ const EvmAssets: React.FC = () => {
                 </>
               )}
             </Button>
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+            <Dialog open={isDialogOpen} onOpenChange={(open) => {
+              setIsDialogOpen(open);
+              if (!open) {
+                setWalletFlowRecovery(null);
+              }
+            }}>
               <DialogTrigger asChild>
                 <Button className="gap-2">
                   <Plus className="w-4 h-4" />
@@ -752,6 +769,9 @@ const EvmAssets: React.FC = () => {
                 <DialogHeader>
                   <DialogTitle>EVM Wallet Management</DialogTitle>
                 </DialogHeader>
+                {walletFlowRecovery && (
+                  <RecoveryPanel guidance={walletFlowRecovery} />
+                )}
                 <Tabs defaultValue="create" className="w-full">
                   <TabsList className="grid w-full grid-cols-3">
                     <TabsTrigger value="create">Create New</TabsTrigger>
@@ -1062,6 +1082,9 @@ const EvmAssets: React.FC = () => {
 
             {!pendingSendReview ? (
             <div className="px-6 pb-6 space-y-6">
+              {sendFlowRecovery && (
+                <RecoveryPanel guidance={sendFlowRecovery} className="text-left" />
+              )}
               {/* Asset Selector Display (MetaMask style) */}
               <div className="space-y-2">
                 <div className="flex justify-between items-end">
@@ -1217,6 +1240,11 @@ const EvmAssets: React.FC = () => {
             </div>
             ) : pendingSendReview && (
               <div className="space-y-5">
+                {sendFlowRecovery && (
+                  <div className="px-6">
+                    <RecoveryPanel guidance={sendFlowRecovery} className="text-left" />
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-3 px-6">
                   <Badge variant="secondary" className="bg-indigo-500/15 text-indigo-200 border border-indigo-400/20">
                     {pendingSendReview.sendKind === 'native' ? 'Native Send' : 'Token Send'}

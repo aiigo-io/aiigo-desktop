@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import RecoveryPanel from '@/components/common/RecoveryPanel';
 import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
@@ -6,6 +7,7 @@ import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw, Sen
 import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE, isTauriUnavailableError } from '@/lib/tauri';
 import { EXPORT_UNAVAILABLE_MESSAGE, parseSecurityError } from '@/lib/security';
 import { formatFreshnessLabel, getFreshnessBadgeClass, FreshnessMetadata } from '@/lib/evm-wallet';
+import { describeWalletRecovery, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 import { shortAddress, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -147,6 +149,8 @@ const BitcoinAssets: React.FC = () => {
   const [estimatedFees, setEstimatedFees] = useState<{ fast: number; half_hour: number; hour: number } | null>(null);
   const [feeRateType, setFeeRateType] = useState<'fast' | 'half_hour' | 'hour' | 'custom'>('half_hour');
   const [isSendAll, setIsSendAll] = useState(false);
+  const [walletFlowRecovery, setWalletFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
+  const [sendFlowRecovery, setSendFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
 
   // Load wallets on mount
   useEffect(() => {
@@ -309,6 +313,7 @@ const BitcoinAssets: React.FC = () => {
 
   const handleCreateMnemonic = async () => {
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
       // Generate mnemonic
       const mnemonic = await invoke<string>('bitcoin_create_mnemonic');
@@ -329,7 +334,7 @@ const BitcoinAssets: React.FC = () => {
       loadWallets();
     } catch (error) {
       console.error('Error creating wallet:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'bitcoin' }));
     } finally {
       setIsLoading(false);
     }
@@ -339,6 +344,7 @@ const BitcoinAssets: React.FC = () => {
     if (!mnemonicInput.trim()) return;
 
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
       // Import and create wallet from mnemonic
       const response = await invoke<CreateWalletResponse>('bitcoin_create_wallet_from_mnemonic', {
@@ -352,7 +358,7 @@ const BitcoinAssets: React.FC = () => {
       setIsDialogOpen(false);
     } catch (error) {
       console.error('Error importing mnemonic:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'bitcoin' }));
     } finally {
       setIsLoading(false);
     }
@@ -362,6 +368,7 @@ const BitcoinAssets: React.FC = () => {
     if (!privateKeyInput.trim()) return;
 
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
       // Import and create wallet from private key
       const response = await invoke<CreateWalletResponse>('bitcoin_create_wallet_from_private_key', {
@@ -375,7 +382,7 @@ const BitcoinAssets: React.FC = () => {
       setIsDialogOpen(false);
     } catch (error) {
       console.error('Error importing private key:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'bitcoin' }));
     } finally {
       setIsLoading(false);
     }
@@ -403,6 +410,7 @@ const BitcoinAssets: React.FC = () => {
     setShowMnemonicDialog(false);
     setGeneratedMnemonic(null);
     setIsDialogOpen(false);
+    setWalletFlowRecovery(null);
   };
 
   const handleExportPrivateKey = async (walletId: string) => {
@@ -490,6 +498,7 @@ const BitcoinAssets: React.FC = () => {
     setEstimatedFees(null);
     setFeeRateType('half_hour');
     setIsSendAll(false);
+    setSendFlowRecovery(null);
     setSelectedWalletForSend(null);
     setIsSendDialogOpen(false);
   };
@@ -541,6 +550,7 @@ const BitcoinAssets: React.FC = () => {
 
   const handlePrepareSendReview = () => {
     try {
+      setSendFlowRecovery(null);
       const reviewedIntent = buildCurrentBitcoinSendIntent();
       setPendingSendReview(reviewedIntent);
     } catch (error) {
@@ -578,6 +588,7 @@ const BitcoinAssets: React.FC = () => {
     }
 
     setIsSending(true);
+    setSendFlowRecovery(null);
     try {
       const response = await invoke<{ tx_hash: string; message: string }>('send_bitcoin', {
         request: pendingSendReview.request
@@ -612,13 +623,14 @@ const BitcoinAssets: React.FC = () => {
 
       const securityError = parseSecurityError(error);
       if (securityError === 'locked' || securityError === 'expired') {
+        setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'bitcoin' }));
         void requestUnlock({
           prompt: 'Unlock to continue sending BTC.',
           reason: securityError,
           onUnlockSuccess: handleConfirmReviewedSend,
         });
       } else {
-        toast.error(`Error: ${error}`);
+        setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'bitcoin' }));
       }
     } finally {
       setIsSending(false);
@@ -653,7 +665,12 @@ const BitcoinAssets: React.FC = () => {
               <p className="text-xs text-muted-foreground font-medium">{wallets.length} wallet{wallets.length !== 1 ? 's' : ''}</p>
             </div>
           </div>
-          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <Dialog open={isDialogOpen} onOpenChange={(open) => {
+            setIsDialogOpen(open);
+            if (!open) {
+              setWalletFlowRecovery(null);
+            }
+          }}>
             <DialogTrigger asChild>
               <Button className="gap-2">
                 <Plus className="w-4 h-4" />
@@ -664,6 +681,9 @@ const BitcoinAssets: React.FC = () => {
               <DialogHeader>
                 <DialogTitle>Bitcoin Wallet Management</DialogTitle>
               </DialogHeader>
+              {walletFlowRecovery && (
+                <RecoveryPanel guidance={walletFlowRecovery} />
+              )}
               <Tabs defaultValue="create" className="w-full">
                 <TabsList className="grid w-full grid-cols-3">
                   <TabsTrigger value="create">Create New</TabsTrigger>
@@ -969,6 +989,9 @@ const BitcoinAssets: React.FC = () => {
             </DialogHeader>
             {!pendingSendReview ? (
             <div className="space-y-4 py-4">
+              {sendFlowRecovery && (
+                <RecoveryPanel guidance={sendFlowRecovery} className="text-left" />
+              )}
               <div className="space-y-2">
                 <Label>From Wallet</Label>
                 <div className="p-3 bg-muted/50 rounded-lg text-sm border border-border/50">
@@ -1134,6 +1157,9 @@ const BitcoinAssets: React.FC = () => {
             </div>
             ) : (
             <div className="space-y-5 py-2">
+              {sendFlowRecovery && (
+                <RecoveryPanel guidance={sendFlowRecovery} className="text-left" />
+              )}
               <div className="rounded-xl border border-orange-500/20 bg-orange-500/10 p-4 space-y-2">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-xs uppercase tracking-[0.2em] text-orange-200/80">Real Chain Action</span>

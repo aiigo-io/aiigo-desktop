@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowUpDown, Settings2, Info, RefreshCw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import RecoveryPanel from '@/components/common/RecoveryPanel';
 import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { parseSecurityError } from '@/lib/security';
@@ -35,6 +36,7 @@ import {
     getFreshnessBadgeClass,
     getWalletSyncBanner,
 } from '@/lib/evm-wallet';
+import { describeWalletRecovery, type WalletRecoveryFlow, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 
 interface WalletInfo {
     id: string;
@@ -88,6 +90,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const [pendingAction, setPendingAction] = useState<SwapActionIntent | null>(null);
     const [isPreparingAction, setIsPreparingAction] = useState(false);
     const [isSubmittingAction, setIsSubmittingAction] = useState(false);
+    const [lastActionFlow, setLastActionFlow] = useState<WalletRecoveryFlow>('send-asset');
+    const [flowRecovery, setFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
 
     // Load balances when wallet or chain changes
     useEffect(() => {
@@ -224,8 +228,12 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const handleButtonClick = async () => {
         if (!wallet) return;
 
+        const currentFlow: WalletRecoveryFlow = needsApproval ? 'approve-allowance' : 'send-asset';
+
         try {
             setIsPreparingAction(true);
+            setFlowRecovery(null);
+            setLastActionFlow(currentFlow);
             const intent = needsApproval
                 ? await prepareApproveAction()
                 : await prepareSwapExecutionAction();
@@ -243,6 +251,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     reason: securityError,
                     onUnlockSuccess: handleButtonClick,
                 });
+            } else {
+                setFlowRecovery(describeWalletRecovery(currentFlow, error, { chainFamily: 'evm' }));
             }
         } finally {
             setIsPreparingAction(false);
@@ -252,8 +262,12 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const handleConfirmAction = async () => {
         if (!pendingAction) return;
 
+        const currentFlow: WalletRecoveryFlow = pendingAction.kind === 'swap-approve' ? 'approve-allowance' : 'send-asset';
+
         try {
             setIsSubmittingAction(true);
+            setFlowRecovery(null);
+            setLastActionFlow(currentFlow);
             if (pendingAction.kind === 'swap-approve') {
                 await submitApproveAction(pendingAction);
             } else {
@@ -269,6 +283,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
             const securityError = parseSecurityError(error);
             if (securityError === 'locked' || securityError === 'expired') {
+                setFlowRecovery(describeWalletRecovery(lastActionFlow, error, { chainFamily: 'evm' }));
                 setPendingAction(null);
                 await requestUnlock({
                     prompt: pendingAction.kind === 'swap-approve'
@@ -280,11 +295,19 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                 return;
             }
 
+            setFlowRecovery(describeWalletRecovery(currentFlow, error, { chainFamily: 'evm' }));
             setPendingAction(null);
         } finally {
             setIsSubmittingAction(false);
         }
     };
+
+    const quoteRecovery = quoteError
+        ? describeWalletRecovery('send-asset', quoteError, { chainFamily: 'evm' })
+        : null;
+    const txRecovery = txStatus.status === 'error' && txStatus.error
+        ? describeWalletRecovery(lastActionFlow, txStatus.error, { chainFamily: 'evm' })
+        : null;
 
     const formatOutputAmount = (): string => {
         if (isLoadingQuote) return '...';
@@ -492,13 +515,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
                     {/* Quote Error */}
                     {quoteError && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20">
-                            <AlertTriangle className="size-4 mt-0.5 text-destructive" />
-                            <div className="flex-1 text-xs">
-                                <p className="font-semibold text-destructive">Quote Error</p>
-                                <p className="text-destructive/80">{quoteError}</p>
-                            </div>
-                        </div>
+                        <RecoveryPanel guidance={quoteRecovery ?? describeWalletRecovery('send-asset', quoteError, { chainFamily: 'evm' })} />
                     )}
 
                     {/* Transaction Status */}
@@ -512,14 +529,10 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                         </div>
                     )}
 
+                    {flowRecovery && <RecoveryPanel guidance={flowRecovery} />}
+
                     {txStatus.status === 'error' && txStatus.error && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20">
-                            <AlertTriangle className="size-4 mt-0.5 text-destructive" />
-                            <div className="flex-1 text-xs">
-                                <p className="font-semibold text-destructive">Transaction Failed</p>
-                                <p className="text-destructive/80">{txStatus.error}</p>
-                            </div>
-                        </div>
+                        <RecoveryPanel guidance={txRecovery ?? describeWalletRecovery(lastActionFlow, txStatus.error, { chainFamily: 'evm' })} />
                     )}
 
                     {/* Quote Details */}
