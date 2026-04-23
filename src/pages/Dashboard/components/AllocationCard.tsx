@@ -20,18 +20,25 @@ export const AllocationCard: React.FC<AllocationCardProps> = ({ allocation }) =>
                                 <div className="flex items-center gap-2">
                                     <span className="font-medium text-foreground">{asset.symbol}</span>
                                     <span className="text-xs text-muted-foreground">{asset.name}</span>
+                                    {asset.valuation_status === 'unpriced' && (
+                                        <span className="rounded-sm border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-mono uppercase text-amber-700">
+                                            Unpriced
+                                        </span>
+                                    )}
                                 </div>
                                 <div className="text-right">
                                     <span className="font-mono text-foreground">{asset.percentage.toFixed(1)}%</span>
                                     <span className="text-xs text-muted-foreground ml-2 font-mono">
-                                        ${asset.value_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                        {asset.valuation_status === 'unpriced'
+                                            ? '$--'
+                                            : `$${asset.value_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                                     </span>
                                 </div>
                             </div>
                             <div className="w-full bg-muted/30 rounded-full h-1 overflow-hidden">
                                 <div
                                     className={`h-full ${asset.color} opacity-80 rounded-full transition-all duration-500`}
-                                    style={{ width: `${Math.max(asset.percentage, 1)}%` }}
+                                    style={{ width: `${Math.max(asset.valuation_status === 'unpriced' ? 1 : asset.percentage, 1)}%` }}
                                 />
                             </div>
                         </div>

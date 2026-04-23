@@ -19,14 +19,12 @@ pub fn from_fetch(
         stale_after_secs,
     );
 
-    // ADR-0003: PriceStatus has no Cached variant; any non-Fresh
-    // known-age result maps to Stale intentionally.
     let status = match freshness {
         super::types::FreshnessStatus::Fresh => PriceStatus::Fresh,
-        super::types::FreshnessStatus::Cached
-        | super::types::FreshnessStatus::Stale
-        | super::types::FreshnessStatus::Partial
-        | super::types::FreshnessStatus::Unavailable => PriceStatus::Stale,
+        super::types::FreshnessStatus::Cached => PriceStatus::Cached,
+        super::types::FreshnessStatus::Stale => PriceStatus::Stale,
+        super::types::FreshnessStatus::Partial => PriceStatus::Partial,
+        super::types::FreshnessStatus::Unavailable => PriceStatus::Unavailable,
     };
 
     PriceState {
@@ -72,7 +70,9 @@ mod tests {
     fn price_status_variants_round_trip_with_snake_case() {
         let cases = [
             (PriceStatus::Fresh, "\"fresh\""),
+            (PriceStatus::Cached, "\"cached\""),
             (PriceStatus::Stale, "\"stale\""),
+            (PriceStatus::Partial, "\"partial\""),
             (PriceStatus::Unavailable, "\"unavailable\""),
             (PriceStatus::Synthetic, "\"synthetic\""),
         ];
@@ -127,4 +127,5 @@ mod tests {
         assert_eq!(state.status, PriceStatus::Fresh);
         assert!(is_usable_fresh(&state));
     }
+
 }

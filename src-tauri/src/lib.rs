@@ -19,30 +19,6 @@ use tauri_plugin_window_state::Builder as WindowStatePlugin;
 
 use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 
-enum SecretMigrationLogEntry {
-    Info(String),
-    Error(String),
-}
-
-fn build_secret_migration_log_entry(
-    result: Result<db::SecretMigrationReport, String>,
-) -> SecretMigrationLogEntry {
-    match result {
-        Ok(report) => SecretMigrationLogEntry::Info(format!(
-            "Secret migration attempted={} migrated={} skipped={} failed={}",
-            report.attempted_rows, report.migrated_rows, report.skipped_rows, report.failed_rows
-        )),
-        Err(error) => SecretMigrationLogEntry::Error(error),
-    }
-}
-
-fn emit_secret_migration_log(entry: SecretMigrationLogEntry) {
-    match entry {
-        SecretMigrationLogEntry::Info(message) => safe_log!("[INFO] {}", message),
-        SecretMigrationLogEntry::Error(message) => safe_log!("[ERROR] {}", message),
-    }
-}
-
 pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
     let db_path = if cfg!(debug_assertions) {
         "aiigo_debug.db".to_string()
@@ -93,6 +69,15 @@ fn init_tracing() {
         .init();
 }
 
+fn build_app_security(secret_backend: Arc<SecretBackend>) -> AppSecurity {
+    AppSecurity {
+        session_manager: Arc::new(SessionManager::new(Duration::from_secs(300))),
+        keystore: Arc::new(SqliteKeystore::new(&DB, secret_backend.clone()))
+            as Arc<dyn Keystore + Send + Sync>,
+        secret_backend,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = dotenv();
@@ -100,24 +85,7 @@ pub fn run() {
 
     let _ = &*DB;
     let secret_backend = Arc::new(SecretBackend::new());
-    let app_security = AppSecurity {
-        session_manager: Arc::new(SessionManager::new(Duration::from_secs(300))),
-        keystore: Arc::new(SqliteKeystore::new(&DB, secret_backend.clone())) as Arc<dyn Keystore + Send + Sync>,
-        secret_backend: secret_backend.clone(),
-    };
-
-    let _ = secret_backend.refresh_status();
-    let migration_log_entry = match DB.lock() {
-        Ok(db) => build_secret_migration_log_entry(
-            db.run_secret_storage_migration(secret_backend.as_ref())
-                .map_err(|error| format!("Secret migration failed: {}", error)),
-        ),
-        Err(error) => build_secret_migration_log_entry(Err(format!(
-            "Failed to acquire database lock for secret migration: {}",
-            error
-        ))),
-    };
-    emit_secret_migration_log(migration_log_entry);
+    let app_security = build_app_security(secret_backend);
 
     tauri::Builder::default()
         .manage(app_security)
@@ -189,44 +157,37 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_secret_migration_log_entry, SecretMigrationLogEntry};
-    use crate::db::SecretMigrationReport;
+    use super::build_app_security;
+    use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
+    use crate::wallet::security::secret_envelope::{SecretEnvelopeError, StoredSecret};
+    use crate::wallet::security::types::SecretBackendStatus;
+    use std::sync::Arc;
 
-    #[test]
-    fn secret_migration_success_produces_info_entry() {
-        let entry = build_secret_migration_log_entry(Ok(SecretMigrationReport {
-            attempted_rows: 3,
-            migrated_rows: 2,
-            skipped_rows: 1,
-            failed_rows: 0,
-        }));
+    struct PanicOnProbeAdapter;
 
-        match entry {
-            SecretMigrationLogEntry::Info(message) => {
-                assert_eq!(
-                    message,
-                    "Secret migration attempted=3 migrated=2 skipped=1 failed=0"
-                );
-            }
-            SecretMigrationLogEntry::Error(message) => {
-                panic!("expected info entry, got error: {}", message);
-            }
+    impl SecretBackendAdapter for PanicOnProbeAdapter {
+        fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            panic!("startup should not probe the secret backend");
+        }
+
+        fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+            unreachable!("test should not encrypt during startup wiring");
+        }
+
+        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+            unreachable!("test should not decrypt during startup wiring");
         }
     }
 
     #[test]
-    fn secret_migration_failure_produces_error_entry() {
-        let entry = build_secret_migration_log_entry(Err(
-            "Secret migration failed: database is locked".to_string(),
-        ));
+    fn building_app_security_does_not_probe_secret_backend() {
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(PanicOnProbeAdapter)));
 
-        match entry {
-            SecretMigrationLogEntry::Info(message) => {
-                panic!("expected error entry, got info: {}", message);
-            }
-            SecretMigrationLogEntry::Error(message) => {
-                assert_eq!(message, "Secret migration failed: database is locked");
-            }
-        }
+        let app_security = build_app_security(secret_backend.clone());
+
+        assert!(matches!(
+            app_security.secret_backend().current_status(),
+            SecretBackendStatus::Unknown
+        ));
     }
 }

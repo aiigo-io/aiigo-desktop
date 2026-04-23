@@ -111,22 +111,24 @@ export function formatUnixTimestamp(updatedAt: number | null | undefined): strin
 
 export function getChainFreshnessDescription(freshness: FreshnessMetadata): string {
   const updatedAt = formatUnixTimestamp(freshness.updated_at);
+  const failedSources = freshness.failed_sources.join(', ');
+  const failedSourcesSuffix = failedSources ? ` Failed sources: ${failedSources}.` : '';
 
   switch (freshness.status) {
     case 'fresh':
       return updatedAt ? `On-chain data confirmed at ${updatedAt}.` : 'On-chain data is current.';
     case 'cached':
       return updatedAt
-        ? `Showing cached balances from ${updatedAt}.`
+        ? `Showing cached balances from ${updatedAt}.${failedSourcesSuffix}`
         : 'Showing cached balances while refresh metadata is unavailable.';
     case 'stale':
       return updatedAt
-        ? `Latest refresh failed. Showing cached balances from ${updatedAt}.`
-        : 'Latest refresh failed. Showing the last cached balances.';
+        ? `Latest refresh failed. Showing cached balances from ${updatedAt}.${failedSourcesSuffix}`
+        : `Latest refresh failed. Showing the last cached balances.${failedSourcesSuffix}`;
     case 'unavailable':
-      return 'This chain is unavailable and no cached balances could be loaded.';
+      return `This chain is unavailable and no cached balances could be loaded.${failedSourcesSuffix}`;
     case 'partial':
-      return 'This view is only partially up to date.';
+      return `This view is only partially up to date.${failedSourcesSuffix}`;
   }
 }
 

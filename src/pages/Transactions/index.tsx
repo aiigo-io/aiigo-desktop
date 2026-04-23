@@ -52,6 +52,7 @@ const Transactions: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
+  const [syncSummary, setSyncSummary] = useState<{ kind: 'success' | 'partial' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
     fetchTransactions();
@@ -73,8 +74,10 @@ const Transactions: React.FC = () => {
       ]);
       setBitcoinTransactions(btcTxs);
       setEvmTransactions(evmTxs);
+      setSyncSummary(null);
     } catch (error) {
       console.error('Failed to fetch transactions:', error);
+      setSyncSummary({ kind: 'error', message: 'Transaction history could not be loaded from local state.' });
     } finally {
       setLoading(false);
     }
@@ -86,6 +89,7 @@ const Transactions: React.FC = () => {
     }
 
     setSyncing(true);
+  const failedSources: string[] = [];
     try {
       // Get all wallets
       const [btcWallets, evmWallets] = await Promise.all([
@@ -100,6 +104,7 @@ const Transactions: React.FC = () => {
           address: wallet.address,
         }).catch(err => {
           console.error(`Failed to sync Bitcoin wallet ${wallet.id}:`, err);
+          failedSources.push(`bitcoin:${wallet.label ?? wallet.address}`);
           return [];
         })
       );
@@ -124,6 +129,7 @@ const Transactions: React.FC = () => {
             chainId: chain.chainId,
           }).catch(err => {
             console.error(`Failed to sync ${chain.name} for wallet ${wallet.id}:`, err);
+            failedSources.push(`${chain.name}:${wallet.label ?? wallet.address}`);
             return [];
           })
         )
@@ -133,10 +139,32 @@ const Transactions: React.FC = () => {
 
       // Refresh transactions after sync
       await fetchTransactions();
+      if (failedSources.length > 0) {
+        setSyncSummary({
+          kind: 'partial',
+          message: `Sync completed with degraded sources: ${failedSources.join(', ')}`,
+        });
+      } else {
+        setSyncSummary({ kind: 'success', message: 'Transaction history synced from chain.' });
+      }
     } catch (error) {
       console.error('Failed to sync transactions:', error);
+      setSyncSummary({ kind: 'error', message: 'Transaction sync failed before state could be refreshed.' });
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const getSyncSummaryClass = () => {
+    switch (syncSummary?.kind) {
+      case 'success':
+        return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700';
+      case 'partial':
+        return 'border-amber-500/30 bg-amber-500/10 text-amber-700';
+      case 'error':
+        return 'border-red-500/30 bg-red-500/10 text-red-700';
+      default:
+        return '';
     }
   };
 
@@ -366,6 +394,11 @@ const Transactions: React.FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {syncSummary && (
+            <div className={cn('mb-4 rounded-lg border px-3 py-2 text-sm', getSyncSummaryClass())}>
+              {syncSummary.message}
+            </div>
+          )}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-3 mb-6">
               <TabsTrigger value="all">

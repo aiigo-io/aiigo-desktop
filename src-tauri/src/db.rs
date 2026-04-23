@@ -193,6 +193,7 @@ impl Database {
                 total_balance_btc REAL NOT NULL DEFAULT 0,
                 change_24h_amount REAL NOT NULL DEFAULT 0,
                 change_24h_percentage REAL NOT NULL DEFAULT 0,
+                failed_sources TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL
             )",
             [],
@@ -224,6 +225,7 @@ impl Database {
             ("evm_asset_balances", "balance_updated_at", "INTEGER"),
             ("evm_asset_balances", "price_updated_at", "INTEGER"),
             ("evm_asset_balances", "price_source", "TEXT"),
+            ("dashboard_stats", "failed_sources", "TEXT NOT NULL DEFAULT '[]'"),
         ];
 
         for (table, column, definition) in additive_columns {
@@ -313,16 +315,21 @@ impl Database {
         stale_after_secs: i64,
     ) -> SqliteResult<Option<FreshnessMetadata>> {
         let conn = self.conn.lock().unwrap();
-        let sql = format!("SELECT balance_updated_at FROM {table} WHERE id = ?1");
+        let sql = format!("SELECT balance_updated_at, balance_failed_sources FROM {table} WHERE id = ?1");
         let mut stmt = conn.prepare(&sql)?;
 
         let result = stmt.query_row(params![wallet_id], |row| {
             let updated_at = row.get::<_, Option<i64>>(0)?;
+            let failed_sources_json = row.get::<_, Option<String>>(1)?;
+            let failed_sources = failed_sources_json
+                .as_deref()
+                .map(|value| serde_json::from_str::<Vec<String>>(value).unwrap_or_default())
+                .unwrap_or_default();
 
             Ok(FreshnessMetadata {
                 status: classify_age(updated_at, now, fresh_within_secs, stale_after_secs),
                 updated_at,
-                failed_sources: Vec::new(),
+                failed_sources,
             })
         });
 
@@ -1049,10 +1056,10 @@ impl Database {
     }
 
     // Dashboard Methods
-    pub fn get_dashboard_stats(&self) -> SqliteResult<Option<(f64, f64, f64, f64, String)>> {
+    pub fn get_dashboard_stats(&self) -> SqliteResult<Option<(f64, f64, f64, f64, String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, updated_at 
+            "SELECT total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, updated_at, failed_sources 
              FROM dashboard_stats WHERE id = 1",
         )?;
         
@@ -1063,6 +1070,7 @@ impl Database {
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         });
         
@@ -1078,15 +1086,23 @@ impl Database {
         total_usd: f64, 
         total_btc: f64, 
         change_amount: f64, 
-        change_pct: f64
+        change_pct: f64,
+        failed_sources: &[String],
     ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
         
         conn.execute(
-            "INSERT OR REPLACE INTO dashboard_stats (id, total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, updated_at)
-             VALUES (1, ?1, ?2, ?3, ?4, ?5)",
-            params![total_usd, total_btc, change_amount, change_pct, &now],
+            "INSERT OR REPLACE INTO dashboard_stats (id, total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, failed_sources, updated_at)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                total_usd,
+                total_btc,
+                change_amount,
+                change_pct,
+                serde_json::to_string(failed_sources).unwrap_or_else(|_| "[]".to_string()),
+                &now
+            ],
         )?;
         
         Ok(())
@@ -1425,6 +1441,41 @@ mod tests {
         assert_eq!(freshness.status, FreshnessStatus::Cached);
         assert_eq!(freshness.updated_at, None);
         assert!(freshness.failed_sources.is_empty());
+    }
+
+    #[test]
+    fn balance_freshness_reads_failed_sources_from_wallet_metadata() {
+        let db = legacy_database();
+        let conn = db.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE bitcoin_wallets SET balance_failed_sources = ?1 WHERE id = ?2",
+            params!["[\"bitcoin:rpc timeout\"]", "btc-wallet-1"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let freshness = db
+            .get_bitcoin_wallet_balance_freshness("btc-wallet-1", 1_713_499_200, 60, 300)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(freshness.failed_sources, vec!["bitcoin:rpc timeout".to_string()]);
+    }
+
+    #[test]
+    fn dashboard_stats_persist_failed_sources_across_reads() {
+        let db = legacy_database();
+        let failed_sources = vec!["price:btc_unavailable".to_string(), "evm:eth_rpc timeout".to_string()];
+
+        db.update_dashboard_stats(100.0, 0.001, 2.0, 1.5, &failed_sources)
+            .unwrap();
+
+        let stats = db.get_dashboard_stats().unwrap().unwrap();
+
+        assert_eq!(stats.0, 100.0);
+        assert_eq!(stats.1, 0.001);
+        assert_eq!(stats.5, serde_json::to_string(&failed_sources).unwrap());
     }
 
     struct StubAdapter {

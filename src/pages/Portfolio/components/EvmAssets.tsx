@@ -34,8 +34,154 @@ interface CreateWalletResponse {
   wallet: WalletInfo;
 }
 
+interface SelectedSendAsset {
+  chain: string;
+  chainId: number;
+  asset: EvmAssetBalance;
+}
+
+interface SendEvmRequestPayload {
+  wallet_id: string;
+  to_address: string;
+  amount: string;
+  chain: string;
+  chain_id: number;
+  asset_symbol: string;
+  contract_address: string | null;
+  gas_limit: number | null;
+  gas_price: string | null;
+}
+
+interface ReviewedEvmSendIntent {
+  sendKind: 'native' | 'token';
+  actionLabel: string;
+  realChainAction: string;
+  walletLabel: string;
+  fromAddress: string;
+  humanRecipient: string;
+  broadcastTarget: string;
+  amountDisplay: string;
+  gasLimitDisplay: string;
+  gasPriceDisplay: string;
+  riskPoint: string;
+  request: SendEvmRequestPayload;
+  payloadFingerprint: string;
+}
+
 const REFRESH_CACHE_TTL_MS = 60_000; // Align with backend price cache duration
 type RefreshScope = 'single' | 'all';
+
+const isValidEvmAddress = (value: string) => value.startsWith('0x') && value.length === 42;
+
+const buildSendPayloadFingerprint = (request: SendEvmRequestPayload) => [
+  request.wallet_id,
+  request.to_address,
+  request.amount,
+  request.chain,
+  request.chain_id.toString(),
+  request.asset_symbol,
+  request.contract_address ?? '',
+  request.gas_limit === null ? '' : request.gas_limit.toString(),
+  request.gas_price ?? '',
+].join('|');
+
+const buildBaseUnitAmount = (amount: string, decimals: number) => {
+  const normalizedAmount = amount.trim();
+  if (!normalizedAmount) {
+    throw new Error('Enter a valid amount');
+  }
+
+  if (!/^(?:\d+\.\d+|\d+|\.\d+)$/.test(normalizedAmount)) {
+    throw new Error('Enter a valid amount');
+  }
+
+  const [integerPartRaw, fractionalPartRaw = ''] = normalizedAmount.split('.');
+  const integerPart = integerPartRaw === '' ? '0' : integerPartRaw;
+  const significantFractionLength = fractionalPartRaw.replace(/0+$/, '').length;
+
+  if (significantFractionLength > decimals) {
+    throw new Error(`Amount supports up to ${decimals} decimal places`);
+  }
+
+  const fractionalPart = fractionalPartRaw.padEnd(decimals, '0').slice(0, decimals);
+  const baseUnitAmount = `${integerPart}${fractionalPart}`.replace(/^0+(?=\d)/, '');
+
+  if (!/^\d+$/.test(baseUnitAmount) || /^0+$/.test(baseUnitAmount)) {
+    throw new Error('Enter a valid amount');
+  }
+
+  return baseUnitAmount;
+};
+
+const formatGasPriceGwei = (gasPrice: string | null) => {
+  if (!gasPrice) {
+    return 'Auto';
+  }
+
+  const gasPriceWei = Number(gasPrice);
+  if (!Number.isFinite(gasPriceWei)) {
+    return gasPrice;
+  }
+
+  return `${(gasPriceWei / 1e9).toFixed(2)} gwei`;
+};
+
+const buildReviewedEvmSendIntent = ({
+  wallet,
+  selectedAsset,
+  recipient,
+  amount,
+  estimatedGasLimit,
+  estimatedGasPrice,
+}: {
+  wallet: WalletInfo;
+  selectedAsset: SelectedSendAsset;
+  recipient: string;
+  amount: string;
+  estimatedGasLimit: number | null;
+  estimatedGasPrice: string | null;
+}): ReviewedEvmSendIntent => {
+  if (!recipient.trim()) {
+    throw new Error('Enter a recipient address');
+  }
+
+  if (!isValidEvmAddress(recipient.trim())) {
+    throw new Error('Enter a valid EVM recipient address');
+  }
+
+  const amountInBaseUnits = buildBaseUnitAmount(amount, selectedAsset.asset.asset.decimals);
+  const contractAddress = selectedAsset.asset.asset.contract_address;
+  const sendKind = contractAddress === null ? 'native' : 'token';
+  const request: SendEvmRequestPayload = {
+    wallet_id: wallet.id,
+    to_address: recipient.trim(),
+    amount: amountInBaseUnits,
+    chain: selectedAsset.chain,
+    chain_id: selectedAsset.chainId,
+    asset_symbol: selectedAsset.asset.asset.symbol,
+    contract_address: contractAddress,
+    gas_limit: estimatedGasLimit,
+    gas_price: estimatedGasPrice,
+  };
+
+  return {
+    sendKind,
+    actionLabel: sendKind === 'native' ? `Send ${selectedAsset.asset.asset.symbol}` : 'Send Token',
+    realChainAction: sendKind === 'native' ? 'EVM native transfer' : 'ERC20 transfer(address,uint256) contract call',
+    walletLabel: wallet.label,
+    fromAddress: wallet.address,
+    humanRecipient: recipient.trim(),
+    broadcastTarget: contractAddress ?? recipient.trim(),
+    amountDisplay: `${amount} ${selectedAsset.asset.asset.symbol}`,
+    gasLimitDisplay: estimatedGasLimit === null ? 'Auto' : estimatedGasLimit.toString(),
+    gasPriceDisplay: formatGasPriceGwei(estimatedGasPrice),
+    riskPoint: sendKind === 'native'
+      ? 'Native send broadcasts directly to the recipient address shown below.'
+      : 'Token send broadcasts to the token contract, while the recipient is passed inside the ERC20 transfer call.',
+    request,
+    payloadFingerprint: buildSendPayloadFingerprint(request),
+  };
+};
 
 const EvmAssets: React.FC = () => {
   const { requestUnlock } = useSecuritySession();
@@ -62,10 +208,11 @@ const EvmAssets: React.FC = () => {
   // Send EVM State
   const [isSendDialogOpen, setIsSendDialogOpen] = useState(false);
   const [selectedWalletForSend, setSelectedWalletForSend] = useState<WalletInfo | null>(null);
-  const [selectedAssetForSend, setSelectedAssetForSend] = useState<{ chain: string, chainId: number, asset: EvmAssetBalance } | null>(null);
+  const [selectedAssetForSend, setSelectedAssetForSend] = useState<SelectedSendAsset | null>(null);
   const [sendToAddress, setSendToAddress] = useState('');
   const [sendAmount, setSendAmount] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [pendingSendReview, setPendingSendReview] = useState<ReviewedEvmSendIntent | null>(null);
 
   // Gas Estimation State
   const [isEstimatingGas, setIsEstimatingGas] = useState(false);
@@ -88,8 +235,7 @@ const EvmAssets: React.FC = () => {
         return;
       }
 
-      // Basic address validation
-      if (!sendToAddress.startsWith('0x') || sendToAddress.length !== 42) {
+      if (!isValidEvmAddress(sendToAddress)) {
         setGasEstimationError('Invalid address');
         return;
       }
@@ -98,9 +244,7 @@ const EvmAssets: React.FC = () => {
       setGasEstimationError(null);
 
       try {
-        const decimals = selectedAssetForSend.asset.asset.decimals;
-        const amountFloat = parseFloat(sendAmount);
-        const amountInBaseUnits = BigInt(Math.floor(amountFloat * Math.pow(10, decimals))).toString();
+        const amountInBaseUnits = buildBaseUnitAmount(sendAmount, selectedAssetForSend.asset.asset.decimals);
 
         const estimation = await invoke<{ gas_limit: number; gas_price: string }>('evm_estimate_gas', {
           request: {
@@ -422,44 +566,71 @@ const EvmAssets: React.FC = () => {
     }
   };
 
-  const handleSendEvm = async () => {
-    if (!selectedWalletForSend || !selectedAssetForSend || !sendToAddress || !sendAmount) return;
+  const resetSendFlow = () => {
+    setPendingSendReview(null);
+    setSendToAddress('');
+    setSendAmount('');
+    setEstimatedGasLimit(null);
+    setEstimatedGasPrice(null);
+    setGasEstimationError(null);
+    setSelectedWalletForSend(null);
+    setSelectedAssetForSend(null);
+    setIsSendDialogOpen(false);
+  };
+
+  const buildCurrentReviewedSendIntent = () => {
+    if (!selectedWalletForSend || !selectedAssetForSend || !sendToAddress || !sendAmount) {
+      throw new Error('Complete the send form before reviewing it');
+    }
+
+    return buildReviewedEvmSendIntent({
+      wallet: selectedWalletForSend,
+      selectedAsset: selectedAssetForSend,
+      recipient: sendToAddress,
+      amount: sendAmount,
+      estimatedGasLimit,
+      estimatedGasPrice,
+    });
+  };
+
+  const handlePrepareSendReview = () => {
+    try {
+      const reviewedIntent = buildCurrentReviewedSendIntent();
+      setPendingSendReview(reviewedIntent);
+    } catch (error) {
+      const message = typeof error === 'string' ? error : error instanceof Error ? error.message : 'Unable to review EVM send';
+      toast.error(message);
+    }
+  };
+
+  const handleConfirmReviewedSend = async () => {
+    if (!pendingSendReview) return;
 
     if (!isTauriRuntimeAvailable()) {
       toast.error(TAURI_UNAVAILABLE_MESSAGE);
       return;
     }
 
+    let currentReviewedIntent: ReviewedEvmSendIntent;
+    try {
+      currentReviewedIntent = buildCurrentReviewedSendIntent();
+    } catch (error) {
+      setPendingSendReview(null);
+      const message = typeof error === 'string' ? error : error instanceof Error ? error.message : 'Unable to validate the current send payload';
+      toast.error(message);
+      return;
+    }
+
+    if (currentReviewedIntent.payloadFingerprint !== pendingSendReview.payloadFingerprint) {
+      setPendingSendReview(null);
+      toast.error('EVM send payload changed. Review the send again.');
+      return;
+    }
+
     setIsSending(true);
     try {
-      // Amount in the backend is expected in "wei" for eth_sendTransaction but 
-      // let's check what SendEvmRequest expects.
-      // SendEvmRequest amount is "in token units (e.g., '1.5' for 1.5 ETH)"
-      // Actually it's stored as String. 
-      // But wait, look at send_evm_transaction implementation:
-      // let amount_wei = U256::from_dec_str(&request.amount)
-      // This means the backend EXPECTS WEI if it uses from_dec_str on the string.
-      // Wait, let me re-check transaction.rs line 317:
-      // let amount_wei = U256::from_dec_str(&request.amount)
-      // Yes, it expects the raw integer value (wei) as a decimal string.
-
-      const decimals = selectedAssetForSend.asset.asset.decimals;
-      const amountFloat = parseFloat(sendAmount);
-      // Simple conversion to wei-like string (might lose precision for very small amounts, but okay for basic UI)
-      const amountInBaseUnits = BigInt(Math.floor(amountFloat * Math.pow(10, decimals))).toString();
-
       const response = await invoke<{ tx_hash: string; message: string }>('send_evm', {
-        request: {
-          wallet_id: selectedWalletForSend.id,
-          to_address: sendToAddress,
-          amount: amountInBaseUnits,
-          chain: selectedAssetForSend.chain,
-          chain_id: selectedAssetForSend.chainId,
-          asset_symbol: selectedAssetForSend.asset.asset.symbol,
-          contract_address: selectedAssetForSend.asset.asset.contract_address,
-          gas_limit: estimatedGasLimit,
-          gas_price: estimatedGasPrice,
-        }
+        request: pendingSendReview.request
       });
 
       toast.success(
@@ -472,7 +643,7 @@ const EvmAssets: React.FC = () => {
             variant="link"
             size="sm"
             className="p-0 h-auto text-indigo-400 hover:text-indigo-300 justify-start"
-            onClick={() => openExternalLink(getEvmExplorerUrl(response.tx_hash, selectedAssetForSend.chainId))}
+            onClick={() => openExternalLink(getEvmExplorerUrl(response.tx_hash, pendingSendReview.request.chain_id))}
           >
             <ExternalLink className="w-3 h-3 mr-1" />
             View on Explorer
@@ -483,12 +654,12 @@ const EvmAssets: React.FC = () => {
         }
       );
 
+      setPendingSendReview(null);
       setIsSendDialogOpen(false);
-      setSendToAddress('');
-      setSendAmount('');
 
       // Refresh balance after successful send
-      handleRefreshBalance(selectedWalletForSend.id);
+      handleRefreshBalance(pendingSendReview.request.wallet_id);
+      resetSendFlow();
     } catch (error) {
       console.error('Error sending EVM asset:', error);
       if (isTauriUnavailableError(error)) {
@@ -501,7 +672,7 @@ const EvmAssets: React.FC = () => {
         void requestUnlock({
           prompt: 'Unlock to continue sending assets.',
           reason: securityError,
-          onUnlockSuccess: handleSendEvm,
+          onUnlockSuccess: handleConfirmReviewedSend,
         });
       } else {
         alert(`Error: ${error}`);
@@ -519,7 +690,17 @@ const EvmAssets: React.FC = () => {
   ) => {
     setSelectedWalletForSend(wallet);
     setSelectedAssetForSend({ chain, chainId, asset });
+    setPendingSendReview(null);
+    setSendToAddress('');
+    setSendAmount('');
+    setEstimatedGasLimit(null);
+    setEstimatedGasPrice(null);
+    setGasEstimationError(null);
     setIsSendDialogOpen(true);
+  };
+
+  const handleReturnToSendEdit = () => {
+    setPendingSendReview(null);
   };
 
   const totalBalance = Array.from(walletsWithBalances.values()).reduce(
@@ -865,15 +1046,21 @@ const EvmAssets: React.FC = () => {
         </Dialog>
 
         {/* Send EVM Dialog */}
-        <Dialog open={isSendDialogOpen} onOpenChange={setIsSendDialogOpen}>
-          <DialogContent className="sm:max-w-[480px] p-0 border-none shadow-2xl bg-[#1A1B23]">
+        <Dialog open={isSendDialogOpen} onOpenChange={(open) => {
+          setIsSendDialogOpen(open);
+          if (!open) {
+            resetSendFlow();
+          }
+        }}>
+          <DialogContent className={pendingSendReview ? "sm:max-w-[520px] border-none shadow-2xl bg-[#161821] text-white" : "sm:max-w-[480px] p-0 border-none shadow-2xl bg-[#1A1B23]"}>
             <DialogHeader className="p-6 pb-2">
               <DialogTitle className="text-xl font-bold flex items-center justify-between">
-                <span>Send</span>
-                <span className="text-sm font-normal text-muted-foreground mr-8">Cancel</span>
+                <span>{pendingSendReview?.actionLabel ?? (selectedAssetForSend?.asset.asset.contract_address === null ? `Send ${selectedAssetForSend?.asset.asset.symbol ?? ''}` : 'Send Token')}</span>
+                {!pendingSendReview && <span className="text-sm font-normal text-muted-foreground mr-8">Cancel</span>}
               </DialogTitle>
             </DialogHeader>
 
+            {!pendingSendReview ? (
             <div className="px-6 pb-6 space-y-6">
               {/* Asset Selector Display (MetaMask style) */}
               <div className="space-y-2">
@@ -1017,17 +1204,97 @@ const EvmAssets: React.FC = () => {
                 </Button>
                 <Button
                   className="flex-1 h-12 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-lg shadow-indigo-600/20"
-                  onClick={handleSendEvm}
+                  onClick={handlePrepareSendReview}
                   disabled={isSending || !sendToAddress || !sendAmount || parseFloat(sendAmount) <= 0}
                 >
                   {isSending ? (
                     <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   ) : (
-                    "Confirm"
+                    "Review Send"
                   )}
                 </Button>
               </div>
             </div>
+            ) : pendingSendReview && (
+              <div className="space-y-5">
+                <div className="flex items-center justify-between gap-3 px-6">
+                  <Badge variant="secondary" className="bg-indigo-500/15 text-indigo-200 border border-indigo-400/20">
+                    {pendingSendReview.sendKind === 'native' ? 'Native Send' : 'Token Send'}
+                  </Badge>
+                </div>
+                <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/10 p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs uppercase tracking-[0.2em] text-indigo-200/80">Real Chain Action</span>
+                    <span className="text-sm font-semibold text-indigo-100">{pendingSendReview.realChainAction}</span>
+                  </div>
+                  <p className="text-sm text-slate-200">{pendingSendReview.riskPoint}</p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">From Wallet</p>
+                    <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.walletLabel}</p>
+                    <p className="mt-1 break-all font-mono text-xs text-slate-300">{pendingSendReview.fromAddress}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Chain</p>
+                    <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.request.chain}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-300">Chain ID {pendingSendReview.request.chain_id}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 sm:col-span-2">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Human Recipient</p>
+                    <p className="mt-1 break-all font-mono text-sm text-white">{pendingSendReview.humanRecipient}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Asset And Amount</p>
+                    <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.amountDisplay}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-300">Base units {pendingSendReview.request.amount}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Broadcast Target</p>
+                    <p className="mt-1 break-all font-mono text-sm text-white">{pendingSendReview.broadcastTarget}</p>
+                    <p className="mt-1 text-xs text-slate-300">
+                      {pendingSendReview.sendKind === 'native'
+                        ? 'Native transfer broadcasts directly to the recipient address.'
+                        : 'ERC20 send broadcasts to the token contract and passes the recipient as a call argument.'}
+                    </p>
+                  </div>
+                  {pendingSendReview.request.contract_address && (
+                    <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 sm:col-span-2">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-amber-200/80">Token Contract Target</p>
+                      <p className="mt-1 break-all font-mono text-sm text-amber-50">{pendingSendReview.request.contract_address}</p>
+                    </div>
+                  )}
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Gas Limit</p>
+                    <p className="mt-1 font-mono text-sm text-white">{pendingSendReview.gasLimitDisplay}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Gas Price</p>
+                    <p className="mt-1 font-mono text-sm text-white">{pendingSendReview.gasPriceDisplay}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-300">{pendingSendReview.request.gas_price ?? 'auto'}</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1 border-slate-600 text-slate-200 hover:bg-slate-800"
+                    onClick={handleReturnToSendEdit}
+                    disabled={isSending}
+                  >
+                    Back
+                  </Button>
+                  <Button
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white"
+                    onClick={handleConfirmReviewedSend}
+                    disabled={isSending}
+                  >
+                    {isSending ? 'Sending...' : 'Confirm Send'}
+                  </Button>
+                </div>
+              </div>
+            )}
           </DialogContent>
         </Dialog>
 

@@ -36,13 +36,39 @@ pub async fn sync_bitcoin_wallet_balance(
     };
 
     let adapter = BitcoinChainAdapter::new(wallet.address.clone());
-    let snapshot = adapter.fetch_balances().await?;
-    let balance = snapshot
-        .assets
-        .first()
-        .map(|asset| asset.display_amount)
-        .unwrap_or(0.0);
-    let failed_sources = Vec::new();
+    let sync_result = adapter.fetch_balances().await;
+
+    let (balance, failed_sources, partial) = match sync_result {
+        Ok(snapshot) => (
+            snapshot
+                .assets
+                .first()
+                .map(|asset| asset.display_amount)
+                .unwrap_or(0.0),
+            Vec::new(),
+            false,
+        ),
+        Err(error) => {
+            let failed_sources = vec![format!("bitcoin:{}", error)];
+
+            {
+                let db = DB.lock().unwrap();
+                db.update_bitcoin_wallet_sync_metadata(&wallet.id, &failed_sources)
+                    .map_err(|e| format!("Failed to update sync metadata: {}", e))?;
+            }
+
+            return Ok((
+                wallet.clone(),
+                SyncOutcome {
+                    reason,
+                    target: SyncTarget::BitcoinWalletBalance,
+                    updated_at: Utc::now().timestamp(),
+                    partial: true,
+                    failed_sources,
+                },
+            ));
+        }
+    };
 
     {
         let db = DB.lock().unwrap();
@@ -61,7 +87,7 @@ pub async fn sync_bitcoin_wallet_balance(
             reason,
             target: SyncTarget::BitcoinWalletBalance,
             updated_at: Utc::now().timestamp(),
-            partial: false,
+            partial,
             failed_sources,
         },
     ))
@@ -219,14 +245,23 @@ pub async fn refresh_dashboard(
         }
     }
 
-    let btc_price = crate::wallet::evm::price_manager::get_cached_price("BTC").unwrap_or(95000.0);
-
     let result = {
         let db = DB.lock().map_err(|e| e.to_string())?;
 
         let btc_wallets = db.get_bitcoin_wallets().map_err(|e| e.to_string())?;
         let total_btc_balance: f64 = btc_wallets.iter().map(|wallet| wallet.balance).sum();
-        let btc_value_usd = total_btc_balance * btc_price;
+        let btc_price_state = crate::wallet::evm::price_manager::get_cached_price_state("BTC");
+        let btc_price = btc_price_state.price_usd.unwrap_or(0.0);
+        let btc_price_unavailable = total_btc_balance > 0.0
+            && matches!(btc_price_state.status, crate::wallet::state::types::PriceStatus::Unavailable);
+        if btc_price_unavailable {
+            failed_sources.push("price:btc_unavailable".to_string());
+        }
+        let btc_value_usd = if btc_price_unavailable {
+            0.0
+        } else {
+            total_btc_balance * btc_price
+        };
 
         let evm_wallets = db.get_evm_wallets().map_err(|e| e.to_string())?;
         let mut total_evm_usd = 0.0;
@@ -243,15 +278,18 @@ pub async fn refresh_dashboard(
         }
 
         let total_portfolio_usd = btc_value_usd + total_evm_usd;
-        let total_portfolio_btc = if btc_price > 0.0 {
+        let total_portfolio_btc = if btc_price > 0.0 && !btc_price_unavailable {
             total_portfolio_usd / btc_price
         } else {
             0.0
         };
 
-        let btc_24h_change = crate::wallet::evm::price_manager::get_cached_24h_change("BTC")
-            .unwrap_or(0.0);
-        let btc_change_amount = btc_value_usd * (btc_24h_change / 100.0);
+        let btc_24h_change = crate::wallet::evm::price_manager::get_cached_24h_change("BTC").unwrap_or(0.0);
+        let btc_change_amount = if btc_price_unavailable {
+            0.0
+        } else {
+            btc_value_usd * (btc_24h_change / 100.0)
+        };
 
         let mut evm_change_amount = 0.0;
         for asset in &all_assets {
@@ -272,10 +310,13 @@ pub async fn refresh_dashboard(
             total_portfolio_btc,
             total_change_amount,
             total_change_percentage,
+            &failed_sources,
         )
         .map_err(|e| e.to_string())?;
-        db.save_portfolio_snapshot(total_portfolio_usd)
-            .map_err(|e| e.to_string())?;
+        if !btc_price_unavailable {
+            db.save_portfolio_snapshot(total_portfolio_usd)
+                .map_err(|e| e.to_string())?;
+        }
 
         DashboardRefreshResult {
             total_balance_usd: total_portfolio_usd,

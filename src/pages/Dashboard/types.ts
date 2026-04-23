@@ -23,6 +23,7 @@ export interface AssetAllocation {
     percentage: number;
     value_usd: number;
     color: string;
+    valuation_status: 'valued' | 'unpriced';
 }
 
 
@@ -69,6 +70,7 @@ export type UnifiedTransaction = {
     id: string;
     type: 'bitcoin' | 'evm';
     tx_type: 'send' | 'receive' | 'approve' | 'contract';
+    status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
     tx_hash: string;
     asset_symbol: string;
     amount: string;

@@ -4,9 +4,18 @@ import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { parseSecurityError } from '@/lib/security';
 import { useSwap } from '../hooks/useSwap';
+import { SwapActionIntent } from '../types';
 import { SUPPORTED_CHAINS, MAX_PRICE_IMPACT_WARNING, MAX_PRICE_IMPACT_BLOCK } from '../constants';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import {
     Select,
     SelectContent,
@@ -64,9 +73,11 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         setSlippage,
         needsApproval,
         isCheckingApproval,
-        approveToken,
+        prepareApproveAction,
+        submitApproveAction,
         txStatus,
-        executeSwap,
+        prepareSwapExecutionAction,
+        submitSwapExecutionAction,
     } = useSwap(wallet);
 
     const [balances, setBalances] = useState<Map<string, number>>(new Map());
@@ -74,6 +85,9 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const [showSlippageSettings, setShowSlippageSettings] = useState(false);
     const [chainFreshness, setChainFreshness] = useState<FreshnessMetadata | null>(null);
     const [walletResponse, setWalletResponse] = useState<EvmWalletBalancesResponse | null>(null);
+    const [pendingAction, setPendingAction] = useState<SwapActionIntent | null>(null);
+    const [isPreparingAction, setIsPreparingAction] = useState(false);
+    const [isSubmittingAction, setIsSubmittingAction] = useState(false);
 
     // Load balances when wallet or chain changes
     useEffect(() => {
@@ -188,6 +202,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         if (!isValid) return 'Invalid Pair';
         if (hasInsufficientBalance()) return 'Insufficient Balance';
         if (isCheckingApproval) return 'Checking Approval...';
+        if (isPreparingAction) return needsApproval ? 'Preparing Approval...' : 'Preparing Review...';
+        if (isSubmittingAction) return pendingAction?.uiActionLabel ?? 'Submitting...';
         if (needsApproval) return `Approve ${fromToken.symbol}`;
         if (txStatus.status === 'approving') return 'Approving...';
         if (txStatus.status === 'swapping') return 'Swapping...';
@@ -199,6 +215,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         if (isChainUnavailable) return true;
         if (hasInsufficientBalance()) return true;
         if (isCheckingApproval || isLoadingQuote) return true;
+        if (isPreparingAction || isSubmittingAction) return true;
         if (txStatus.status === 'approving' || txStatus.status === 'swapping') return true;
         if (priceImpact > MAX_PRICE_IMPACT_BLOCK) return true;
         return false;
@@ -208,11 +225,11 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         if (!wallet) return;
 
         try {
-            if (needsApproval) {
-                await approveToken();
-            } else {
-                await executeSwap();
-            }
+            setIsPreparingAction(true);
+            const intent = needsApproval
+                ? await prepareApproveAction()
+                : await prepareSwapExecutionAction();
+            setPendingAction(intent);
         } catch (error) {
             console.error('Transaction error:', error);
             if (isTauriUnavailableError(error)) {
@@ -227,6 +244,45 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     onUnlockSuccess: handleButtonClick,
                 });
             }
+        } finally {
+            setIsPreparingAction(false);
+        }
+    };
+
+    const handleConfirmAction = async () => {
+        if (!pendingAction) return;
+
+        try {
+            setIsSubmittingAction(true);
+            if (pendingAction.kind === 'swap-approve') {
+                await submitApproveAction(pendingAction);
+            } else {
+                await submitSwapExecutionAction(pendingAction);
+            }
+            setPendingAction(null);
+        } catch (error) {
+            console.error('Confirmation error:', error);
+            if (isTauriUnavailableError(error)) {
+                setPendingAction(null);
+                return;
+            }
+
+            const securityError = parseSecurityError(error);
+            if (securityError === 'locked' || securityError === 'expired') {
+                setPendingAction(null);
+                await requestUnlock({
+                    prompt: pendingAction.kind === 'swap-approve'
+                        ? `Unlock to approve ${fromToken.symbol}.`
+                        : 'Unlock to execute swap.',
+                    reason: securityError,
+                    onUnlockSuccess: handleButtonClick,
+                });
+                return;
+            }
+
+            setPendingAction(null);
+        } finally {
+            setIsSubmittingAction(false);
         }
     };
 
@@ -505,7 +561,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                             disabled={isButtonDisabled()}
                             onClick={handleButtonClick}
                         >
-                            {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote) ? (
+                            {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote || isPreparingAction || isSubmittingAction) ? (
                                 <div className="flex items-center gap-2">
                                     <Loader2 className="size-4 animate-spin" />
                                     {getButtonText()}
@@ -526,6 +582,54 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     onClose={() => setShowSlippageSettings(false)}
                 />
             )}
+
+            <Dialog open={Boolean(pendingAction)} onOpenChange={(open) => !open && setPendingAction(null)}>
+                <DialogContent className="sm:max-w-[560px]">
+                    <DialogHeader className="space-y-2">
+                        <DialogTitle>{pendingAction?.uiActionLabel}</DialogTitle>
+                        <DialogDescription>
+                            Real chain action: {pendingAction?.chainActionType}
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {pendingAction && (
+                        <div className="space-y-4">
+                            <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                                <div className="font-semibold text-amber-100">Highest Risk Point</div>
+                                <div className="mt-1 leading-relaxed">{pendingAction.highestRiskPoint}</div>
+                            </div>
+
+                            {pendingAction.kind === 'swap-execute' && (
+                                <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 px-4 py-3 text-sm">
+                                    <div className="font-semibold text-slate-100">Frozen Payload Snapshot</div>
+                                    <div className="mt-2 space-y-1 text-slate-300">
+                                        <div>Calldata preview: {pendingAction.preparedTransactionSnapshot.calldataPreview}</div>
+                                        <div>Calldata length: {pendingAction.preparedTransactionSnapshot.calldataLength}</div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="space-y-2 rounded-xl border px-4 py-3">
+                                {pendingAction.confirmationFields.map((field) => (
+                                    <div key={`${pendingAction.kind}-${field.label}`} className="flex items-start justify-between gap-4 text-sm">
+                                        <span className="min-w-0 text-muted-foreground">{field.label}</span>
+                                        <span className="max-w-[60%] break-all text-right font-medium text-foreground">{field.value}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setPendingAction(null)} disabled={isSubmittingAction}>
+                            Cancel
+                        </Button>
+                        <Button onClick={handleConfirmAction} disabled={isSubmittingAction}>
+                            {isSubmittingAction ? 'Submitting...' : `Confirm ${pendingAction?.uiActionLabel ?? 'Action'}`}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </>
     );
 };

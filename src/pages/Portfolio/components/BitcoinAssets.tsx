@@ -29,7 +29,7 @@ interface PriceState {
   price_usd: number | null;
   price_source: string | null;
   price_updated_at: number | null;
-  status: 'fresh' | 'stale' | 'unavailable' | 'synthetic';
+  status: 'fresh' | 'cached' | 'stale' | 'partial' | 'unavailable' | 'synthetic';
 }
 
 interface BalanceState {
@@ -38,6 +38,74 @@ interface BalanceState {
   chain_id: string | null;
   freshness: FreshnessMetadata;
 }
+
+interface ReviewedBitcoinSendIntent {
+  actionLabel: string;
+  realChainAction: string;
+  walletLabel: string;
+  fromAddress: string;
+  recipientAddress: string;
+  amountDisplay: string;
+  amountSats: string;
+  feeRateDisplay: string;
+  estimatedFeeDisplay: string;
+  totalChargeDisplay: string;
+  sendAll: boolean;
+  riskPoint: string;
+  request: {
+    wallet_id: string;
+    to_address: string;
+    amount: number;
+    fee_rate: number;
+    send_all: boolean;
+  };
+  payloadFingerprint: string;
+}
+
+const SATOSHIS_PER_BTC = 100_000_000n;
+
+const normalizeBtcAmountToSats = (amount: string) => {
+  const normalizedAmount = amount.trim();
+  if (!normalizedAmount) {
+    throw new Error('Enter a valid BTC amount');
+  }
+
+  if (!/^(?:\d+\.\d+|\d+|\.\d+)$/.test(normalizedAmount)) {
+    throw new Error('Enter a valid BTC amount');
+  }
+
+  const [integerPartRaw, fractionalPartRaw = ''] = normalizedAmount.split('.');
+  const integerPart = integerPartRaw === '' ? '0' : integerPartRaw;
+  const significantFractionLength = fractionalPartRaw.replace(/0+$/, '').length;
+  if (significantFractionLength > 8) {
+    throw new Error('BTC amount supports up to 8 decimal places');
+  }
+
+  const fractionalPart = fractionalPartRaw.padEnd(8, '0').slice(0, 8);
+  const satoshiValue = `${integerPart}${fractionalPart}`.replace(/^0+(?=\d)/, '');
+  if (!/^\d+$/.test(satoshiValue) || /^0+$/.test(satoshiValue)) {
+    throw new Error('Enter a valid BTC amount');
+  }
+
+  return satoshiValue;
+};
+
+const formatBtcFromSats = (satoshis: string) => {
+  const satoshiValue = BigInt(satoshis);
+  const wholePart = satoshiValue / SATOSHIS_PER_BTC;
+  const fractionalPart = (satoshiValue % SATOSHIS_PER_BTC).toString().padStart(8, '0');
+  return `${wholePart.toString()}.${fractionalPart}`;
+};
+
+const estimateBtcFeeSats = (feeRate: number) => Math.max(1, Math.trunc(feeRate)) * 148;
+
+const buildBitcoinPayloadFingerprint = (request: ReviewedBitcoinSendIntent['request']) => [
+  request.wallet_id,
+  request.to_address,
+  request.amount.toString(),
+  request.fee_rate.toString(),
+  request.send_all ? '1' : '0',
+].join('|');
 
 const BitcoinAssets: React.FC = () => {
   const { requestUnlock } = useSecuritySession();
@@ -72,6 +140,7 @@ const BitcoinAssets: React.FC = () => {
   const [sendAmount, setSendAmount] = useState('');
   const [sendFeeRate, setSendFeeRate] = useState<number>(1);
   const [isSending, setIsSending] = useState(false);
+  const [pendingSendReview, setPendingSendReview] = useState<ReviewedBitcoinSendIntent | null>(null);
 
   // Fee Estimation State
   const [isEstimatingFees, setIsEstimatingFees] = useState(false);
@@ -168,7 +237,7 @@ const BitcoinAssets: React.FC = () => {
     }
 
     try {
-      const price = await invoke<PriceState>('get_bitcoin_price');
+      const price = await invoke<PriceState>('state_get_bitcoin_price_state');
       setBtcPrice(price);
     } catch (error) {
       console.error('Error fetching BTC price from backend:', error);
@@ -185,8 +254,12 @@ const BitcoinAssets: React.FC = () => {
     switch (status) {
       case 'fresh':
         return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600';
+      case 'cached':
+        return 'border-slate-500/30 bg-slate-500/10 text-slate-600';
       case 'stale':
         return 'border-amber-500/30 bg-amber-500/10 text-amber-700';
+      case 'partial':
+        return 'border-sky-500/30 bg-sky-500/10 text-sky-700';
       case 'synthetic':
         return 'border-sky-500/30 bg-sky-500/10 text-sky-700';
       case 'unavailable':
@@ -198,12 +271,35 @@ const BitcoinAssets: React.FC = () => {
     switch (status) {
       case 'fresh':
         return 'Fresh';
+      case 'cached':
+        return 'Cached';
       case 'stale':
         return 'Stale';
+      case 'partial':
+        return 'Partial';
       case 'synthetic':
         return 'Synthetic';
       case 'unavailable':
         return 'Unavailable';
+    }
+  };
+
+  const getPriceStatusDescription = (priceState: PriceState) => {
+    const updatedLabel = formatUpdatedLabel(priceState.price_updated_at, 'Price timestamp unavailable');
+
+    switch (priceState.status) {
+      case 'fresh':
+        return `${updatedLabel}. Market price is current.`;
+      case 'cached':
+        return `${updatedLabel}. Showing cached market price.`;
+      case 'stale':
+        return `${updatedLabel}. Showing stale market price until refresh succeeds.`;
+      case 'partial':
+        return `${updatedLabel}. Price view is partially refreshed.`;
+      case 'synthetic':
+        return `${updatedLabel}. This is a synthetic fallback price, not a live market quote.`;
+      case 'unavailable':
+        return 'BTC market price is currently unavailable.';
     }
   };
 
@@ -375,6 +471,9 @@ const BitcoinAssets: React.FC = () => {
       ]);
       setWallets(wallets.map(w => w.id === walletId ? updatedWallet : w));
       setWalletBalanceStates(prev => new Map(prev).set(walletId, updatedBalanceState));
+      if (updatedBalanceState.freshness.status !== 'fresh') {
+        toast.warning('BTC balance refresh is degraded. Showing the most honest state available.');
+      }
     } catch (error) {
       console.error('Error refreshing balance:', error);
       alert(`Error refreshing balance: ${error}`);
@@ -383,24 +482,105 @@ const BitcoinAssets: React.FC = () => {
     }
   };
 
-  const handleSendBtc = async () => {
-    if (!selectedWalletForSend || !sendToAddress || !sendAmount) return;
+  const resetSendFlow = () => {
+    setPendingSendReview(null);
+    setSendToAddress('');
+    setSendAmount('');
+    setSendFeeRate(1);
+    setEstimatedFees(null);
+    setFeeRateType('half_hour');
+    setIsSendAll(false);
+    setSelectedWalletForSend(null);
+    setIsSendDialogOpen(false);
+  };
+
+  const buildCurrentBitcoinSendIntent = (): ReviewedBitcoinSendIntent => {
+    if (!selectedWalletForSend || !sendToAddress || !sendAmount) {
+      throw new Error('Complete the BTC send form before reviewing it');
+    }
+
+    const recipientAddress = sendToAddress.trim();
+    if (!recipientAddress) {
+      throw new Error('Enter a recipient address');
+    }
+
+    const amountSats = normalizeBtcAmountToSats(sendAmount);
+    const amountBtcString = formatBtcFromSats(amountSats);
+    const amountValue = Number(amountBtcString);
+    const normalizedFeeRate = Math.max(1, Math.trunc(sendFeeRate || 1));
+    const estimatedFeeSats = estimateBtcFeeSats(normalizedFeeRate);
+    const totalChargeSats = BigInt(amountSats) + BigInt(estimatedFeeSats);
+
+    const request = {
+      wallet_id: selectedWalletForSend.id,
+      to_address: recipientAddress,
+      amount: amountValue,
+      fee_rate: normalizedFeeRate,
+      send_all: isSendAll,
+    };
+
+    return {
+      actionLabel: 'Send BTC',
+      realChainAction: 'Bitcoin transfer',
+      walletLabel: selectedWalletForSend.label,
+      fromAddress: selectedWalletForSend.address,
+      recipientAddress,
+      amountDisplay: `${amountBtcString} BTC`,
+      amountSats,
+      feeRateDisplay: `${normalizedFeeRate} sat/vB`,
+      estimatedFeeDisplay: `${formatBtcFromSats(estimatedFeeSats.toString())} BTC`,
+      totalChargeDisplay: `${formatBtcFromSats(totalChargeSats.toString())} BTC`,
+      sendAll: isSendAll,
+      riskPoint: isSendAll
+        ? 'Send-all spends the wallet balance using the reviewed fee rate, leaving no intentional remainder in this wallet.'
+        : 'Bitcoin sends are irreversible once broadcast, so recipient and fee rate must match the reviewed transfer.',
+      request,
+      payloadFingerprint: buildBitcoinPayloadFingerprint(request),
+    };
+  };
+
+  const handlePrepareSendReview = () => {
+    try {
+      const reviewedIntent = buildCurrentBitcoinSendIntent();
+      setPendingSendReview(reviewedIntent);
+    } catch (error) {
+      const message = typeof error === 'string' ? error : error instanceof Error ? error.message : 'Unable to review BTC send';
+      toast.error(message);
+    }
+  };
+
+  const handleReturnToSendEdit = () => {
+    setPendingSendReview(null);
+  };
+
+  const handleConfirmReviewedSend = async () => {
+    if (!pendingSendReview) return;
 
     if (!isTauriRuntimeAvailable()) {
       toast.error(TAURI_UNAVAILABLE_MESSAGE);
       return;
     }
 
+    let currentReviewedIntent: ReviewedBitcoinSendIntent;
+    try {
+      currentReviewedIntent = buildCurrentBitcoinSendIntent();
+    } catch (error) {
+      setPendingSendReview(null);
+      const message = typeof error === 'string' ? error : error instanceof Error ? error.message : 'Unable to validate the current BTC send payload';
+      toast.error(message);
+      return;
+    }
+
+    if (currentReviewedIntent.payloadFingerprint !== pendingSendReview.payloadFingerprint) {
+      setPendingSendReview(null);
+      toast.error('BTC send payload changed. Review the send again.');
+      return;
+    }
+
     setIsSending(true);
     try {
       const response = await invoke<{ tx_hash: string; message: string }>('send_bitcoin', {
-        request: {
-          wallet_id: selectedWalletForSend.id,
-          to_address: sendToAddress,
-          amount: parseFloat(sendAmount),
-          fee_rate: sendFeeRate,
-          send_all: isSendAll,
-        }
+        request: pendingSendReview.request
       });
 
       toast.success(
@@ -418,12 +598,11 @@ const BitcoinAssets: React.FC = () => {
         { duration: 10000 }
       );
 
-      setIsSendDialogOpen(false);
-      setSendToAddress('');
-      setSendAmount('');
+      setPendingSendReview(null);
 
       // Refresh balance after successful send
-      handleRefreshBalance(selectedWalletForSend.id);
+      handleRefreshBalance(pendingSendReview.request.wallet_id);
+      resetSendFlow();
     } catch (error) {
       console.error('Error sending BTC:', error);
       if (isTauriUnavailableError(error)) {
@@ -436,7 +615,7 @@ const BitcoinAssets: React.FC = () => {
         void requestUnlock({
           prompt: 'Unlock to continue sending BTC.',
           reason: securityError,
-          onUnlockSuccess: handleSendBtc,
+          onUnlockSuccess: handleConfirmReviewedSend,
         });
       } else {
         toast.error(`Error: ${error}`);
@@ -448,6 +627,13 @@ const BitcoinAssets: React.FC = () => {
 
   const openSendDialog = (wallet: WalletInfo) => {
     setSelectedWalletForSend(wallet);
+    setPendingSendReview(null);
+    setSendToAddress('');
+    setSendAmount('');
+    setEstimatedFees(null);
+    setFeeRateType('half_hour');
+    setSendFeeRate(1);
+    setIsSendAll(false);
     setIsSendDialogOpen(true);
   };
 
@@ -771,11 +957,17 @@ const BitcoinAssets: React.FC = () => {
         </Dialog>
 
         {/* Send Bitcoin Dialog */}
-        <Dialog open={isSendDialogOpen} onOpenChange={setIsSendDialogOpen}>
-          <DialogContent className="sm:max-w-[450px]">
+        <Dialog open={isSendDialogOpen} onOpenChange={(open) => {
+          setIsSendDialogOpen(open);
+          if (!open) {
+            resetSendFlow();
+          }
+        }}>
+          <DialogContent className={pendingSendReview ? "sm:max-w-[520px] border-none shadow-2xl bg-[#161821] text-white" : "sm:max-w-[450px]"}>
             <DialogHeader>
-              <DialogTitle>Send Bitcoin</DialogTitle>
+              <DialogTitle>{pendingSendReview?.actionLabel ?? 'Send Bitcoin'}</DialogTitle>
             </DialogHeader>
+            {!pendingSendReview ? (
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label>From Wallet</Label>
@@ -917,29 +1109,96 @@ const BitcoinAssets: React.FC = () => {
                   </div>
                 </div>
               </div>
+              <div className="flex gap-3">
+                <Button variant="outline" className="flex-1" onClick={() => setIsSendDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  className="flex-1 bg-orange-600 hover:bg-orange-700 shadow-lg shadow-orange-500/20"
+                  onClick={handlePrepareSendReview}
+                  disabled={isSending || !sendToAddress || !sendAmount || parseFloat(sendAmount) <= 0}
+                >
+                  {isSending ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4 mr-2" />
+                      Review Send
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
-            <div className="flex gap-3">
-              <Button variant="outline" className="flex-1" onClick={() => setIsSendDialogOpen(false)}>
-                Cancel
-              </Button>
-              <Button
-                className="flex-1 bg-orange-600 hover:bg-orange-700 shadow-lg shadow-orange-500/20"
-                onClick={handleSendBtc}
-                disabled={isSending || !sendToAddress || !sendAmount || parseFloat(sendAmount) <= 0}
-              >
-                {isSending ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4 mr-2" />
-                    Send Bitcoin
-                  </>
-                )}
-              </Button>
+            ) : (
+            <div className="space-y-5 py-2">
+              <div className="rounded-xl border border-orange-500/20 bg-orange-500/10 p-4 space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs uppercase tracking-[0.2em] text-orange-200/80">Real Chain Action</span>
+                  <span className="text-sm font-semibold text-orange-50">{pendingSendReview.realChainAction}</span>
+                </div>
+                <p className="text-sm text-slate-200">{pendingSendReview.riskPoint}</p>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">From Wallet</p>
+                  <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.walletLabel}</p>
+                  <p className="mt-1 break-all font-mono text-xs text-slate-300">{pendingSendReview.fromAddress}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Recipient</p>
+                  <p className="mt-1 break-all font-mono text-sm text-white">{pendingSendReview.recipientAddress}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Amount</p>
+                  <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.amountDisplay}</p>
+                  <p className="mt-1 font-mono text-xs text-slate-300">{pendingSendReview.amountSats} sats</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Fee Rate</p>
+                  <p className="mt-1 font-mono text-sm text-white">{pendingSendReview.feeRateDisplay}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Estimated Network Fee</p>
+                  <p className="mt-1 font-mono text-sm text-white">{pendingSendReview.estimatedFeeDisplay}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Total Charge</p>
+                  <p className="mt-1 font-mono text-sm text-white">{pendingSendReview.totalChargeDisplay}</p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/5 p-3 sm:col-span-2">
+                  <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Send-All Mode</p>
+                  <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.sendAll ? 'Enabled' : 'Disabled'}</p>
+                  <p className="mt-1 text-xs text-slate-300">
+                    {pendingSendReview.sendAll
+                      ? 'The reviewed payload is marked as send-all and will spend using the reviewed fee rate.'
+                      : 'The reviewed payload sends only the typed BTC amount.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <Button
+                  variant="outline"
+                  className="flex-1 border-slate-600 text-slate-200 hover:bg-slate-800"
+                  onClick={handleReturnToSendEdit}
+                  disabled={isSending}
+                >
+                  Back
+                </Button>
+                <Button
+                  className="flex-1 bg-orange-600 hover:bg-orange-700 text-white"
+                  onClick={handleConfirmReviewedSend}
+                  disabled={isSending}
+                >
+                  {isSending ? 'Sending...' : 'Confirm Send'}
+                </Button>
+              </div>
             </div>
+            )}
           </DialogContent>
         </Dialog>
 
@@ -965,6 +1224,9 @@ const BitcoinAssets: React.FC = () => {
                 {formatUpdatedLabel(btcPrice.price_updated_at, btcPrice.status === 'unavailable' ? 'Price unavailable' : 'Price status pending')}
               </span>
             </div>
+            <p className="mt-2 text-xs text-muted-foreground max-w-xl">
+              {getPriceStatusDescription(btcPrice)}
+            </p>
           </div>
         )}
 

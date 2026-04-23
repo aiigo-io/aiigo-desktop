@@ -12,6 +12,7 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ stats }) => {
     const updatedAt = stats.freshness.updated_at
         ? new Date(stats.freshness.updated_at * 1000).toLocaleTimeString()
         : null;
+    const failedSources = stats.freshness.failed_sources.join(', ');
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -26,6 +27,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ stats }) => {
                         <span className="rounded-sm bg-muted px-1.5 py-0.5">{freshnessLabel}</span>
                         {updatedAt && <span>{updatedAt}</span>}
                     </div>
+                    {failedSources && (
+                        <p className="mb-3 text-[11px] font-mono text-amber-500">
+                            Partial sources: {failedSources}
+                        </p>
+                    )}
                     <div className="space-y-1">
                         <p className="text-4xl font-light tracking-tight text-foreground font-mono">
                             {stats.total_balance_usd}

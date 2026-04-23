@@ -7,11 +7,13 @@ fn price_to_freshness(source: &str, price_state: &PriceState) -> FreshnessMetada
     let status = match (price_state.status, price_state.price_usd) {
         (_, None) | (PriceStatus::Unavailable, _) => FreshnessStatus::Unavailable,
         (PriceStatus::Fresh, Some(_)) => FreshnessStatus::Fresh,
+        (PriceStatus::Cached, Some(_)) => FreshnessStatus::Cached,
         (PriceStatus::Stale, Some(_)) => FreshnessStatus::Stale,
+        (PriceStatus::Partial, Some(_)) => FreshnessStatus::Partial,
         (PriceStatus::Synthetic, Some(_)) => FreshnessStatus::Partial,
     };
 
-    let failed_sources = if matches!(status, FreshnessStatus::Partial) {
+    let failed_sources = if matches!(status, FreshnessStatus::Partial | FreshnessStatus::Unavailable) {
         vec![source.to_string()]
     } else {
         Vec::new()
@@ -203,15 +205,44 @@ mod tests {
             ),
         ];
 
+        let cached_price_items = vec![
+            (
+                "bitcoin".to_string(),
+                balance(1.0, None, freshness(FreshnessStatus::Fresh, Some(200))),
+                PriceState {
+                    price_usd: Some(100_000.0),
+                    price_source: Some("coingecko".to_string()),
+                    price_updated_at: Some(200),
+                    status: PriceStatus::Cached,
+                },
+            ),
+        ];
+        let partial_price_items = vec![
+            (
+                "bitcoin".to_string(),
+                balance(1.0, None, freshness(FreshnessStatus::Fresh, Some(200))),
+                PriceState {
+                    price_usd: Some(100_000.0),
+                    price_source: Some("coingecko".to_string()),
+                    price_updated_at: Some(200),
+                    status: PriceStatus::Partial,
+                },
+            ),
+        ];
+
         let fresh_portfolio = aggregate(&fresh_items);
         let stale_portfolio = aggregate(&stale_items);
         let synthetic_portfolio = aggregate(&synthetic_items);
         let cached_portfolio = aggregate(&cached_balance_items);
+        let cached_price_portfolio = aggregate(&cached_price_items);
+        let partial_price_portfolio = aggregate(&partial_price_items);
 
         assert_eq!(fresh_portfolio.freshness.status, FreshnessStatus::Fresh);
         assert_eq!(stale_portfolio.freshness.status, FreshnessStatus::Stale);
         assert_eq!(synthetic_portfolio.freshness.status, FreshnessStatus::Partial);
         assert_eq!(cached_portfolio.freshness.status, FreshnessStatus::Cached);
+        assert_eq!(cached_price_portfolio.freshness.status, FreshnessStatus::Cached);
+        assert_eq!(partial_price_portfolio.freshness.status, FreshnessStatus::Partial);
         assert!(synthetic_portfolio.freshness.failed_sources.iter().any(|source| source == "usdc"));
     }
 

@@ -28,7 +28,9 @@ pub struct FreshnessMetadata {
 #[serde(rename_all = "snake_case")]
 pub enum PriceStatus {
     Fresh,
+    Cached,
     Stale,
+    Partial,
     Unavailable,
     Synthetic,
 }
