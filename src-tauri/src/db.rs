@@ -508,6 +508,13 @@ impl Database {
         Ok(bitcoin + evm)
     }
 
+    #[cfg(test)]
+    pub fn clear_security_password_state_for_tests(&self) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM security_auth_state", [])?;
+        Ok(())
+    }
+
     pub(crate) fn load_bitcoin_wallet_secret(
         &self,
         wallet_id: &str,

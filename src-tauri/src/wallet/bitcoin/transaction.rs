@@ -436,6 +436,24 @@ where
         _ => BdkNetwork::Bitcoin,
     };
 
+    // Parse recipient address before network IO so mismatch fails closed locally.
+    let to_address = request.to_address.trim();
+    crate::safe_log!("[INFO] Parsing recipient address: {}", to_address);
+    let recipient = bdk::bitcoin::Address::from_str(to_address)
+        .map_err(|e| {
+            crate::safe_log!("[ERROR] Invalid recipient address '{}': {}", to_address, e);
+            format!("Invalid recipient address: {}", e)
+        })?;
+
+    if recipient.network != bdk_network {
+        crate::safe_log!(
+            "[ERROR] Network mismatch: expected {:?}, got {:?}",
+            bdk_network,
+            recipient.network
+        );
+        return Err(format!("Address network mismatch: expected {:?}, got {:?}", bdk_network, recipient.network));
+    }
+
     let wallet = Wallet::new(&descriptor, None, bdk_network, MemoryDatabase::default())
         .map_err(|e| {
             crate::safe_log!("[ERROR] Failed to create wallet: {}", e);
@@ -458,25 +476,6 @@ where
     let balance = wallet.get_balance().map_err(|e| format!("Failed to get balance: {}", e))?;
     let total_balance = balance.get_total();
     crate::safe_log!("[INFO] Wallet total balance: {} satoshis", total_balance);
-
-    // Parse recipient address
-    let to_address = request.to_address.trim();
-    crate::safe_log!("[INFO] Parsing recipient address: {}", to_address);
-    let recipient = bdk::bitcoin::Address::from_str(to_address)
-        .map_err(|e| {
-            crate::safe_log!("[ERROR] Invalid recipient address '{}': {}", to_address, e);
-            format!("Invalid recipient address: {}", e)
-        })?;
-
-    // Validate network
-    if recipient.network != bdk_network {
-        crate::safe_log!(
-            "[ERROR] Network mismatch: expected {:?}, got {:?}",
-            bdk_network,
-            recipient.network
-        );
-        return Err(format!("Address network mismatch: expected {:?}, got {:?}", bdk_network, recipient.network));
-    }
 
     // Convert BTC to satoshis using floor to avoid rounding up sub-satoshi values
     let amount_satoshis = (request.amount * 100_000_000.0).floor() as u64;
@@ -939,6 +938,37 @@ mod tests {
         cleanup_global_bitcoin_wallet(&wallet.id);
 
         assert!(matches!(result, Err(message) if message == "injected electrum failure"));
+    }
+
+    #[tokio::test]
+    async fn send_command_path_returns_network_mismatch_before_blockchain_connection() {
+        let wallet = insert_global_bitcoin_wallet_with_secret(StoredSecret {
+            secret_data: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
+            secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+        });
+        let secret_backend = ready_secret_backend();
+        let keystore = SqliteKeystore::new(&DB, Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter))));
+        let session = SessionManager::new(Duration::from_secs(30));
+        session.unlock_verified().unwrap();
+
+        let result = send_bitcoin_transaction_with_blockchain_factory(
+            SendBitcoinRequest {
+                wallet_id: wallet.id.clone(),
+                to_address: "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn".to_string(),
+                amount: 0.0001,
+                fee_rate: None,
+                send_all: None,
+            },
+            &secret_backend,
+            &keystore,
+            &session,
+            || Err("blockchain should not be reached".to_string()),
+        )
+        .await;
+
+        cleanup_global_bitcoin_wallet(&wallet.id);
+
+        assert!(matches!(result, Err(message) if message.contains("Address network mismatch")));
     }
 
     #[test]

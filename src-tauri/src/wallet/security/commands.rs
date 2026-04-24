@@ -144,13 +144,17 @@ mod tests {
         security_get_backend_state_inner, security_is_unlocked_inner, security_lock_inner,
         security_setup_password_inner, security_unlock_inner, AppSecurity, StartupSecurityState,
     };
+    use crate::DB;
     use crate::wallet::security::backend::SecretBackend;
     use crate::wallet::security::keystore::Keystore;
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{SecretBackendStatus, SecurityError, SignerOperation};
+    use once_cell::sync::Lazy;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
+
+    static AUTH_STATE_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     struct DummyKeystore;
 
@@ -164,8 +168,16 @@ mod tests {
         }
     }
 
+    fn reset_security_auth_state() {
+        let db = DB.lock().unwrap();
+        db.clear_security_password_state_for_tests().unwrap();
+    }
+
     #[test]
     fn command_layer_unlock_authorize_lock_sequence() {
+        let _guard = AUTH_STATE_TEST_GUARD.lock().unwrap();
+        reset_security_auth_state();
+
         let state = AppSecurity {
             session_manager: Arc::new(SessionManager::new(Duration::from_secs(30))),
             keystore: Arc::new(DummyKeystore),
@@ -187,10 +199,15 @@ mod tests {
         );
         assert_eq!(security_lock_inner(&state), Ok(()));
         assert_eq!(security_is_unlocked_inner(&state), Ok(false));
+
+        reset_security_auth_state();
     }
 
     #[test]
     fn wrong_password_does_not_unlock_session() {
+        let _guard = AUTH_STATE_TEST_GUARD.lock().unwrap();
+        reset_security_auth_state();
+
         let state = AppSecurity {
             session_manager: Arc::new(SessionManager::new(Duration::from_secs(30))),
             keystore: Arc::new(DummyKeystore),
@@ -202,6 +219,8 @@ mod tests {
 
         assert_eq!(security_unlock_inner("wrong", &state), Err(SecurityError::WrongPassword));
         assert_eq!(security_is_unlocked_inner(&state), Ok(false));
+
+        reset_security_auth_state();
     }
 
     #[test]
