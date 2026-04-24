@@ -62,7 +62,7 @@ pub async fn sync_bitcoin_wallet_balance(
                 SyncOutcome {
                     reason,
                     target: SyncTarget::BitcoinWalletBalance,
-                    updated_at: Utc::now().timestamp(),
+                    updated_at: Some(Utc::now().timestamp()),
                     partial: true,
                     failed_sources,
                 },
@@ -86,7 +86,7 @@ pub async fn sync_bitcoin_wallet_balance(
         SyncOutcome {
             reason,
             target: SyncTarget::BitcoinWalletBalance,
-            updated_at: Utc::now().timestamp(),
+            updated_at: Some(Utc::now().timestamp()),
             partial,
             failed_sources,
         },
@@ -201,7 +201,7 @@ pub async fn sync_evm_wallet_balances(
         SyncOutcome {
             reason,
             target: SyncTarget::EvmWalletBalances,
-            updated_at: Utc::now().timestamp(),
+            updated_at: Some(Utc::now().timestamp()),
             partial: !deduped_failed_sources.is_empty(),
             failed_sources: deduped_failed_sources,
         },
@@ -333,7 +333,7 @@ pub async fn refresh_dashboard(
         SyncOutcome {
             reason,
             target: SyncTarget::Dashboard,
-            updated_at: Utc::now().timestamp(),
+            updated_at: Some(Utc::now().timestamp()),
             partial: !deduped_failed_sources.is_empty(),
             failed_sources: deduped_failed_sources,
         },
@@ -352,7 +352,7 @@ pub async fn refresh_bitcoin_history(
         SyncOutcome {
             reason,
             target: SyncTarget::BitcoinHistory,
-            updated_at: Utc::now().timestamp(),
+            updated_at: Some(Utc::now().timestamp()),
             partial: false,
             failed_sources: Vec::new(),
         },
@@ -374,7 +374,7 @@ pub async fn refresh_evm_history(
         SyncOutcome {
             reason,
             target: SyncTarget::EvmHistory,
-            updated_at: Utc::now().timestamp(),
+            updated_at: Some(Utc::now().timestamp()),
             partial: false,
             failed_sources: Vec::new(),
         },
@@ -401,7 +401,7 @@ pub async fn refresh_evm_transaction_receipt_status(
         SyncOutcome {
             reason,
             target: SyncTarget::TransactionLifecycle,
-            updated_at: Utc::now().timestamp(),
+            updated_at: Some(Utc::now().timestamp()),
             partial: false,
             failed_sources: Vec::new(),
         },

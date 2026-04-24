@@ -121,6 +121,19 @@ export function describeWalletRecovery(
     };
   }
 
+  if (securityError === 'secret_backend_unavailable') {
+    return {
+      title: 'Secret backend is unavailable',
+      summary: 'This action stopped before secret access because the local secure storage backend is currently unavailable.',
+      actions: [
+        'Restore local keyring or secret-service access before retrying create, import, sign, or export flows.',
+        'Treat current balances and history as readable local state only until secure secret access recovers.',
+      ],
+      tone: 'warning',
+      rawError,
+    };
+  }
+
   if (normalized.includes('address network mismatch') || normalized.includes('chain mismatch') || normalized.includes('network mismatch')) {
     return {
       title: 'Network mismatch',

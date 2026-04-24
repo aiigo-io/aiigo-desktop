@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 pub mod types;
+pub mod auth;
 pub mod keystore;
 pub mod backend;
 pub mod session;

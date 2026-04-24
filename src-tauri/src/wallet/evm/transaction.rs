@@ -8,6 +8,7 @@ use crate::wallet::evm::private_key::{
     load_authorized_mnemonic, load_authorized_private_key,
     map_security_error,
 };
+use crate::wallet::security::backend::SecretBackend;
 use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
@@ -103,6 +104,13 @@ fn get_etherscan_api_url(chain_id: u64) -> Option<String> {
         10 => Some("https://api-optimistic.etherscan.io/v2/api".to_string()),
         _ => None,
     }
+}
+
+fn estimated_fee_snapshot(gas_limit: U256, gas_price: U256) -> (String, String, f64) {
+    let fee_wei = gas_limit.saturating_mul(gas_price);
+    let fee = fee_wei.as_u128() as f64 / 1e18;
+
+    (gas_limit.to_string(), gas_price.to_string(), fee)
 }
 
 /// Fetch EVM transaction history from the blockchain using Etherscan API
@@ -393,6 +401,7 @@ pub async fn estimate_evm_gas(
 /// Send EVM transaction
 pub async fn send_evm_transaction(
     request: SendEvmRequest,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
@@ -406,6 +415,7 @@ pub async fn send_evm_transaction(
 
     let signing_secret = load_signing_secret(
         &wallet_info,
+        secret_backend,
         keystore,
         session_manager,
         SignerOperation::Send,
@@ -434,6 +444,8 @@ pub async fn send_evm_transaction(
     // Parse amount
     let amount_wei = U256::from_dec_str(&request.amount)
         .map_err(|e| format!("Invalid amount: {}", e))?;
+    let from_address = EthAddress::from_str(&wallet_info.address)
+        .map_err(|e| format!("Invalid wallet address: {}", e))?;
 
     let tx_hash: H256;
     let gas_used_str: String;
@@ -442,21 +454,36 @@ pub async fn send_evm_transaction(
     // Check if it's a native token or ERC20 transfer
     if request.contract_address.is_none() {
         // Native token transfer (ETH, etc.)
-        let mut tx = TransactionRequest::new()
+        let gas_limit = if let Some(gas_limit) = request.gas_limit {
+            U256::from(gas_limit)
+        } else {
+            provider
+                .estimate_gas(
+                    &TransactionRequest::new()
+                        .from(from_address)
+                        .to(to_address)
+                        .value(amount_wei)
+                        .into(),
+                    None,
+                )
+                .await
+                .map_err(|e| format!("Failed to estimate gas: {}", e))?
+        };
+        let gas_price = if let Some(gas_price) = &request.gas_price {
+            U256::from_dec_str(gas_price)
+                .map_err(|e| format!("Invalid gas price: {}", e))?
+        } else {
+            provider
+                .get_gas_price()
+                .await
+                .map_err(|e| format!("Failed to get gas price: {}", e))?
+        };
+
+        let tx = TransactionRequest::new()
             .to(to_address)
-            .value(amount_wei);
-
-        // Set gas limit if provided
-        if let Some(gas_limit) = request.gas_limit {
-            tx = tx.gas(U256::from(gas_limit));
-        }
-
-        // Set gas price if provided
-        if let Some(gas_price) = request.gas_price {
-            let gas_price_wei = U256::from_dec_str(&gas_price)
-                .map_err(|e| format!("Invalid gas price: {}", e))?;
-            tx = tx.gas_price(gas_price_wei);
-        }
+            .value(amount_wei)
+            .gas(gas_limit)
+            .gas_price(gas_price);
 
         // Send transaction
         let pending_tx = client
@@ -465,9 +492,7 @@ pub async fn send_evm_transaction(
             .map_err(|e| format!("Failed to send transaction: {}", e))?;
 
         tx_hash = *pending_tx;
-        gas_used_str = "0".to_string();
-        gas_price_str = "0".to_string();
-        fee = 0.0;
+        (gas_used_str, gas_price_str, fee) = estimated_fee_snapshot(gas_limit, gas_price);
     } else {
         // ERC20 token transfer
         let contract_address_str = request.contract_address.as_ref().unwrap();
@@ -480,12 +505,48 @@ pub async fn send_evm_transaction(
         ])
         .map_err(|e| format!("Failed to parse ABI: {}", e))?;
 
+        let transfer_data = abi
+            .function("transfer")
+            .unwrap()
+            .encode_input(&[
+                ethers::abi::Token::Address(to_address),
+                ethers::abi::Token::Uint(amount_wei),
+            ])
+            .map_err(|e| format!("Failed to encode transfer data: {}", e))?;
+
+        let gas_limit = if let Some(gas_limit) = request.gas_limit {
+            U256::from(gas_limit)
+        } else {
+            provider
+                .estimate_gas(
+                    &TransactionRequest::new()
+                        .from(from_address)
+                        .to(contract_address)
+                        .data(transfer_data)
+                        .into(),
+                    None,
+                )
+                .await
+                .map_err(|e| format!("Failed to estimate gas: {}", e))?
+        };
+        let gas_price = if let Some(gas_price) = &request.gas_price {
+            U256::from_dec_str(gas_price)
+                .map_err(|e| format!("Invalid gas price: {}", e))?
+        } else {
+            provider
+                .get_gas_price()
+                .await
+                .map_err(|e| format!("Failed to get gas price: {}", e))?
+        };
+
         let contract = Contract::new(contract_address, abi, Arc::new(client.clone()));
 
         // Call transfer function
         let call = contract
             .method::<_, bool>("transfer", (to_address, amount_wei))
-            .map_err(|e| format!("Failed to create contract call: {}", e))?;
+            .map_err(|e| format!("Failed to create contract call: {}", e))?
+            .gas(gas_limit)
+            .gas_price(gas_price);
 
         let pending_tx = call
             .send()
@@ -493,9 +554,7 @@ pub async fn send_evm_transaction(
             .map_err(|e| format!("Failed to send transaction: {}", e))?;
 
         tx_hash = *pending_tx;
-        gas_used_str = "0".to_string();
-        gas_price_str = "0".to_string();
-        fee = 0.0;
+        (gas_used_str, gas_price_str, fee) = estimated_fee_snapshot(gas_limit, gas_price);
     }
 
     // Find decimals for the asset
@@ -560,6 +619,29 @@ pub async fn send_evm_transaction(
     })
 }
 
+#[cfg(test)]
+mod estimated_fee_tests {
+    use super::estimated_fee_snapshot;
+    use crate::wallet::transaction_types::TransactionStatus;
+    use ethers::types::U256;
+
+    #[test]
+    fn estimated_fee_snapshot_persists_known_non_zero_values() {
+        let (gas_used, gas_price, fee) =
+            estimated_fee_snapshot(U256::from(65_000_u64), U256::from(1_500_000_000_u64));
+
+        assert_eq!(gas_used, "65000");
+        assert_eq!(gas_price, "1500000000");
+        assert!(fee > 0.0);
+    }
+
+    #[test]
+    fn broadcast_status_stays_broadcasted_after_send_snapshot() {
+        assert_eq!(TransactionStatus::after_broadcast().as_str(), "broadcasted");
+        assert_ne!(TransactionStatus::after_broadcast(), TransactionStatus::Confirmed);
+    }
+}
+
 /// Helper to get transaction receipt
 #[allow(dead_code)]
 pub async fn get_transaction_receipt(
@@ -590,6 +672,7 @@ pub async fn get_transaction_receipt(
 /// Send a raw EVM transaction (for OpenOcean swaps and other contract interactions)
 pub async fn send_raw_evm_transaction(
     request: crate::wallet::transaction_types::RawTransactionRequest,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
@@ -603,6 +686,7 @@ pub async fn send_raw_evm_transaction(
 
     let signing_secret = load_signing_secret(
         &wallet_info,
+        secret_backend,
         keystore,
         session_manager,
         SignerOperation::Send,
@@ -682,6 +766,7 @@ pub async fn approve_erc20_token(
     token_address: String,
     spender_address: String,
     amount: String,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
@@ -698,6 +783,7 @@ pub async fn approve_erc20_token(
         token_address,
         spender_address,
         amount,
+        secret_backend,
         keystore,
         session_manager,
     )
@@ -710,12 +796,14 @@ async fn approve_erc20_token_with_wallet(
     token_address: String,
     spender_address: String,
     amount: String,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
 
     let signing_secret = load_signing_secret(
         &wallet_info,
+        secret_backend,
         keystore,
         session_manager,
         SignerOperation::Approve,
@@ -792,6 +880,7 @@ async fn approve_erc20_token_with_wallet(
 
 fn load_signing_secret(
     wallet_info: &WalletInfo,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
     operation: SignerOperation,
@@ -799,6 +888,7 @@ fn load_signing_secret(
     match wallet_info.wallet_type.as_str() {
         "mnemonic" => Ok(load_authorized_mnemonic(
             &wallet_info.address,
+            secret_backend,
             keystore,
             session_manager,
             operation,
@@ -806,6 +896,7 @@ fn load_signing_secret(
         .map(EvmSigningSecret::Mnemonic)),
         "private-key" | "private_key" => Ok(load_authorized_private_key(
             &wallet_info.address,
+            secret_backend,
             keystore,
             session_manager,
             operation,
@@ -936,6 +1027,10 @@ mod tests {
         }
     }
 
+    fn ready_secret_backend() -> SecretBackend {
+        SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter))
+    }
+
     fn insert_evm_wallet_with_secret(stored_secret: StoredSecret) -> (WalletInfo, DatabaseBackedKeystore) {
         let db = Database::new(":memory:").unwrap();
         let wallet = db
@@ -991,10 +1086,12 @@ mod tests {
     #[test]
     fn send_signing_returns_locked_without_keystore_access() {
         let session = SessionManager::new(Duration::from_secs(30));
+        let secret_backend = ready_secret_backend();
 
         assert!(matches!(
             load_signing_secret(
                 &test_wallet("mnemonic"),
+                &secret_backend,
                 &PanicKeystore,
                 &session,
                 SignerOperation::Send
@@ -1006,10 +1103,12 @@ mod tests {
     #[test]
     fn approve_signing_returns_locked_without_keystore_access() {
         let session = SessionManager::new(Duration::from_secs(30));
+        let secret_backend = ready_secret_backend();
 
         assert!(matches!(
             load_signing_secret(
                 &test_wallet("mnemonic"),
+                &secret_backend,
                 &PanicKeystore,
                 &session,
                 SignerOperation::Approve
@@ -1021,12 +1120,14 @@ mod tests {
     #[test]
     fn approve_signing_returns_expired_without_keystore_access() {
         let session = SessionManager::new(Duration::from_millis(1));
-        session.unlock("token").unwrap();
+        let secret_backend = ready_secret_backend();
+        session.unlock_verified().unwrap();
         std::thread::sleep(Duration::from_millis(5));
 
         assert!(matches!(
             load_signing_secret(
                 &test_wallet("mnemonic"),
+                &secret_backend,
                 &PanicKeystore,
                 &session,
                 SignerOperation::Approve
@@ -1042,9 +1143,17 @@ mod tests {
             secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
         });
         let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock("token").unwrap();
+        let secret_backend = ready_secret_backend();
+        session.unlock_verified().unwrap();
 
-        let result = load_signing_secret(&wallet, &keystore, &session, SignerOperation::Approve).unwrap();
+        let result = load_signing_secret(
+            &wallet,
+            &secret_backend,
+            &keystore,
+            &session,
+            SignerOperation::Approve,
+        )
+        .unwrap();
 
         assert!(matches!(
             result,
@@ -1059,9 +1168,17 @@ mod tests {
             encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e").unwrap(),
         );
         let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock("token").unwrap();
+        let secret_backend = ready_secret_backend();
+        session.unlock_verified().unwrap();
 
-        let result = load_signing_secret(&wallet, &keystore, &session, SignerOperation::Approve).unwrap();
+        let result = load_signing_secret(
+            &wallet,
+            &secret_backend,
+            &keystore,
+            &session,
+            SignerOperation::Approve,
+        )
+        .unwrap();
 
         assert!(matches!(
             result,
@@ -1079,7 +1196,7 @@ mod tests {
         let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
         let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
 
         let result = approve_erc20_token(
             wallet.id.clone(),
@@ -1087,6 +1204,7 @@ mod tests {
             "0x0000000000000000000000000000000000000001".to_string(),
             "not-an-address".to_string(),
             "1".to_string(),
+            &ready_secret_backend(),
             &keystore,
             &session,
         )
@@ -1105,7 +1223,7 @@ mod tests {
         let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
         let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
 
         let result = approve_erc20_token(
             wallet.id.clone(),
@@ -1113,6 +1231,7 @@ mod tests {
             "0x0000000000000000000000000000000000000001".to_string(),
             "not-an-address".to_string(),
             "1".to_string(),
+            &ready_secret_backend(),
             &keystore,
             &session,
         )

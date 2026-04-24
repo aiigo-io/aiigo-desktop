@@ -1,4 +1,5 @@
 use crate::wallet::security::backend::SecretBackend;
+use crate::wallet::security::types::{PasswordAuthState, PasswordKdfParams};
 use crate::wallet::security::secret_envelope::{StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
 use crate::wallet::types::WalletInfo;
 use crate::wallet::state::freshness::classify_age;
@@ -109,6 +110,20 @@ impl Database {
                 secret_data TEXT NOT NULL,
                 secret_type TEXT NOT NULL,
                 FOREIGN KEY (wallet_id) REFERENCES evm_wallets(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS security_auth_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                memory_cost_kib INTEGER NOT NULL,
+                iterations INTEGER NOT NULL,
+                parallelism INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )",
             [],
         )?;
@@ -273,6 +288,14 @@ impl Database {
         Ok(legacy_rows)
     }
 
+    fn count_legacy_secret_rows(conn: &Connection, table: &str) -> SqliteResult<usize> {
+        let count_sql = format!(
+            "SELECT COUNT(*) FROM {table} WHERE secret_format = ?1 OR secret_format IS NULL OR TRIM(secret_format) = ''"
+        );
+
+        conn.query_row(&count_sql, params![SECRET_FORMAT_PLAINTEXT_V0], |row| row.get(0))
+    }
+
     fn add_column_if_missing(
         conn: &Connection,
         table: &str,
@@ -410,6 +433,79 @@ impl Database {
             created_at: now.clone(),
             updated_at: now,
         })
+    }
+
+    pub fn security_has_password(&self) -> SqliteResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM security_auth_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(count > 0)
+    }
+
+    pub fn load_security_password_state(&self) -> SqliteResult<Option<PasswordAuthState>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT password_hash, password_salt, memory_cost_kib, iterations, parallelism FROM security_auth_state WHERE id = 1",
+            [],
+            |row| {
+                Ok(PasswordAuthState {
+                    password_hash: row.get(0)?,
+                    password_salt: row.get(1)?,
+                    kdf_params: PasswordKdfParams {
+                        memory_cost_kib: row.get(2)?,
+                        iterations: row.get(3)?,
+                        parallelism: row.get(4)?,
+                    },
+                })
+            },
+        );
+
+        match result {
+            Ok(state) => Ok(Some(state)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn upsert_security_password_state(&self, auth_state: &PasswordAuthState) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO security_auth_state (
+                id, password_hash, password_salt, memory_cost_kib, iterations, parallelism, created_at, updated_at
+             ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                password_salt = excluded.password_salt,
+                memory_cost_kib = excluded.memory_cost_kib,
+                iterations = excluded.iterations,
+                parallelism = excluded.parallelism,
+                updated_at = excluded.updated_at",
+            params![
+                &auth_state.password_hash,
+                &auth_state.password_salt,
+                auth_state.kdf_params.memory_cost_kib,
+                auth_state.kdf_params.iterations,
+                auth_state.kdf_params.parallelism,
+                &now,
+                &now,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn count_legacy_secret_rows_total(&self) -> SqliteResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        let bitcoin = Self::count_legacy_secret_rows(&conn, "bitcoin_wallet_secrets")?;
+        let evm = Self::count_legacy_secret_rows(&conn, "evm_wallet_secrets")?;
+
+        Ok(bitcoin + evm)
     }
 
     pub(crate) fn load_bitcoin_wallet_secret(

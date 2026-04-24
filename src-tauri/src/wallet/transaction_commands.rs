@@ -18,6 +18,7 @@ pub async fn send_bitcoin(
 ) -> Result<SendTransactionResponse, String> {
     bitcoin_transaction::send_bitcoin_transaction(
         request,
+        state.secret_backend(),
         state.keystore(),
         state.session_manager(),
     )
@@ -62,6 +63,7 @@ pub async fn send_evm(
 ) -> Result<SendTransactionResponse, String> {
     evm_transaction::send_evm_transaction(
         request,
+        state.secret_backend(),
         state.keystore(),
         state.session_manager(),
     )
@@ -146,6 +148,7 @@ pub async fn evm_send_transaction(
 
     let response = evm_transaction::send_raw_evm_transaction(
         request,
+        state.secret_backend(),
         state.keystore(),
         state.session_manager(),
     )
@@ -168,6 +171,7 @@ pub async fn evm_approve_token(
         token_address,
         spender_address,
         amount,
+        state.secret_backend(),
         state.keystore(),
         state.session_manager(),
     ).await?;

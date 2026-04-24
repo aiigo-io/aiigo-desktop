@@ -325,7 +325,7 @@ const EvmAssets: React.FC = () => {
     const cacheHit = isCacheHit(walletId);
     const start = performance.now();
     try {
-      const walletWithBalances = await invoke<EvmWalletBalancesResponse>('evm_get_wallet_with_balances', { walletId });
+      const walletWithBalances = await invoke<EvmWalletBalancesResponse>('refresh_evm_wallet_balances', { walletId });
       logRefreshMetrics({
         walletId,
         scope,
@@ -360,9 +360,8 @@ const EvmAssets: React.FC = () => {
       const balances = new Map<string, EvmWalletBalancesResponse>();
       for (const wallet of result) {
         try {
-          const walletWithBalances = await invoke<EvmWalletBalancesResponse>('evm_get_wallet_with_balances', { walletId: wallet.id });
+          const walletWithBalances = await invoke<EvmWalletBalancesResponse>('query_evm_wallet_balances', { walletId: wallet.id });
           balances.set(wallet.id, walletWithBalances);
-          setLastRefreshTime(prev => new Map(prev).set(wallet.id, new Date()));
         } catch (error) {
           console.error(`Error loading balances for wallet ${wallet.id}:`, error);
         }

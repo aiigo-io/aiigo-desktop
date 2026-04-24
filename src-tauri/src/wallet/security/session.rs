@@ -32,11 +32,7 @@ impl SessionManager {
         }
     }
 
-    pub fn unlock(&self, token_material: &str) -> Result<(), SecurityError> {
-        if token_material.is_empty() {
-            return Err(SecurityError::PolicyDenied);
-        }
-
+    pub fn unlock_verified(&self) -> Result<(), SecurityError> {
         let mut state = self
             .state
             .lock()
@@ -118,17 +114,10 @@ mod tests {
     }
 
     #[test]
-    fn unlock_with_empty_token_returns_policy_denied() {
-        let (session, _) = test_session(Duration::from_secs(30));
-
-        assert_eq!(session.unlock(""), Err(SecurityError::PolicyDenied));
-    }
-
-    #[test]
     fn unlock_marks_session_unlocked_and_authorizes_send() {
         let (session, _) = test_session(Duration::from_secs(30));
 
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
 
         assert!(session.is_unlocked());
         assert_eq!(session.authorize(SignerOperation::Send), Ok(()));
@@ -138,7 +127,7 @@ mod tests {
     fn unlock_marks_session_unlocked_and_authorizes_approve() {
         let (session, _) = test_session(Duration::from_secs(30));
 
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
 
         assert_eq!(session.authorize(SignerOperation::Approve), Ok(()));
     }
@@ -147,7 +136,7 @@ mod tests {
     fn unlock_marks_session_unlocked_and_authorizes_export_mnemonic() {
         let (session, _) = test_session(Duration::from_secs(30));
 
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
 
         assert_eq!(
             session.authorize(SignerOperation::ExportMnemonic),
@@ -159,7 +148,7 @@ mod tests {
     fn unlock_marks_session_unlocked_and_authorizes_export_private_key() {
         let (session, _) = test_session(Duration::from_secs(30));
 
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
 
         assert_eq!(
             session.authorize(SignerOperation::ExportPrivateKey),
@@ -171,7 +160,7 @@ mod tests {
     fn authorize_returns_expired_after_ttl_expiry() {
         let (session, clock) = test_session(Duration::from_secs(30));
 
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
         *clock.lock().unwrap() += Duration::from_secs(31);
 
         assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Expired));
@@ -181,7 +170,7 @@ mod tests {
     fn expired_state_survives_is_unlocked_polling() {
         let (session, clock) = test_session(Duration::from_secs(30));
 
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
         *clock.lock().unwrap() += Duration::from_secs(31);
 
         assert!(!session.is_unlocked());
@@ -192,7 +181,7 @@ mod tests {
     fn lock_after_unlock_revokes_authorization() {
         let (session, _) = test_session(Duration::from_secs(30));
 
-        session.unlock("token").unwrap();
+        session.unlock_verified().unwrap();
         session.lock();
 
         assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Locked));

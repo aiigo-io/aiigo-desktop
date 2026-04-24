@@ -274,6 +274,10 @@ const Transactions: React.FC = () => {
   };
 
   const EvmTransactionRow: React.FC<{ tx: EvmTransaction }> = ({ tx }) => {
+        const feeLabel = tx.status === 'broadcasted' || tx.status === 'pending'
+          ? 'Estimated Fee'
+          : 'Fee';
+
     const isSend = tx.tx_type === 'send';
     const isReceive = tx.tx_type === 'receive';
     const isApprove = tx.tx_type === 'approve';
@@ -345,7 +349,7 @@ const Transactions: React.FC = () => {
               {getAmountPrefix()}{tx.amount_float.toFixed(6)} {tx.asset_symbol}
             </div>
             <div className="text-xs text-muted-foreground">
-              Fee: {tx.fee.toFixed(6)} {tx.chain === 'BSC' ? 'BNB' : (tx.chain === 'Polygon' ? 'POL' : 'ETH')}
+              {feeLabel}: {tx.fee.toFixed(6)} {tx.chain === 'BSC' ? 'BNB' : (tx.chain === 'Polygon' ? 'POL' : 'ETH')}
             </div>
           </div>
 

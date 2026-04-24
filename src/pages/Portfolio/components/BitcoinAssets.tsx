@@ -41,6 +41,11 @@ interface BalanceState {
   freshness: FreshnessMetadata;
 }
 
+interface BitcoinWalletBalanceResponse {
+  wallet: WalletInfo;
+  balance_state: BalanceState;
+}
+
 interface ReviewedBitcoinSendIntent {
   actionLabel: string;
   realChainAction: string;
@@ -172,17 +177,19 @@ const BitcoinAssets: React.FC = () => {
 
     try {
       const result = await invoke<WalletInfo[]>('bitcoin_get_wallets');
-      setWallets(result);
-
+      const enrichedWallets: WalletInfo[] = [];
       const states = new Map<string, BalanceState>();
       for (const wallet of result) {
         try {
-          const balanceState = await invoke<BalanceState>('state_get_bitcoin_wallet_balance_state', { walletId: wallet.id });
-          states.set(wallet.id, balanceState);
+          const response = await invoke<BitcoinWalletBalanceResponse>('query_bitcoin_wallet_balance', { walletId: wallet.id });
+          enrichedWallets.push(response.wallet);
+          states.set(wallet.id, response.balance_state);
         } catch (error) {
           console.error(`Error loading wallet freshness for ${wallet.id}:`, error);
+          enrichedWallets.push(wallet);
         }
       }
+      setWallets(enrichedWallets);
       setWalletBalanceStates(states);
     } catch (error) {
       console.error('Error loading wallets:', error);
@@ -473,13 +480,10 @@ const BitcoinAssets: React.FC = () => {
   const handleRefreshBalance = async (walletId: string) => {
     setRefreshingBalance(walletId);
     try {
-      const [updatedWallet, updatedBalanceState] = await Promise.all([
-        invoke<WalletInfo>('bitcoin_get_wallet_with_balance', { walletId }),
-        invoke<BalanceState>('state_get_bitcoin_wallet_balance_state', { walletId }),
-      ]);
-      setWallets(wallets.map(w => w.id === walletId ? updatedWallet : w));
-      setWalletBalanceStates(prev => new Map(prev).set(walletId, updatedBalanceState));
-      if (updatedBalanceState.freshness.status !== 'fresh') {
+      const response = await invoke<BitcoinWalletBalanceResponse>('refresh_bitcoin_wallet_balance', { walletId });
+      setWallets(wallets.map(w => w.id === walletId ? response.wallet : w));
+      setWalletBalanceStates(prev => new Map(prev).set(walletId, response.balance_state));
+      if (response.balance_state.freshness.status !== 'fresh') {
         toast.warning('BTC balance refresh is degraded. Showing the most honest state available.');
       }
     } catch (error) {

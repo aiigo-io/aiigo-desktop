@@ -122,7 +122,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
         setIsLoadingBalances(true);
         try {
-            const walletWithBalances = await invoke<EvmWalletBalancesResponse>('evm_get_wallet_with_balances', {
+            const walletWithBalances = await invoke<EvmWalletBalancesResponse>('query_evm_wallet_balances', {
                 walletId: wallet.id
             });
             setWalletResponse(walletWithBalances);

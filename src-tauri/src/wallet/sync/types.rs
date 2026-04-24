@@ -80,6 +80,7 @@ impl LifecycleStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncReason {
+    Query,
     Manual,
     AppStart,
     AfterBroadcast,
@@ -105,7 +106,7 @@ pub enum SyncTarget {
 pub struct SyncOutcome {
     pub reason: SyncReason,
     pub target: SyncTarget,
-    pub updated_at: i64,
+    pub updated_at: Option<i64>,
     pub partial: bool,
     pub failed_sources: Vec<String>,
 }

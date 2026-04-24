@@ -1,3 +1,4 @@
+use crate::wallet::security::backend::SecretBackend;
 use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::security::session::SessionManager;
@@ -11,6 +12,8 @@ pub(crate) fn map_security_error(error: SecurityError) -> String {
     match error {
         SecurityError::Locked => "locked".to_string(),
         SecurityError::Expired => "expired".to_string(),
+        SecurityError::NoPassword => "no_password".to_string(),
+        SecurityError::WrongPassword => "wrong_password".to_string(),
         SecurityError::PolicyDenied => "policy_denied".to_string(),
         SecurityError::OperationNotAllowed => "operation_not_allowed".to_string(),
         SecurityError::UnknownWallet => "unknown_wallet".to_string(),
@@ -21,6 +24,7 @@ pub(crate) fn map_security_error(error: SecurityError) -> String {
 fn export_mnemonic_inner(
     wallet_type: &str,
     address: &str,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<String, String> {
@@ -30,6 +34,7 @@ fn export_mnemonic_inner(
 
     load_authorized_mnemonic(
         address,
+        secret_backend,
         keystore,
         session_manager,
         SignerOperation::ExportMnemonic,
@@ -41,12 +46,14 @@ fn export_mnemonic_inner(
 fn export_private_key_inner(
     wallet_type: &str,
     address: &str,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<String, String> {
     match wallet_type {
         "private-key" | "private_key" => load_authorized_private_key(
             address,
+            secret_backend,
             keystore,
             session_manager,
             SignerOperation::ExportPrivateKey,
@@ -56,6 +63,7 @@ fn export_private_key_inner(
         "mnemonic" => {
             let mnemonic = load_authorized_mnemonic(
                 address,
+                secret_backend,
                 keystore,
                 session_manager,
                 SignerOperation::ExportPrivateKey,
@@ -70,21 +78,25 @@ fn export_private_key_inner(
 
 pub(crate) fn load_authorized_mnemonic(
     address: &str,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
     operation: SignerOperation,
 ) -> Result<Option<String>, SecurityError> {
     session_manager.authorize(operation)?;
+    secret_backend.ensure_ready_for_command()?;
     keystore.load_mnemonic(address)
 }
 
 pub(crate) fn load_authorized_private_key(
     address: &str,
+    secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
     operation: SignerOperation,
 ) -> Result<Option<String>, SecurityError> {
     session_manager.authorize(operation)?;
+    secret_backend.ensure_ready_for_command()?;
     keystore.load_private_key(address)
 }
 
@@ -155,7 +167,13 @@ pub fn evm_export_mnemonic(
     let wallet_type = wallet.wallet_type.clone();
     drop(db);
 
-    export_mnemonic_inner(&wallet_type, &address, state.keystore(), state.session_manager())
+    export_mnemonic_inner(
+        &wallet_type,
+        &address,
+        state.secret_backend(),
+        state.keystore(),
+        state.session_manager(),
+    )
 }
 
 #[tauri::command]
@@ -175,7 +193,13 @@ pub fn evm_export_private_key(
     let wallet_type = wallet.wallet_type.clone();
     drop(db);
 
-    export_private_key_inner(&wallet_type, &address, state.keystore(), state.session_manager())
+    export_private_key_inner(
+        &wallet_type,
+        &address,
+        state.secret_backend(),
+        state.keystore(),
+        state.session_manager(),
+    )
 }
 
 fn derive_private_key_from_mnemonic(mnemonic_str: &str) -> Result<String, String> {
@@ -199,14 +223,57 @@ fn derive_private_key_from_mnemonic(mnemonic_str: &str) -> Result<String, String
 #[cfg(test)]
 mod tests {
     use super::{export_mnemonic_inner, load_authorized_mnemonic, load_authorized_private_key};
+    use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
     use crate::wallet::security::keystore::Keystore;
+    use crate::wallet::security::secret_envelope::{SecretEnvelopeError, StoredSecret};
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{SecurityError, SignerOperation};
+    use std::sync::Arc;
     use std::time::Duration;
 
     struct StubKeystore;
 
     struct PanicKeystore;
+
+    struct ReadySecretBackendAdapter;
+
+    struct UnavailableSecretBackendAdapter;
+
+    impl SecretBackendAdapter for ReadySecretBackendAdapter {
+        fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Ok(())
+        }
+
+        fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+            unreachable!()
+        }
+
+        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+            unreachable!()
+        }
+    }
+
+    impl SecretBackendAdapter for UnavailableSecretBackendAdapter {
+        fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Err(SecretEnvelopeError::Keyring("offline".to_string()))
+        }
+
+        fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
+            unreachable!()
+        }
+
+        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+            unreachable!()
+        }
+    }
+
+    fn ready_backend() -> SecretBackend {
+        SecretBackend::with_adapter(Arc::new(ReadySecretBackendAdapter))
+    }
+
+    fn unavailable_backend() -> SecretBackend {
+        SecretBackend::with_adapter(Arc::new(UnavailableSecretBackendAdapter))
+    }
 
     impl Keystore for StubKeystore {
         fn load_mnemonic(&self, _address: &str) -> Result<Option<String>, SecurityError> {
@@ -231,10 +298,12 @@ mod tests {
     #[test]
     fn export_mnemonic_returns_locked_without_keystore_access() {
         let session = SessionManager::new(Duration::from_secs(30));
+        let backend = ready_backend();
 
         assert_eq!(
             load_authorized_mnemonic(
                 "0x1234",
+                &backend,
                 &PanicKeystore,
                 &session,
                 SignerOperation::ExportMnemonic
@@ -246,10 +315,12 @@ mod tests {
     #[test]
     fn export_private_key_returns_locked_without_keystore_access() {
         let session = SessionManager::new(Duration::from_secs(30));
+        let backend = ready_backend();
 
         assert_eq!(
             load_authorized_private_key(
                 "0x1234",
+                &backend,
                 &PanicKeystore,
                 &session,
                 SignerOperation::ExportPrivateKey
@@ -261,21 +332,47 @@ mod tests {
     #[test]
     fn load_authorized_mnemonic_returns_secret_for_send_when_session_unlocked() {
         let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock("token").unwrap();
+        let backend = ready_backend();
+        session.unlock_verified().unwrap();
 
         assert_eq!(
-            load_authorized_mnemonic("0x1234", &StubKeystore, &session, SignerOperation::Send),
+            load_authorized_mnemonic(
+                "0x1234",
+                &backend,
+                &StubKeystore,
+                &session,
+                SignerOperation::Send,
+            ),
             Ok(Some("seed words".to_string()))
+        );
+    }
+
+    #[test]
+    fn send_returns_secret_backend_unavailable_without_keystore_access() {
+        let session = SessionManager::new(Duration::from_secs(30));
+        let backend = unavailable_backend();
+        session.unlock_verified().unwrap();
+
+        assert_eq!(
+            load_authorized_mnemonic(
+                "0x1234",
+                &backend,
+                &PanicKeystore,
+                &session,
+                SignerOperation::Send,
+            ),
+            Err(SecurityError::SecretBackendUnavailable)
         );
     }
 
     #[test]
     fn export_mnemonic_returns_policy_denied_when_session_unlocked() {
         let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock("token").unwrap();
+        let backend = ready_backend();
+        session.unlock_verified().unwrap();
 
         assert_eq!(
-            export_mnemonic_inner("mnemonic", "0x1234", &PanicKeystore, &session),
+            export_mnemonic_inner("mnemonic", "0x1234", &backend, &PanicKeystore, &session),
             Err("policy_denied".to_string())
         );
     }

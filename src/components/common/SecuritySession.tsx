@@ -19,10 +19,15 @@ import {
 import { Input } from '@/components/ui/input';
 import {
   SECURITY_STATE_EVENT,
+  getBackendUnavailableReason,
   notifySecurityChanged,
   parseSecurityError,
+  securityGetBackendState,
+  securityHasPassword,
   securityIsUnlocked,
+  securitySetupPassword,
   securityUnlock,
+  type SecurityBackendState,
 } from '@/lib/security';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -38,6 +43,7 @@ interface PendingAction {
 
 interface SecuritySessionContextValue {
   status: GateStatus;
+  backendState: SecurityBackendState | null;
   requestUnlock: (action?: Omit<PendingAction, 'reason'> & { reason?: UnlockReason }) => Promise<void>;
   refreshStatus: () => Promise<boolean>;
 }
@@ -66,7 +72,9 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [status, setStatus] = useState<GateStatus>('loading');
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [token, setToken] = useState('');
+  const [password, setPassword] = useState('');
+  const [hasPassword, setHasPassword] = useState<boolean | null>(null);
+  const [backendState, setBackendState] = useState<SecurityBackendState | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [isUnlocking, setIsUnlocking] = useState(false);
   const actionRef = useRef<PendingAction | null>(null);
@@ -75,11 +83,21 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const securityError = parseSecurityError(error);
 
     switch (securityError) {
+      case 'no_password':
+        setHasPassword(false);
+        setInlineError('Set a local password before unlocking signing access.');
+        break;
+      case 'wrong_password':
+        setInlineError('Wrong password. Try again.');
+        break;
       case 'policy_denied':
-        setInlineError('Enter a non-empty unlock token.');
+        setInlineError(hasPassword === false ? 'Enter a non-empty password to set it.' : 'Enter a non-empty password.');
         break;
       case 'operation_not_allowed':
         toast.error('Unlock is temporarily unavailable. Try again.');
+        break;
+      case 'secret_backend_unavailable':
+        toast.error('Secret backend unavailable. Signing and export remain disabled.');
         break;
       case 'unknown_wallet':
         toast.error('Wallet was not found. Refresh and try again.');
@@ -93,12 +111,18 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
 
     return securityError;
-  }, []);
+  }, [hasPassword]);
 
   const refreshStatus = useCallback(async () => {
     try {
-      const unlocked = await securityIsUnlocked();
+      const [unlocked, passwordConfigured, nextBackendState] = await Promise.all([
+        securityIsUnlocked(),
+        securityHasPassword(),
+        securityGetBackendState(),
+      ]);
       setStatus(unlocked ? 'unlocked' : 'locked');
+      setHasPassword(passwordConfigured);
+      setBackendState(nextBackendState);
       if (unlocked) {
         setInlineError(null);
       }
@@ -143,7 +167,7 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     actionRef.current = nextAction;
     setPendingAction(nextAction);
-    setToken('');
+    setPassword('');
     setInlineError(null);
     setIsDialogOpen(true);
   }, [refreshStatus, status]);
@@ -153,10 +177,16 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setInlineError(null);
 
     try {
-      await securityUnlock(token);
+      if (hasPassword === false) {
+        await securitySetupPassword(password);
+        setHasPassword(true);
+      }
+
+      await securityUnlock(password);
       setStatus('unlocked');
+      setBackendState(await securityGetBackendState());
       setIsDialogOpen(false);
-      setToken('');
+      setPassword('');
       notifySecurityChanged();
 
       const nextAction = actionRef.current;
@@ -171,28 +201,37 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     } finally {
       setIsUnlocking(false);
     }
-  }, [handleSecurityError, token]);
+  }, [handleSecurityError, hasPassword, password]);
 
   const handleOpenChange = useCallback((open: boolean) => {
     setIsDialogOpen(open);
     if (!open) {
       actionRef.current = null;
       setPendingAction(null);
-      setToken('');
+      setPassword('');
       setInlineError(null);
     }
   }, []);
 
   const contextValue = useMemo<SecuritySessionContextValue>(() => ({
     status,
+    backendState,
     requestUnlock,
     refreshStatus,
-  }), [refreshStatus, requestUnlock, status]);
+  }), [backendState, refreshStatus, requestUnlock, status]);
 
-  const dialogTitle = pendingAction?.reason === 'expired' ? 'Session expired' : 'Unlock wallet';
-  const dialogDescription = pendingAction?.reason === 'expired'
-    ? 'Unlock again to continue the same action.'
-    : 'Required for export and signing actions.';
+  const isPasswordSetup = hasPassword === false;
+  const dialogTitle = isPasswordSetup
+    ? 'Set wallet password'
+    : pendingAction?.reason === 'expired'
+      ? 'Session expired'
+      : 'Unlock wallet';
+  const dialogDescription = isPasswordSetup
+    ? 'This upgrade path now requires a local password before send or approve can continue.'
+    : pendingAction?.reason === 'expired'
+      ? 'Unlock again to continue the same action.'
+      : 'Required for send and approve actions.';
+  const backendUnavailableReason = getBackendUnavailableReason(backendState);
 
   return (
     <SecuritySessionContext.Provider value={contextValue}>
@@ -225,15 +264,26 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           </DialogHeader>
 
           <div className="space-y-6">
+            {backendState?.degraded && (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                <p className="font-semibold uppercase tracking-[0.18em] text-[11px] text-amber-200">Degraded Security</p>
+                <p className="mt-2 leading-relaxed text-amber-50/90">
+                  {backendUnavailableReason
+                    ? `Secure secret storage is unavailable: ${backendUnavailableReason.message}`
+                    : 'Legacy plaintext secrets still need migration or secure secret access is not fully healthy.'}
+                </p>
+              </div>
+            )}
+
             <div className="space-y-2">
               <label className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                Unlock Token
+                {isPasswordSetup ? 'Password Setup' : 'Password'}
               </label>
               <Input
                 type="password"
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-                placeholder="Enter unlock token"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder={isPasswordSetup ? 'Create a local password' : 'Enter password'}
                 className="h-14 border-border/70 bg-[#121924] text-lg text-white placeholder:text-slate-500"
               />
               {inlineError && (
@@ -256,7 +306,7 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 onClick={() => void handleUnlock()}
                 disabled={isUnlocking}
               >
-                {isUnlocking ? 'Unlocking...' : 'Unlock'}
+                {isUnlocking ? (isPasswordSetup ? 'Saving...' : 'Unlocking...') : (isPasswordSetup ? 'Set Password' : 'Unlock')}
               </Button>
             </div>
           </div>

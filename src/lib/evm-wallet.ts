@@ -11,7 +11,7 @@ export interface FreshnessMetadata {
 export interface SyncOutcome {
   reason: string;
   target: string;
-  updated_at: number;
+  updated_at: number | null;
   partial: boolean;
   failed_sources: string[];
 }

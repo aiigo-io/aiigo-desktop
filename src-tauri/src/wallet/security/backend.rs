@@ -72,6 +72,18 @@ impl SecretBackend {
         next
     }
 
+    pub fn ensure_ready_for_command(&self) -> Result<(), SecurityError> {
+        if matches!(self.current_status(), SecretBackendStatus::Ready) {
+            return Ok(());
+        }
+
+        if matches!(self.refresh_status(), SecretBackendStatus::Ready) {
+            Ok(())
+        } else {
+            Err(SecurityError::SecretBackendUnavailable)
+        }
+    }
+
     pub fn prepare_encrypted_secret(&self, plaintext: &str) -> Result<StoredSecret, SecurityError> {
         match self.adapter.encrypt(plaintext) {
             Ok(secret) => {
@@ -92,12 +104,7 @@ impl SecretBackend {
         secret_data: &str,
         secret_format: &str,
     ) -> Result<String, SecurityError> {
-        if !matches!(self.current_status(), SecretBackendStatus::Ready) {
-            let status = self.refresh_status();
-            if !matches!(status, SecretBackendStatus::Ready) {
-                return Err(SecurityError::SecretBackendUnavailable);
-            }
-        }
+        self.ensure_ready_for_command()?;
 
         match self.adapter.decrypt(secret_data, secret_format) {
             Ok(secret) => {

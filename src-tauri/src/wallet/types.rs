@@ -182,6 +182,20 @@ pub struct EvmWalletBalancesResponse {
     pub sync: SyncOutcome,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinWalletBalanceResponse {
+    pub wallet: WalletInfo,
+    pub balance_state: FreshnessBackedBitcoinBalance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreshnessBackedBitcoinBalance {
+    pub raw_amount: String,
+    pub display_amount: f64,
+    pub chain_id: Option<String>,
+    pub freshness: FreshnessMetadata,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -235,7 +249,7 @@ mod tests {
             sync: SyncOutcome {
                 reason: SyncReason::Manual,
                 target: SyncTarget::EvmWalletBalances,
-                updated_at: 1_713_571_200,
+                updated_at: Some(1_713_571_200),
                 partial: true,
                 failed_sources: vec!["ethereum".to_string()],
             },

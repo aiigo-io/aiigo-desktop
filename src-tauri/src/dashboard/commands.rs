@@ -75,7 +75,7 @@ fn dashboard_freshness_from_sync(outcome: &SyncOutcome) -> FreshnessMetadata {
         } else {
             FreshnessStatus::Fresh
         },
-        updated_at: Some(outcome.updated_at),
+        updated_at: outcome.updated_at,
         failed_sources: outcome.failed_sources.clone(),
     }
 }

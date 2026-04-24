@@ -5,7 +5,7 @@ mod dashboard;
 use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
 use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
 use wallet::security::backend::SecretBackend;
-use wallet::security::commands::{security_is_unlocked, security_lock, security_unlock, AppSecurity};
+use wallet::security::commands::{security_get_backend_state, security_has_password, security_is_unlocked, security_lock, security_setup_password, security_unlock, AppSecurity, StartupSecurityState};
 use wallet::security::keystore::{Keystore, SqliteKeystore};
 use wallet::security::session::SessionManager;
 use wallet::state::commands as state_commands;
@@ -75,6 +75,20 @@ fn build_app_security(secret_backend: Arc<SecretBackend>) -> AppSecurity {
         keystore: Arc::new(SqliteKeystore::new(&DB, secret_backend.clone()))
             as Arc<dyn Keystore + Send + Sync>,
         secret_backend,
+        startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
+    }
+}
+
+fn initialize_security_startup_state(app_security: &AppSecurity) {
+    let mut has_legacy_plaintext_secrets = false;
+
+    if let Ok(db) = DB.lock() {
+        let legacy_rows = db.count_legacy_secret_rows_total().unwrap_or(0);
+        has_legacy_plaintext_secrets = legacy_rows > 0;
+    }
+
+    if let Ok(mut startup_state) = app_security.startup_state().lock() {
+        startup_state.has_legacy_plaintext_secrets = has_legacy_plaintext_secrets;
     }
 }
 
@@ -86,6 +100,7 @@ pub fn run() {
     let _ = &*DB;
     let secret_backend = Arc::new(SecretBackend::new());
     let app_security = build_app_security(secret_backend);
+    initialize_security_startup_state(&app_security);
 
     tauri::Builder::default()
         .manage(app_security)
@@ -110,6 +125,8 @@ pub fn run() {
             bitcoin_commands::bitcoin_get_wallets,
             bitcoin_commands::bitcoin_get_wallet,
             bitcoin_commands::bitcoin_get_wallet_with_balance,
+            bitcoin_commands::query_bitcoin_wallet_balance,
+            bitcoin_commands::refresh_bitcoin_wallet_balance,
             bitcoin_commands::bitcoin_delete_wallet,
             // EVM handlers
             evm_mnemonic::evm_create_mnemonic,
@@ -121,6 +138,8 @@ pub fn run() {
             evm_commands::evm_get_wallets,
             evm_commands::evm_get_wallet,
             evm_commands::evm_get_wallet_with_balances,
+            evm_commands::query_evm_wallet_balances,
+            evm_commands::refresh_evm_wallet_balances,
             evm_commands::evm_delete_wallet,
             // Transaction handlers
             transaction_commands::send_bitcoin,
@@ -147,9 +166,12 @@ pub fn run() {
             state_commands::state_get_bitcoin_price_state,
             state_commands::state_get_bitcoin_portfolio_state,
             // Security handlers
+            security_has_password,
+            security_setup_password,
             security_unlock,
             security_lock,
             security_is_unlocked,
+            security_get_backend_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -157,7 +179,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::build_app_security;
+    use super::{build_app_security, initialize_security_startup_state};
     use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
     use crate::wallet::security::secret_envelope::{SecretEnvelopeError, StoredSecret};
     use crate::wallet::security::types::SecretBackendStatus;
@@ -184,6 +206,19 @@ mod tests {
         let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(PanicOnProbeAdapter)));
 
         let app_security = build_app_security(secret_backend.clone());
+
+        assert!(matches!(
+            app_security.secret_backend().current_status(),
+            SecretBackendStatus::Unknown
+        ));
+    }
+
+    #[test]
+    fn startup_state_initialization_does_not_probe_secret_backend() {
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(PanicOnProbeAdapter)));
+        let app_security = build_app_security(secret_backend);
+
+        initialize_security_startup_state(&app_security);
 
         assert!(matches!(
             app_security.secret_backend().current_status(),

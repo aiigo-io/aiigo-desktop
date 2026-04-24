@@ -29,5 +29,6 @@ aiigo_*
 AGENTS.MD
 docs/superpowers/plans/
 .plan/
+.memory/
 CLAUDE.md
 .github/

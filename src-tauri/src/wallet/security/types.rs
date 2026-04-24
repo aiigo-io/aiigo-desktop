@@ -23,10 +23,26 @@ pub enum SignerOperation {
 pub enum SecurityError {
     Locked,
     Expired,
+    NoPassword,
+    WrongPassword,
     PolicyDenied,
     OperationNotAllowed,
     UnknownWallet,
     SecretBackendUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PasswordKdfParams {
+    pub memory_cost_kib: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasswordAuthState {
+    pub password_hash: String,
+    pub password_salt: String,
+    pub kdf_params: PasswordKdfParams,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,4 +69,20 @@ pub enum SecretBackendStatus {
         reason: SecretBackendUnavailableReason,
     },
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SecretMigrationState {
+    pub attempted_rows: usize,
+    pub migrated_rows: usize,
+    pub skipped_rows: usize,
+    pub failed_rows: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityBackendState {
+    pub backend_status: SecretBackendStatus,
+    pub migration: SecretMigrationState,
+    pub has_legacy_plaintext_secrets: bool,
+    pub degraded: bool,
 }

@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 const AppHeader: React.FC = () => {
   const [currentTime, setCurrentTime] = useState(dayjs());
   const [isLocking, setIsLocking] = useState(false);
-  const { status } = useSecuritySession();
+  const { status, backendState } = useSecuritySession();
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -54,6 +54,11 @@ const AppHeader: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-4">
+        {backendState?.degraded && (
+          <div className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-200">
+            Degraded Security
+          </div>
+        )}
         <Button
           variant="outline"
           size="sm"
