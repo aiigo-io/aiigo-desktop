@@ -158,6 +158,7 @@ pub fn run() {
             transaction_commands::get_evm_transactions,
             transaction_commands::get_all_evm_transactions,
             transaction_commands::fetch_evm_history,
+            transaction_commands::get_supported_evm_history_chains,
             transaction_commands::evm_send_transaction,
             transaction_commands::evm_approve_token,
             // Dashboard handlers

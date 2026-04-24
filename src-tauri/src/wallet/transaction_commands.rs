@@ -8,6 +8,14 @@ use crate::wallet::transaction_types::{
     SendEvmRequest, SendTransactionResponse,
 };
 use crate::DB;
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SupportedEvmHistoryChain {
+    pub chain: String,
+    pub chain_id: u64,
+    pub display_name: String,
+}
 
 // Bitcoin Transaction Commands
 
@@ -98,9 +106,42 @@ pub async fn fetch_evm_history(
     chain: String,
     chain_id: u64,
 ) -> Result<Vec<EvmTransaction>, String> {
+    let supported = crate::wallet::evm::config::get_history_sync_supported_chains()
+        .into_iter()
+        .any(|candidate| candidate.chain_id() == chain_id && candidate.name() == chain);
+
+    if !supported {
+        return Err(format!("unsupported_history_chain:{}:{}", chain, chain_id));
+    }
+
     engine::refresh_evm_history(wallet_id, address, chain, chain_id, SyncReason::Manual)
         .await
         .map(|(transactions, _)| transactions)
+}
+
+#[tauri::command]
+pub fn get_supported_evm_history_chains() -> Result<Vec<SupportedEvmHistoryChain>, String> {
+    Ok(crate::wallet::evm::config::get_history_sync_supported_chains()
+        .into_iter()
+        .map(|chain| SupportedEvmHistoryChain {
+            chain: chain.name().to_string(),
+            chain_id: chain.chain_id(),
+            display_name: chain.display_name().to_string(),
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_supported_evm_history_chains;
+
+    #[test]
+    fn supported_history_chain_list_excludes_sepolia() {
+        let supported = get_supported_evm_history_chains().unwrap();
+
+        assert!(supported.iter().all(|chain| chain.chain_id != 11155111));
+        assert!(supported.iter().any(|chain| chain.chain_id == 1));
+    }
 }
 
 #[tauri::command]

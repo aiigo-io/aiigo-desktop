@@ -6,6 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { ArrowUpRight, ArrowDownLeft, RefreshCw, Send, ExternalLink, ShieldCheck, Code } from 'lucide-react';
 import { cn, shortAddress, getEvmExplorerUrl, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
+import { SupportedEvmHistoryChain } from '@/lib/evm-wallet';
 
 interface BitcoinTransaction {
   id: string;
@@ -53,9 +54,24 @@ const Transactions: React.FC = () => {
   const [syncing, setSyncing] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
   const [syncSummary, setSyncSummary] = useState<{ kind: 'success' | 'partial' | 'error'; message: string } | null>(null);
+  const [supportedEvmHistoryChains, setSupportedEvmHistoryChains] = useState<SupportedEvmHistoryChain[]>([]);
 
   useEffect(() => {
     fetchTransactions();
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntimeAvailable()) {
+      setSupportedEvmHistoryChains([]);
+      return;
+    }
+
+    invoke<SupportedEvmHistoryChain[]>('get_supported_evm_history_chains')
+      .then(setSupportedEvmHistoryChains)
+      .catch((error) => {
+        console.error('Failed to load supported EVM history chains:', error);
+        setSupportedEvmHistoryChains([]);
+      });
   }, []);
 
   const fetchTransactions = async () => {
@@ -109,27 +125,17 @@ const Transactions: React.FC = () => {
         })
       );
 
-      // Supported EVM chains
-      const evmChains = [
-        { name: 'Ethereum', chainId: 1 },
-        { name: 'BSC', chainId: 56 },
-        { name: 'Polygon', chainId: 137 },
-        { name: 'Arbitrum', chainId: 42161 },
-        { name: 'Optimism', chainId: 10 },
-        { name: 'Sepolia', chainId: 11155111 }
-      ];
-
       // Sync EVM transactions for all chains
       const evmSyncPromises = evmWallets.flatMap(wallet =>
-        evmChains.map(chain =>
+        supportedEvmHistoryChains.map(chain =>
           invoke('fetch_evm_history', {
             walletId: wallet.id,
             address: wallet.address,
-            chain: chain.name,
-            chainId: chain.chainId,
+            chain: chain.chain,
+            chainId: chain.chain_id,
           }).catch(err => {
-            console.error(`Failed to sync ${chain.name} for wallet ${wallet.id}:`, err);
-            failedSources.push(`${chain.name}:${wallet.label ?? wallet.address}`);
+            console.error(`Failed to sync ${chain.display_name} for wallet ${wallet.id}:`, err);
+            failedSources.push(`${chain.display_name}:${wallet.label ?? wallet.address}`);
             return [];
           })
         )
@@ -377,6 +383,11 @@ const Transactions: React.FC = () => {
         <div>
           <h1 className="text-3xl font-bold">Transactions</h1>
           <p className="text-muted-foreground mt-1">View and manage your transaction history</p>
+          {supportedEvmHistoryChains.length > 0 && (
+            <p className="text-xs text-muted-foreground mt-2">
+              Supported EVM history sync: {supportedEvmHistoryChains.map((chain) => chain.display_name).join(', ')}
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <Button onClick={syncTransactionsFromBlockchain} disabled={syncing} variant="outline" size="sm">

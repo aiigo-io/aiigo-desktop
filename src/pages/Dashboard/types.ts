@@ -10,6 +10,8 @@ export interface DashboardStats {
     change_24h_amount: string;
     change_24h_percentage: string;
     freshness: FreshnessMetadata;
+    valuation_status: 'valued' | 'unpriced';
+    unpriced_asset_count: number;
 }
 
 export interface PortfolioHistoryPoint {

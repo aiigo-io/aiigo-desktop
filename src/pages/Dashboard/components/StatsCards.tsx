@@ -13,6 +13,9 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ stats }) => {
         ? new Date(stats.freshness.updated_at * 1000).toLocaleTimeString()
         : null;
     const failedSources = stats.freshness.failed_sources.join(', ');
+    const valuationNote = stats.valuation_status === 'unpriced'
+        ? `Priced subtotal only. ${stats.unpriced_asset_count} unpriced asset${stats.unpriced_asset_count === 1 ? '' : 's'} excluded.`
+        : null;
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -30,6 +33,11 @@ export const StatsCards: React.FC<StatsCardsProps> = ({ stats }) => {
                     {failedSources && (
                         <p className="mb-3 text-[11px] font-mono text-amber-500">
                             Partial sources: {failedSources}
+                        </p>
+                    )}
+                    {valuationNote && (
+                        <p className="mb-3 text-[11px] font-mono text-sky-600">
+                            {valuationNote}
                         </p>
                     )}
                     <div className="space-y-1">

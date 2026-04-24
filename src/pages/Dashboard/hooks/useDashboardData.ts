@@ -18,7 +18,9 @@ export const useDashboardData = () => {
             status: 'unavailable',
             updated_at: null,
             failed_sources: [],
-        }
+        },
+        valuation_status: 'valued',
+        unpriced_asset_count: 0,
     });
     const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
     const [allocation, setAllocation] = useState<AssetAllocation[]>([]);
@@ -61,7 +63,9 @@ export const useDashboardData = () => {
                     status: 'unavailable',
                     updated_at: null,
                     failed_sources: [],
-                }
+                },
+                valuation_status: 'valued',
+                unpriced_asset_count: 0,
             });
             setChartData([]);
             setAllocation([]);

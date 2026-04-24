@@ -2,6 +2,13 @@ use crate::wallet::state::types::FreshnessMetadata;
 use crate::wallet::sync::types::SyncOutcome;
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValuationStatus {
+    Valued,
+    Unpriced,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletInfo {
     pub id: String,
@@ -151,8 +158,9 @@ pub struct EvmAssetBalance {
     pub asset: EvmAsset,
     pub balance: String,    // Store as string to preserve precision
     pub balance_float: f64, // For UI display
-    pub usd_price: f64,     // Current USD price
-    pub usd_value: f64,     // Total value in USD (balance_float * usd_price)
+    pub usd_price: Option<f64>,
+    pub usd_value: Option<f64>,
+    pub valuation_status: ValuationStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +168,8 @@ pub struct EvmChainAssets {
     pub chain: String,
     pub chain_id: u64,
     pub total_balance_usd: f64,
+    pub valuation_status: ValuationStatus,
+    pub unpriced_asset_count: usize,
     pub freshness: FreshnessMetadata,
     pub assets: Vec<EvmAssetBalance>,
 }
@@ -172,6 +182,8 @@ pub struct EvmWalletInfo {
     pub address: String,
     pub chains: Vec<EvmChainAssets>,
     pub total_balance_usd: f64,
+    pub valuation_status: ValuationStatus,
+    pub unpriced_asset_count: usize,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -200,6 +212,7 @@ pub struct FreshnessBackedBitcoinBalance {
 mod tests {
     use super::{
         EvmAsset, EvmAssetBalance, EvmChainAssets, EvmWalletBalancesResponse, EvmWalletInfo,
+        ValuationStatus,
     };
     use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
     use crate::wallet::sync::types::{SyncOutcome, SyncReason, SyncTarget};
@@ -228,6 +241,8 @@ mod tests {
                     chain: "ethereum".to_string(),
                     chain_id: 1,
                     total_balance_usd: 12.5,
+                    valuation_status: ValuationStatus::Unpriced,
+                    unpriced_asset_count: 1,
                     freshness: FreshnessMetadata {
                         status: FreshnessStatus::Stale,
                         updated_at: None,
@@ -238,11 +253,14 @@ mod tests {
                         asset: EvmAsset::new("ETH", "Ethereum", 18, None),
                         balance: "1000000000000000000".to_string(),
                         balance_float: 1.0,
-                        usd_price: 12.5,
-                        usd_value: 12.5,
+                        usd_price: None,
+                        usd_value: None,
+                        valuation_status: ValuationStatus::Unpriced,
                     }],
                 }],
                 total_balance_usd: 12.5,
+                valuation_status: ValuationStatus::Unpriced,
+                unpriced_asset_count: 1,
                 created_at: "2026-04-20T00:00:00Z".to_string(),
                 updated_at: "2026-04-20T00:00:00Z".to_string(),
             },
@@ -261,9 +279,18 @@ mod tests {
         let chain = &json["wallet"]["chains"][0];
         assert_eq!(
             top_level_keys(chain),
-            vec!["assets", "chain", "chain_id", "freshness", "total_balance_usd"]
+            vec![
+                "assets",
+                "chain",
+                "chain_id",
+                "freshness",
+                "total_balance_usd",
+                "unpriced_asset_count",
+                "valuation_status"
+            ]
         );
         assert_eq!(chain["freshness"]["status"], "stale");
+        assert_eq!(chain["valuation_status"], "unpriced");
         assert_eq!(json["sync"]["partial"], true);
         assert_eq!(json["sync"]["failed_sources"][0], "ethereum");
     }

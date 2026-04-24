@@ -12,6 +12,7 @@ import {
   EvmWalletBalancesResponse,
   getChainFreshnessDescription,
   getFreshnessBadgeClass,
+  getValuationStatusDescription,
   getWalletMainnetBalance,
   getWalletSyncBanner,
   getWalletUpdatedLabel,
@@ -1127,7 +1128,7 @@ const EvmAssets: React.FC = () => {
                     {selectedAssetForSend?.asset.asset.symbol}
                   </span>
                 </div>
-                {selectedAssetForSend?.asset.usd_price && sendAmount && (
+                {selectedAssetForSend && selectedAssetForSend.asset.usd_price !== null && sendAmount && (
                   <p className="text-xs text-muted-foreground text-right mt-1">
                     ≈ ${(parseFloat(sendAmount) * selectedAssetForSend.asset.usd_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                   </p>
@@ -1155,9 +1156,9 @@ const EvmAssets: React.FC = () => {
                             return `${feeEth.toFixed(6)} ETH`;
                           })()}
                         </p>
-                        {selectedAssetForSend?.asset.usd_price && (
+                        {selectedAssetForSend && selectedAssetForSend.asset.usd_price !== null && (
                           <p className="text-[10px] text-muted-foreground">
-                            ≈ ${((Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18) * (walletsWithBalances.get(selectedWalletForSend?.id || '')?.wallet.chains.find(c => c.chain_id === selectedAssetForSend.chainId)?.assets.find(a => a.asset.contract_address === null)?.usd_price || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            ≈ ${((Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18) * (walletsWithBalances.get(selectedWalletForSend?.id || '')?.wallet.chains.find(c => c.chain_id === selectedAssetForSend.chainId)?.assets.find(a => a.asset.contract_address === null)?.usd_price ?? 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </p>
                         )}
                       </>
@@ -1372,6 +1373,11 @@ const EvmAssets: React.FC = () => {
                         <p className="text-xs text-muted-foreground mt-1">
                           {getWalletUpdatedLabel(walletResponse)}
                         </p>
+                        {walletResponse && getValuationStatusDescription(walletResponse.wallet.valuation_status, walletResponse.wallet.unpriced_asset_count) && (
+                          <p className="text-xs text-sky-600 mt-1">
+                            {getValuationStatusDescription(walletResponse.wallet.valuation_status, walletResponse.wallet.unpriced_asset_count)}
+                          </p>
+                        )}
                       </div>
                       {/* Action Buttons */}
                       <div className="flex gap-1 flex-wrap justify-end">
@@ -1485,6 +1491,11 @@ const EvmAssets: React.FC = () => {
                                   <Badge variant="outline" className={`mt-1 text-[10px] uppercase ${getFreshnessBadgeClass(chainAssets.freshness.status)}`}>
                                     {formatFreshnessLabel(chainAssets.freshness.status)}
                                   </Badge>
+                                  {getValuationStatusDescription(chainAssets.valuation_status, chainAssets.unpriced_asset_count) && (
+                                    <p className="mt-1 text-[10px] text-sky-600">
+                                      {getValuationStatusDescription(chainAssets.valuation_status, chainAssets.unpriced_asset_count)}
+                                    </p>
+                                  )}
                                 </div>
                               </div>
                             </AccordionTrigger>
@@ -1518,11 +1529,15 @@ const EvmAssets: React.FC = () => {
                                     <div className="flex items-center gap-4">
                                       <div className="text-right">
                                         <p className="font-mono text-xs text-foreground">{assetBalance.balance_float.toFixed(6)} {assetBalance.asset.symbol}</p>
-                                        {assetBalance.usd_value > 0 && (
+                                        {assetBalance.valuation_status === 'unpriced' ? (
+                                          <p className="text-xs text-amber-600 mt-1 font-mono">
+                                            Unpriced
+                                          </p>
+                                        ) : assetBalance.usd_value !== null && assetBalance.usd_value > 0 ? (
                                           <p className="text-xs text-muted-foreground mt-1 font-mono">
                                             ${assetBalance.usd_value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                           </p>
-                                        )}
+                                        ) : null}
                                       </div>
                                       <button
                                         onClick={() =>

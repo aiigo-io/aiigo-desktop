@@ -1,6 +1,7 @@
 export type WalletType = 'mnemonic' | 'private-key';
 
 export type FreshnessStatus = 'fresh' | 'cached' | 'stale' | 'unavailable' | 'partial';
+export type ValuationStatus = 'valued' | 'unpriced';
 
 export interface FreshnessMetadata {
   status: FreshnessStatus;
@@ -28,14 +29,17 @@ export interface EvmAssetBalance {
   asset: EvmAsset;
   balance: string;
   balance_float: number;
-  usd_price: number;
-  usd_value: number;
+  usd_price: number | null;
+  usd_value: number | null;
+  valuation_status: ValuationStatus;
 }
 
 export interface EvmChainAssets {
   chain: string;
   chain_id: number;
   total_balance_usd: number;
+  valuation_status: ValuationStatus;
+  unpriced_asset_count: number;
   freshness: FreshnessMetadata;
   assets: EvmAssetBalance[];
 }
@@ -47,6 +51,8 @@ export interface EvmWalletInfo {
   address: string;
   chains: EvmChainAssets[];
   total_balance_usd: number;
+  valuation_status: ValuationStatus;
+  unpriced_asset_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +60,12 @@ export interface EvmWalletInfo {
 export interface EvmWalletBalancesResponse {
   wallet: EvmWalletInfo;
   sync: SyncOutcome;
+}
+
+export interface SupportedEvmHistoryChain {
+  chain: string;
+  chain_id: number;
+  display_name: string;
 }
 
 const SEPOLIA_CHAIN_ID = 11155111;
@@ -164,4 +176,12 @@ export function getWalletUpdatedLabel(response: EvmWalletBalancesResponse | unde
   }
 
   return response.sync.partial ? `Partial sync · ${updatedAt}` : `Updated: ${updatedAt}`;
+}
+
+export function getValuationStatusDescription(status: ValuationStatus, unpricedAssetCount: number): string | null {
+  if (status !== 'unpriced' || unpricedAssetCount <= 0) {
+    return null;
+  }
+
+  return `Priced subtotal only. ${unpricedAssetCount} unpriced asset${unpricedAssetCount === 1 ? '' : 's'} excluded.`;
 }

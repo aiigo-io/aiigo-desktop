@@ -33,8 +33,9 @@ pub struct AssetBalanceData {
     pub contract_address: Option<String>,
     pub balance: String,
     pub balance_float: f64,
-    pub usd_price: f64,
-    pub usd_value: f64,
+    pub usd_price: Option<f64>,
+    pub usd_value: Option<f64>,
+    pub valuation_status: String,
 }
 
 impl Database {
@@ -240,12 +241,29 @@ impl Database {
             ("evm_asset_balances", "balance_updated_at", "INTEGER"),
             ("evm_asset_balances", "price_updated_at", "INTEGER"),
             ("evm_asset_balances", "price_source", "TEXT"),
+            (
+                "evm_asset_balances",
+                "valuation_status",
+                "TEXT NOT NULL DEFAULT 'valued'",
+            ),
             ("dashboard_stats", "failed_sources", "TEXT NOT NULL DEFAULT '[]'"),
         ];
 
         for (table, column, definition) in additive_columns {
             Self::add_column_if_missing(conn, table, column, definition)?;
         }
+
+        conn.execute(
+            "UPDATE evm_asset_balances
+             SET valuation_status = 'unpriced',
+                 usd_price = NULL,
+                 usd_value = NULL,
+                 price_updated_at = NULL
+             WHERE balance_float > 0
+               AND COALESCE(usd_price, 0) = 0
+               AND COALESCE(usd_value, 0) = 0",
+            [],
+        )?;
 
         Ok(())
     }
@@ -836,8 +854,9 @@ impl Database {
         contract_address: Option<String>,
         balance: String,
         balance_float: f64,
-        usd_price: f64,
-        usd_value: f64,
+        usd_price: Option<f64>,
+        usd_value: Option<f64>,
+        valuation_status: String,
     ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
@@ -846,12 +865,13 @@ impl Database {
 
         conn.execute(
             "INSERT OR REPLACE INTO evm_asset_balances 
-             (id, wallet_id, chain, chain_id, asset_symbol, asset_name, asset_decimals, contract_address, balance, balance_float, usd_price, usd_value, updated_at, balance_updated_at, price_updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             (id, wallet_id, chain, chain_id, asset_symbol, asset_name, asset_decimals, contract_address, balance, balance_float, usd_price, usd_value, valuation_status, updated_at, balance_updated_at, price_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 &id, &wallet_id, &chain, chain_id, &asset_symbol, &asset_name,
-                asset_decimals, &contract_address, &balance, balance_float, usd_price, usd_value, &now,
-                now_ts, now_ts
+                asset_decimals, &contract_address, &balance, balance_float, usd_price, usd_value,
+                &valuation_status, &now, now_ts,
+                if valuation_status == "valued" { Some(now_ts) } else { None }
             ],
         )?;
 
@@ -874,8 +894,8 @@ impl Database {
                 "INSERT OR REPLACE INTO evm_asset_balances (
                     id, wallet_id, chain, chain_id, asset_symbol, asset_name,
                     asset_decimals, contract_address, balance, balance_float,
-                    usd_price, usd_value, updated_at, balance_updated_at, price_updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    usd_price, usd_value, valuation_status, updated_at, balance_updated_at, price_updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     &id,
                     &asset.wallet_id,
@@ -889,9 +909,14 @@ impl Database {
                     asset.balance_float,
                     asset.usd_price,
                     asset.usd_value,
+                    &asset.valuation_status,
                     &now,
                     now_ts,
-                    now_ts,
+                    if asset.valuation_status == "valued" {
+                        Some(now_ts)
+                    } else {
+                        None
+                    },
                 ],
             )?;
         }
@@ -913,13 +938,14 @@ impl Database {
             u8,
             String,
             f64,
-            f64,
-            f64,
+            Option<f64>,
+            Option<f64>,
+            String,
         )>,
     > {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT chain, asset_symbol, chain_id, asset_name, contract_address, asset_decimals, balance, balance_float, usd_price, usd_value
+            "SELECT chain, asset_symbol, chain_id, asset_name, contract_address, asset_decimals, balance, balance_float, usd_price, usd_value, valuation_status
              FROM evm_asset_balances 
              WHERE wallet_id = ?1 
              ORDER BY chain, asset_symbol",
@@ -935,8 +961,9 @@ impl Database {
                 row.get::<_, u8>(5)?,             // asset_decimals
                 row.get::<_, String>(6)?,         // balance
                 row.get::<_, f64>(7)?,            // balance_float
-                row.get::<_, f64>(8)?,            // usd_price
-                row.get::<_, f64>(9)?,            // usd_value
+                row.get::<_, Option<f64>>(8)?,    // usd_price
+                row.get::<_, Option<f64>>(9)?,    // usd_value
+                row.get::<_, String>(10)?,        // valuation_status
             ))
         })?;
 

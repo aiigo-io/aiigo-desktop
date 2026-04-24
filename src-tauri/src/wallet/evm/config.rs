@@ -93,6 +93,10 @@ impl EvmChainConfig {
         }
     }
 
+    pub fn supports_history_sync(&self) -> bool {
+        !matches!(self, Self::EthereumSepolia)
+    }
+
     #[allow(dead_code)]
     pub fn rpc_url(&self) -> String {
         match self {
@@ -253,6 +257,13 @@ pub fn get_all_chains() -> Vec<EvmChainConfig> {
         EvmChainConfig::BinanceSmartChain,
         EvmChainConfig::EthereumSepolia,
     ]
+}
+
+pub fn get_history_sync_supported_chains() -> Vec<EvmChainConfig> {
+    get_all_chains()
+        .into_iter()
+        .filter(|chain| chain.supports_history_sync())
+        .collect()
 }
 
 /// Max number of chains queried concurrently. Defaults to 3.
