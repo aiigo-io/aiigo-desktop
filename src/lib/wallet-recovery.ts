@@ -121,6 +121,19 @@ export function describeWalletRecovery(
     };
   }
 
+  if (securityError === 'reauth_required') {
+    return {
+      title: 'Password re-authentication required',
+      summary: 'This high-risk action only proceeds immediately after you re-enter the local password for this device.',
+      actions: [
+        'Re-enter the local password and retry the exact reviewed action.',
+        'If you forgot the local password, reset local wallet data and restore with your recovery phrase or private key.',
+      ],
+      tone: 'warning',
+      rawError,
+    };
+  }
+
   if (securityError === 'secret_backend_unavailable') {
     return {
       title: 'Secret backend is unavailable',

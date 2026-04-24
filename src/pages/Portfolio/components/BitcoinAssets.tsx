@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { MnemonicBackupDialog } from '@/components/common/MnemonicBackupDialog';
 import RecoveryPanel from '@/components/common/RecoveryPanel';
 import { useSecuritySession } from '@/components/common/SecuritySession';
 import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw, Send, ExternalLink, HelpCircle } from 'lucide-react';
 import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE, isTauriUnavailableError } from '@/lib/tauri';
-import { EXPORT_UNAVAILABLE_MESSAGE, parseSecurityError } from '@/lib/security';
+import { parseSecurityError, securityProbeBackend } from '@/lib/security';
 import { formatFreshnessLabel, getFreshnessBadgeClass, FreshnessMetadata } from '@/lib/evm-wallet';
 import { describeWalletRecovery, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 import { shortAddress, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
@@ -25,6 +26,11 @@ interface CreateWalletResponse {
   revealed_secret: string | null;
   revealed_secret_type: 'mnemonic' | 'private-key' | null;
   wallet: WalletInfo;
+}
+
+interface PendingMnemonicBackup {
+  mnemonic: string;
+  walletLabel: string;
 }
 
 interface PriceState {
@@ -118,12 +124,12 @@ const BitcoinAssets: React.FC = () => {
   const { requestUnlock } = useSecuritySession();
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [showMnemonicDialog, setShowMnemonicDialog] = useState(false);
-  const [generatedMnemonic, setGeneratedMnemonic] = useState<CreateWalletResponse | null>(null);
+  const [pendingMnemonicBackup, setPendingMnemonicBackup] = useState<PendingMnemonicBackup | null>(null);
   const [mnemonicInput, setMnemonicInput] = useState('');
   const [privateKeyInput, setPrivateKeyInput] = useState('');
   const [walletLabel, setWalletLabel] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isPersistingMnemonic, setIsPersistingMnemonic] = useState(false);
   const [mnemonicCopied, setMnemonicCopied] = useState(false);
   const [exportedSecret, setExportedSecret] = useState<string | null>(null);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -318,27 +324,43 @@ const BitcoinAssets: React.FC = () => {
     return updatedAt ? `Updated: ${new Date(updatedAt * 1000).toLocaleTimeString()}` : fallback;
   };
 
+  const ensureWalletProtectionReady = async (prompt: string) => {
+    const passwordReady = await requestUnlock({
+      mode: 'setup',
+      reason: 'setup_required',
+      prompt,
+    });
+
+    if (!passwordReady) {
+      return false;
+    }
+
+    const backendState = await securityProbeBackend();
+    const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
+
+    if (backendUnavailable) {
+      throw 'secret_backend_unavailable';
+    }
+
+    return true;
+  };
+
   const handleCreateMnemonic = async () => {
     setIsLoading(true);
     setWalletFlowRecovery(null);
     try {
-      // Generate mnemonic
+      const ready = await ensureWalletProtectionReady('Set a local password before creating a Bitcoin wallet on this device.');
+      if (!ready) {
+        return;
+      }
+
       const mnemonic = await invoke<string>('bitcoin_create_mnemonic');
 
-      // Create wallet from mnemonic
-      const response = await invoke<CreateWalletResponse>('bitcoin_create_wallet_from_mnemonic', {
-        mnemonicPhrase: mnemonic,
-        walletLabel: walletLabel || undefined,
-        revealSecret: true,
+      setPendingMnemonicBackup({
+        mnemonic,
+        walletLabel: walletLabel || 'Bitcoin Wallet',
       });
-
-      setGeneratedMnemonic(response);
-      setShowMnemonicDialog(true);
       setMnemonicInput('');
-      setWalletLabel('');
-
-      // Reload wallets
-      loadWallets();
     } catch (error) {
       console.error('Error creating wallet:', error);
       setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'bitcoin' }));
@@ -353,7 +375,11 @@ const BitcoinAssets: React.FC = () => {
     setIsLoading(true);
     setWalletFlowRecovery(null);
     try {
-      // Import and create wallet from mnemonic
+      const ready = await ensureWalletProtectionReady('Set a local password before importing a Bitcoin wallet on this device.');
+      if (!ready) {
+        return;
+      }
+
       const response = await invoke<CreateWalletResponse>('bitcoin_create_wallet_from_mnemonic', {
         mnemonicPhrase: mnemonicInput,
         walletLabel: walletLabel || undefined,
@@ -377,7 +403,11 @@ const BitcoinAssets: React.FC = () => {
     setIsLoading(true);
     setWalletFlowRecovery(null);
     try {
-      // Import and create wallet from private key
+      const ready = await ensureWalletProtectionReady('Set a local password before importing a Bitcoin private key on this device.');
+      if (!ready) {
+        return;
+      }
+
       const response = await invoke<CreateWalletResponse>('bitcoin_create_wallet_from_private_key', {
         privateKey: privateKeyInput,
         walletLabel: walletLabel || undefined,
@@ -414,10 +444,42 @@ const BitcoinAssets: React.FC = () => {
   };
 
   const handleCloseMnemonicDialog = () => {
-    setShowMnemonicDialog(false);
-    setGeneratedMnemonic(null);
-    setIsDialogOpen(false);
+    setPendingMnemonicBackup(null);
+    setMnemonicCopied(false);
+  };
+
+  const handlePersistCreatedWallet = async () => {
+    if (!pendingMnemonicBackup) {
+      return;
+    }
+
+    setIsPersistingMnemonic(true);
     setWalletFlowRecovery(null);
+    try {
+      const backendState = await securityProbeBackend();
+      const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
+      if (backendUnavailable) {
+        throw 'secret_backend_unavailable';
+      }
+
+      const response = await invoke<CreateWalletResponse>('bitcoin_create_wallet_from_mnemonic', {
+        mnemonicPhrase: pendingMnemonicBackup.mnemonic,
+        walletLabel: pendingMnemonicBackup.walletLabel || undefined,
+      });
+
+      setWallets((current) => [...current, response.wallet]);
+      setPendingMnemonicBackup(null);
+      setMnemonicCopied(false);
+      setWalletLabel('');
+      setIsDialogOpen(false);
+      loadWallets();
+    } catch (error) {
+      console.error('Error saving created wallet:', error);
+      setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'bitcoin' }));
+      toast.error('Wallet save stopped before local encryption completed.');
+    } finally {
+      setIsPersistingMnemonic(false);
+    }
   };
 
   const handleExportPrivateKey = async (walletId: string) => {
@@ -429,11 +491,7 @@ const BitcoinAssets: React.FC = () => {
       setShowExportDialog(true);
     } catch (error) {
       console.error('Error exporting private key:', error);
-      if (parseSecurityError(error) === 'policy_denied') {
-        toast.error(EXPORT_UNAVAILABLE_MESSAGE);
-      } else {
-        alert(`Error: ${error}`);
-      }
+      toast.error(describeWalletRecovery('send-asset', error, { chainFamily: 'bitcoin' }).summary);
     } finally {
       setIsLoading(false);
     }
@@ -448,11 +506,7 @@ const BitcoinAssets: React.FC = () => {
       setShowExportDialog(true);
     } catch (error) {
       console.error('Error exporting mnemonic:', error);
-      if (parseSecurityError(error) === 'policy_denied') {
-        toast.error(EXPORT_UNAVAILABLE_MESSAGE);
-      } else {
-        alert(`Error: ${error}`);
-      }
+      toast.error(describeWalletRecovery('send-asset', error, { chainFamily: 'bitcoin' }).summary);
     } finally {
       setIsLoading(false);
     }
@@ -567,7 +621,7 @@ const BitcoinAssets: React.FC = () => {
     setPendingSendReview(null);
   };
 
-  const handleConfirmReviewedSend = async () => {
+  const submitReviewedSend = async () => {
     if (!pendingSendReview) return;
 
     if (!isTauriRuntimeAvailable()) {
@@ -626,12 +680,14 @@ const BitcoinAssets: React.FC = () => {
       }
 
       const securityError = parseSecurityError(error);
-      if (securityError === 'locked' || securityError === 'expired') {
+      if (securityError === 'locked' || securityError === 'expired' || securityError === 'reauth_required') {
         setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'bitcoin' }));
         void requestUnlock({
-          prompt: 'Unlock to continue sending BTC.',
-          reason: securityError,
-          onUnlockSuccess: handleConfirmReviewedSend,
+          prompt: 'Re-enter your local password to send BTC.',
+          reason: securityError === 'reauth_required' ? 'reauth_required' : securityError,
+          mode: 'reauth',
+          operation: 'send',
+          onUnlockSuccess: submitReviewedSend,
         });
       } else {
         setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'bitcoin' }));
@@ -639,6 +695,25 @@ const BitcoinAssets: React.FC = () => {
     } finally {
       setIsSending(false);
     }
+  };
+
+  const handleConfirmReviewedSend = async () => {
+    if (!pendingSendReview) {
+      return;
+    }
+
+    const authorized = await requestUnlock({
+      mode: 'reauth',
+      operation: 'send',
+      reason: 'reauth_required',
+      prompt: 'Re-enter your local password to send BTC.',
+    });
+
+    if (!authorized) {
+      return;
+    }
+
+    await submitReviewedSend();
   };
 
   const openSendDialog = (wallet: WalletInfo) => {
@@ -790,122 +865,17 @@ const BitcoinAssets: React.FC = () => {
           </Dialog>
         </div>
 
-        {/* Mnemonic Display Dialog */}
-        <Dialog open={showMnemonicDialog} onOpenChange={setShowMnemonicDialog}>
-          <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Save Your Mnemonic Phrase</DialogTitle>
-            </DialogHeader>
-
-            {generatedMnemonic && (
-              <div className="space-y-6">
-                {/* Warning Alert */}
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-2">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                    <div className="space-y-2">
-                      <p className="font-semibold text-red-900">Important: This is your only chance to save this mnemonic phrase!</p>
-                      <p className="text-sm text-red-800">
-                        Your mnemonic phrase is stored encrypted on this device, but you still need an offline backup. If this device is lost or your local data becomes unavailable, you will need this phrase to recover the wallet.
-                      </p>
-                      <p className="text-sm text-red-800">
-                        • Never share your mnemonic phrase with anyone<br />
-                        • Store it in a safe location<br />
-                        • Anyone with this phrase can access your funds
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Wallet Info */}
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="space-y-2">
-                    <div>
-                      <p className="text-sm text-muted-foreground">Wallet Label</p>
-                      <p className="font-medium text-white">{generatedMnemonic.wallet.label}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">Wallet Address</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <p className="font-mono text-sm text-white break-all">{generatedMnemonic.wallet.address}</p>
-                        <button
-                          onClick={() => handleCopyAddress(generatedMnemonic.wallet.address)}
-                          className="text-gray-400 hover:text-muted-foreground flex-shrink-0 transition-colors"
-                          title="Copy address"
-                        >
-                          {addressCopied === generatedMnemonic.wallet.address ? (
-                            <CheckCircle2 className="w-4 h-4 text-green-600" />
-                          ) : (
-                            <Copy className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Mnemonic Phrase */}
-                <div className="space-y-2">
-                  <Label>Your Mnemonic Phrase</Label>
-                  <div className="bg-muted rounded-lg p-4 space-y-3">
-                    <div className="grid grid-cols-3 gap-2">
-                      {(generatedMnemonic.revealed_secret ?? '').split(' ').filter(Boolean).map((word, index) => (
-                        <div key={index} className="flex items-center gap-2">
-                          <span className="text-muted-foreground text-xs font-mono w-6">{index + 1}.</span>
-                          <span className="text-yellow-400 font-mono text-sm">{word}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <button
-                      onClick={() => handleCopyMnemonic(generatedMnemonic.revealed_secret ?? '')}
-                      className="w-full mt-2 px-3 py-2 bg-muted/80 hover:bg-muted/70 text-gray-200 rounded text-sm transition-colors flex items-center justify-center gap-2"
-                    >
-                      {mnemonicCopied ? (
-                        <>
-                          <CheckCircle2 className="w-4 h-4" />
-                          Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-4 h-4" />
-                          Copy All
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Save Instructions */}
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-2">
-                  <p className="font-semibold text-yellow-900 text-sm">How to save your mnemonic:</p>
-                  <ul className="text-sm text-yellow-800 space-y-1 list-disc list-inside">
-                    <li>Write it down on paper and store it in a safe place</li>
-                    <li>Use a password manager to securely store it</li>
-                    <li>Do NOT store it in plain text files or screenshots</li>
-                    <li>Do NOT store it in cloud services or emails</li>
-                  </ul>
-                </div>
-
-                {/* Action Buttons */}
-                <div className="flex gap-3">
-                  <Button
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => handleCopyMnemonic(generatedMnemonic.revealed_secret ?? '')}
-                  >
-                    Copy to Clipboard
-                  </Button>
-                  <Button
-                    className="flex-1 bg-green-600 hover:bg-green-700"
-                    onClick={handleCloseMnemonicDialog}
-                  >
-                    I've Saved My Mnemonic
-                  </Button>
-                </div>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
+        <MnemonicBackupDialog
+          open={pendingMnemonicBackup !== null}
+          chainLabel="Bitcoin"
+          walletLabel={pendingMnemonicBackup?.walletLabel ?? ''}
+          mnemonic={pendingMnemonicBackup?.mnemonic ?? null}
+          copied={mnemonicCopied}
+          isSaving={isPersistingMnemonic}
+          onCopy={handleCopyMnemonic}
+          onCancel={handleCloseMnemonicDialog}
+          onConfirm={handlePersistCreatedWallet}
+        />
 
         {/* Export Secret Dialog */}
         <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
@@ -1335,20 +1305,15 @@ const BitcoinAssets: React.FC = () => {
                     {/* Action Buttons */}
                     <div className="flex gap-1 flex-wrap justify-end">
                       {/* Send Button */}
-                      <UnlockGate
-                        prompt="Unlock to send BTC"
-                        onUnlockSuccess={() => openSendDialog(wallet)}
+                      <button
+                        onClick={() => openSendDialog(wallet)}
+                        className="px-2 py-1 text-xs bg-orange-50 text-orange-700 hover:bg-orange-100 rounded transition-colors flex items-center gap-1"
+                        title="Send Bitcoin"
+                        disabled={isLoading}
                       >
-                        <button
-                          onClick={() => openSendDialog(wallet)}
-                          className="px-2 py-1 text-xs bg-orange-50 text-orange-700 hover:bg-orange-100 rounded transition-colors flex items-center gap-1"
-                          title="Send Bitcoin"
-                          disabled={isLoading}
-                        >
-                          <Send className="w-3 h-3" />
-                          <span>Send</span>
-                        </button>
-                      </UnlockGate>
+                        <Send className="w-3 h-3" />
+                        <span>Send</span>
+                      </button>
 
                       {/* Refresh Balance Button */}
                       <button
@@ -1362,27 +1327,41 @@ const BitcoinAssets: React.FC = () => {
                       </button>
 
                       {/* Export Private Key Button */}
-                      <button
-                        onClick={() => handleExportPrivateKey(wallet.id)}
-                        className="px-2 py-1 text-xs bg-muted text-muted-foreground rounded flex items-center gap-1 cursor-not-allowed opacity-60"
-                        title={EXPORT_UNAVAILABLE_MESSAGE}
-                        disabled
+                      <UnlockGate
+                        mode="reauth"
+                        operation="export_private_key"
+                        prompt="Re-enter your local password to reveal the Bitcoin private key."
+                        onUnlockSuccess={() => handleExportPrivateKey(wallet.id)}
                       >
-                        <Download className="w-3 h-3" />
-                        <span>Private Key Unavailable</span>
-                      </button>
+                        <button
+                          onClick={() => handleExportPrivateKey(wallet.id)}
+                          className="px-2 py-1 text-xs bg-slate-100 text-slate-700 hover:bg-slate-200 rounded transition-colors flex items-center gap-1"
+                          title="Export private key"
+                          disabled={isLoading}
+                        >
+                          <Download className="w-3 h-3" />
+                          <span>Export Private Key</span>
+                        </button>
+                      </UnlockGate>
 
                       {/* Export Mnemonic Button (only for mnemonic wallets) */}
                       {wallet.wallet_type === 'mnemonic' && (
-                        <button
-                          onClick={() => handleExportMnemonic(wallet.id)}
-                          className="px-2 py-1 text-xs bg-muted text-muted-foreground rounded flex items-center gap-1 cursor-not-allowed opacity-60"
-                          title={EXPORT_UNAVAILABLE_MESSAGE}
-                          disabled
+                        <UnlockGate
+                          mode="reauth"
+                          operation="export_mnemonic"
+                          prompt="Re-enter your local password to reveal the Bitcoin recovery phrase."
+                          onUnlockSuccess={() => handleExportMnemonic(wallet.id)}
                         >
-                          <Download className="w-3 h-3" />
-                          <span>Mnemonic Unavailable</span>
-                        </button>
+                          <button
+                            onClick={() => handleExportMnemonic(wallet.id)}
+                            className="px-2 py-1 text-xs bg-slate-100 text-slate-700 hover:bg-slate-200 rounded transition-colors flex items-center gap-1"
+                            title="Export mnemonic"
+                            disabled={isLoading}
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Export Mnemonic</span>
+                          </button>
+                        </UnlockGate>
                       )}
 
                       {/* Delete Button */}

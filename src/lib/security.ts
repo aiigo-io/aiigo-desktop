@@ -5,10 +5,27 @@ export type SecurityError =
   | 'expired'
   | 'no_password'
   | 'wrong_password'
+  | 'reauth_required'
   | 'policy_denied'
   | 'operation_not_allowed'
   | 'unknown_wallet'
   | 'secret_backend_unavailable';
+
+export type SignerOperation = 'send' | 'approve' | 'export_mnemonic' | 'export_private_key';
+
+export interface LocalPasswordPolicy {
+  installation_scope: 'per_installation';
+  device_only: boolean;
+  cloud_sync: boolean;
+  replaces_recovery_phrase: boolean;
+  requires_password_before_create_or_import: boolean;
+  requires_backend_ready_for_create_import_and_high_risk: boolean;
+  idle_lock_seconds: number;
+  lock_on_system_sleep: boolean;
+  high_risk_reauth_operations: SignerOperation[];
+  forgot_password_mode: 'reset_local_data_and_restore_with_recovery_material';
+  reauth_window_seconds: number;
+}
 
 export interface SecretBackendUnavailableReason {
   kind: 'keyring_unavailable' | 'secret_service_unreachable' | 'key_decode_failed' | 'access_denied' | 'unknown_backend_error';
@@ -39,6 +56,7 @@ const SECURITY_ERRORS: SecurityError[] = [
   'expired',
   'no_password',
   'wrong_password',
+  'reauth_required',
   'policy_denied',
   'operation_not_allowed',
   'unknown_wallet',
@@ -47,6 +65,9 @@ const SECURITY_ERRORS: SecurityError[] = [
 
 export const SECURITY_STATE_EVENT = 'app-security-changed';
 export const EXPORT_UNAVAILABLE_MESSAGE = 'Export is currently unavailable in this wallet MVP.';
+export const LOCAL_PASSWORD_DEVICE_MESSAGE = 'Local password only protects this device.';
+export const LOCAL_PASSWORD_RECOVERY_MESSAGE = 'It does not replace your recovery phrase or private key.';
+export const LOCAL_PASSWORD_SYNC_MESSAGE = 'It does not sync to cloud.';
 
 export function isSecurityError(value: unknown): value is SecurityError {
   return typeof value === 'string' && SECURITY_ERRORS.includes(value as SecurityError);
@@ -141,4 +162,36 @@ export async function securityGetBackendState() {
   }
 
   return invokeSecurityCommand<SecurityBackendState>('security_get_backend_state');
+}
+
+export async function securityProbeBackend() {
+  if (!isTauriRuntimeAvailable()) {
+    return null;
+  }
+
+  return invokeSecurityCommand<SecurityBackendState>('security_probe_backend');
+}
+
+export async function securityGetLocalPasswordPolicy() {
+  if (!isTauriRuntimeAvailable()) {
+    return null;
+  }
+
+  return invokeSecurityCommand<LocalPasswordPolicy>('security_get_local_password_policy');
+}
+
+export async function securityAuthorizeOperation(password: string, operation: SignerOperation) {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+  }
+
+  await invokeSecurityCommand<void>('security_authorize_operation', { password, operation });
+}
+
+export async function securityResetLocalWalletData() {
+  if (!isTauriRuntimeAvailable()) {
+    throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+  }
+
+  await invokeSecurityCommand<void>('security_reset_local_wallet_data');
 }

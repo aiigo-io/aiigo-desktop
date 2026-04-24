@@ -1085,7 +1085,7 @@ mod tests {
 
     #[test]
     fn send_signing_returns_locked_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
 
         assert!(matches!(
@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn approve_signing_returns_locked_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
 
         assert!(matches!(
@@ -1119,9 +1119,9 @@ mod tests {
 
     #[test]
     fn approve_signing_returns_expired_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_millis(1));
+        let session = SessionManager::new(Duration::from_millis(1), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.unlock_verified().unwrap();
+        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
         std::thread::sleep(Duration::from_millis(5));
 
         assert!(matches!(
@@ -1142,9 +1142,9 @@ mod tests {
             secret_data: "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e".to_string(),
             secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
         });
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.unlock_verified().unwrap();
+        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
 
         let result = load_signing_secret(
             &wallet,
@@ -1167,9 +1167,9 @@ mod tests {
         let (wallet, keystore) = insert_evm_wallet_with_secret(
             encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e").unwrap(),
         );
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.unlock_verified().unwrap();
+        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
 
         let result = load_signing_secret(
             &wallet,
@@ -1195,8 +1195,8 @@ mod tests {
         });
         let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
-        let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock_verified().unwrap();
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
+        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
 
         let result = approve_erc20_token(
             wallet.id.clone(),
@@ -1222,8 +1222,8 @@ mod tests {
         );
         let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
-        let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock_verified().unwrap();
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
+        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
 
         let result = approve_erc20_token(
             wallet.id.clone(),

@@ -1,5 +1,6 @@
 import React, { cloneElement, isValidElement } from 'react';
 import { useSecuritySession } from '@/components/common/SecuritySession';
+import type { SignerOperation } from '@/lib/security';
 import { cn } from '@/lib/utils';
 
 interface UnlockGateProps {
@@ -10,6 +11,8 @@ interface UnlockGateProps {
   className?: string;
   onUnlockSuccess?: () => void | Promise<void>;
   prompt?: string;
+  mode?: 'unlock' | 'setup' | 'reauth';
+  operation?: SignerOperation;
 }
 
 const UnlockGate: React.FC<UnlockGateProps> = ({
@@ -17,6 +20,8 @@ const UnlockGate: React.FC<UnlockGateProps> = ({
   className,
   onUnlockSuccess,
   prompt = 'Unlock required',
+  mode = 'unlock',
+  operation,
 }) => {
   const { requestUnlock } = useSecuritySession();
 
@@ -36,6 +41,8 @@ const UnlockGate: React.FC<UnlockGateProps> = ({
 
       await requestUnlock({
         prompt,
+        mode,
+        operation,
         onUnlockSuccess: onUnlockSuccess ?? (() => Promise.resolve(originalOnClick?.(event))),
       });
     },

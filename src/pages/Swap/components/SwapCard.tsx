@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { ArrowUpDown, Settings2, Info, RefreshCw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
 import RecoveryPanel from '@/components/common/RecoveryPanel';
 import { useSecuritySession } from '@/components/common/SecuritySession';
-import { UnlockGate } from '@/components/common/UnlockGate';
 import { parseSecurityError } from '@/lib/security';
 import { useSwap } from '../hooks/useSwap';
 import { SwapActionIntent } from '../types';
@@ -248,6 +247,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
             if (securityError === 'locked' || securityError === 'expired') {
                 await requestUnlock({
                     prompt: needsApproval ? `Unlock to approve ${fromToken.symbol}.` : 'Unlock to continue swap.',
+                    mode: 'unlock',
                     reason: securityError,
                     onUnlockSuccess: handleButtonClick,
                 });
@@ -263,11 +263,25 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         if (!pendingAction) return;
 
         const currentFlow: WalletRecoveryFlow = pendingAction.kind === 'swap-approve' ? 'approve-allowance' : 'send-asset';
+        const operation = pendingAction.kind === 'swap-approve' ? 'approve' : 'send';
 
         try {
             setIsSubmittingAction(true);
             setFlowRecovery(null);
             setLastActionFlow(currentFlow);
+            const authorized = await requestUnlock({
+                mode: 'reauth',
+                operation,
+                reason: 'reauth_required',
+                prompt: pendingAction.kind === 'swap-approve'
+                    ? `Re-enter your local password to approve ${fromToken.symbol}.`
+                    : 'Re-enter your local password to execute the reviewed swap.',
+            });
+
+            if (!authorized) {
+                return;
+            }
+
             if (pendingAction.kind === 'swap-approve') {
                 await submitApproveAction(pendingAction);
             } else {
@@ -282,16 +296,9 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
             }
 
             const securityError = parseSecurityError(error);
-            if (securityError === 'locked' || securityError === 'expired') {
+            if (securityError === 'locked' || securityError === 'expired' || securityError === 'reauth_required') {
                 setFlowRecovery(describeWalletRecovery(lastActionFlow, error, { chainFamily: 'evm' }));
                 setPendingAction(null);
-                await requestUnlock({
-                    prompt: pendingAction.kind === 'swap-approve'
-                        ? `Unlock to approve ${fromToken.symbol}.`
-                        : 'Unlock to execute swap.',
-                    reason: securityError,
-                    onUnlockSuccess: handleButtonClick,
-                });
                 return;
             }
 
@@ -564,26 +571,20 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     )}
 
                     {/* Swap Button */}
-                    <UnlockGate
-                        className="w-full"
-                        prompt="Unlock to approve or swap"
-                        onUnlockSuccess={handleButtonClick}
+                    <Button
+                        className="w-full h-12 rounded-xl text-lg shadow-lg active:scale-[0.98] transition-all"
+                        disabled={isButtonDisabled()}
+                        onClick={handleButtonClick}
                     >
-                        <Button
-                            className="w-full h-12 rounded-xl text-lg shadow-lg active:scale-[0.98] transition-all"
-                            disabled={isButtonDisabled()}
-                            onClick={handleButtonClick}
-                        >
-                            {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote || isPreparingAction || isSubmittingAction) ? (
-                                <div className="flex items-center gap-2">
-                                    <Loader2 className="size-4 animate-spin" />
-                                    {getButtonText()}
-                                </div>
-                            ) : (
-                                getButtonText()
-                            )}
-                        </Button>
-                    </UnlockGate>
+                        {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote || isPreparingAction || isSubmittingAction) ? (
+                            <div className="flex items-center gap-2">
+                                <Loader2 className="size-4 animate-spin" />
+                                {getButtonText()}
+                            </div>
+                        ) : (
+                            getButtonText()
+                        )}
+                    </Button>
                 </CardContent>
             </Card>
 

@@ -5,7 +5,10 @@ mod dashboard;
 use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
 use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
 use wallet::security::backend::SecretBackend;
-use wallet::security::commands::{security_get_backend_state, security_has_password, security_is_unlocked, security_lock, security_setup_password, security_unlock, AppSecurity, StartupSecurityState};
+use wallet::security::commands::{security_authorize_operation, security_get_backend_state, security_get_local_password_policy, security_has_password, security_is_unlocked, security_lock, security_probe_backend, security_reset_local_wallet_data, security_setup_password, security_unlock, AppSecurity, StartupSecurityState};
+use wallet::security::types::{
+    LOCAL_PASSWORD_IDLE_LOCK_SECONDS, LOCAL_PASSWORD_REAUTH_WINDOW_SECONDS,
+};
 use wallet::security::keystore::{Keystore, SqliteKeystore};
 use wallet::security::session::SessionManager;
 use wallet::state::commands as state_commands;
@@ -71,7 +74,10 @@ fn init_tracing() {
 
 fn build_app_security(secret_backend: Arc<SecretBackend>) -> AppSecurity {
     AppSecurity {
-        session_manager: Arc::new(SessionManager::new(Duration::from_secs(300))),
+        session_manager: Arc::new(SessionManager::new(
+            Duration::from_secs(LOCAL_PASSWORD_IDLE_LOCK_SECONDS),
+            Duration::from_secs(LOCAL_PASSWORD_REAUTH_WINDOW_SECONDS),
+        )),
         keystore: Arc::new(SqliteKeystore::new(&DB, secret_backend.clone()))
             as Arc<dyn Keystore + Send + Sync>,
         secret_backend,
@@ -172,6 +178,10 @@ pub fn run() {
             security_lock,
             security_is_unlocked,
             security_get_backend_state,
+            security_probe_backend,
+            security_get_local_password_policy,
+            security_authorize_operation,
+            security_reset_local_wallet_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,4 +1,5 @@
 use crate::wallet::security::commands::AppSecurity;
+use crate::wallet::security::commands::ensure_local_password_boundary_ready;
 use crate::wallet::evm::private_key::map_security_error;
 use crate::wallet::security::backend::SecretBackend;
 use crate::wallet::security::secret_envelope::StoredSecret;
@@ -24,6 +25,8 @@ pub fn evm_create_wallet_from_mnemonic(
     reveal_secret: Option<bool>,
     state: tauri::State<'_, AppSecurity>,
 ) -> Result<CreateWalletResponse, String> {
+    ensure_local_password_boundary_ready(&state).map_err(map_security_error)?;
+
     // Validate mnemonic
     let _mnemonic = Mnemonic::parse_in_normalized(Language::English, &mnemonic_phrase)
         .map_err(|e| format!("Invalid mnemonic: {}", e))?;

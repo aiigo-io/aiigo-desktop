@@ -515,6 +515,24 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_local_wallet_data(&self) -> SqliteResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        tx.execute("DELETE FROM evm_asset_balances", [])?;
+        tx.execute("DELETE FROM bitcoin_transactions", [])?;
+        tx.execute("DELETE FROM evm_transactions", [])?;
+        tx.execute("DELETE FROM portfolio_history", [])?;
+        tx.execute("DELETE FROM dashboard_stats", [])?;
+        tx.execute("DELETE FROM bitcoin_wallet_secrets", [])?;
+        tx.execute("DELETE FROM evm_wallet_secrets", [])?;
+        tx.execute("DELETE FROM bitcoin_wallets", [])?;
+        tx.execute("DELETE FROM evm_wallets", [])?;
+        tx.execute("DELETE FROM security_auth_state", [])?;
+
+        tx.commit()
+    }
+
     pub(crate) fn load_bitcoin_wallet_secret(
         &self,
         wallet_id: &str,

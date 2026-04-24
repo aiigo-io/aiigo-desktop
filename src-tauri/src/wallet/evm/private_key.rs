@@ -1,6 +1,7 @@
 use crate::wallet::security::backend::SecretBackend;
 use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::commands::AppSecurity;
+use crate::wallet::security::commands::ensure_local_password_boundary_ready;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
 use crate::wallet::types::CreateWalletResponse;
@@ -14,6 +15,7 @@ pub(crate) fn map_security_error(error: SecurityError) -> String {
         SecurityError::Expired => "expired".to_string(),
         SecurityError::NoPassword => "no_password".to_string(),
         SecurityError::WrongPassword => "wrong_password".to_string(),
+        SecurityError::ReauthRequired => "reauth_required".to_string(),
         SecurityError::PolicyDenied => "policy_denied".to_string(),
         SecurityError::OperationNotAllowed => "operation_not_allowed".to_string(),
         SecurityError::UnknownWallet => "unknown_wallet".to_string(),
@@ -107,6 +109,8 @@ pub fn evm_create_wallet_from_private_key(
     reveal_secret: Option<bool>,
     state: tauri::State<'_, AppSecurity>,
 ) -> Result<CreateWalletResponse, String> {
+    ensure_local_password_boundary_ready(&state).map_err(map_security_error)?;
+
     // Parse private key
     let trimmed = private_key.trim();
 
@@ -297,7 +301,7 @@ mod tests {
 
     #[test]
     fn export_mnemonic_returns_locked_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let backend = ready_backend();
 
         assert_eq!(
@@ -314,7 +318,7 @@ mod tests {
 
     #[test]
     fn export_private_key_returns_locked_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let backend = ready_backend();
 
         assert_eq!(
@@ -330,10 +334,12 @@ mod tests {
     }
 
     #[test]
-    fn load_authorized_mnemonic_returns_secret_for_send_when_session_unlocked() {
-        let session = SessionManager::new(Duration::from_secs(30));
+    fn load_authorized_mnemonic_returns_secret_for_send_after_reauth() {
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let backend = ready_backend();
-        session.unlock_verified().unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         assert_eq!(
             load_authorized_mnemonic(
@@ -349,9 +355,11 @@ mod tests {
 
     #[test]
     fn send_returns_secret_backend_unavailable_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let backend = unavailable_backend();
-        session.unlock_verified().unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         assert_eq!(
             load_authorized_mnemonic(
@@ -366,14 +374,14 @@ mod tests {
     }
 
     #[test]
-    fn export_mnemonic_returns_policy_denied_when_session_unlocked() {
-        let session = SessionManager::new(Duration::from_secs(30));
+    fn export_mnemonic_requires_fresh_reauth_when_only_unlocked() {
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let backend = ready_backend();
         session.unlock_verified().unwrap();
 
         assert_eq!(
             export_mnemonic_inner("mnemonic", "0x1234", &backend, &PanicKeystore, &session),
-            Err("policy_denied".to_string())
+            Err("reauth_required".to_string())
         );
     }
 }

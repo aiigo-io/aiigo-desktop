@@ -671,7 +671,7 @@ mod tests {
     use crate::wallet::security::log_sanitize::take_test_log_lines;
     use crate::wallet::security::secret_envelope::{encrypt_secret, decrypt_secret, SecretEnvelopeError, StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
     use crate::wallet::security::session::SessionManager;
-    use crate::wallet::security::types::SecurityError;
+    use crate::wallet::security::types::{SecurityError, SignerOperation};
     use crate::wallet::transaction_types::SendBitcoinRequest;
     use crate::wallet::types::WalletInfo;
     use crate::DB;
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn send_signing_returns_locked_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
 
         assert!(matches!(
@@ -825,9 +825,9 @@ mod tests {
 
     #[test]
     fn send_signing_returns_expired_without_keystore_access() {
-        let session = SessionManager::new(Duration::from_millis(1));
+        let session = SessionManager::new(Duration::from_millis(1), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.unlock_verified().unwrap();
+        session.authorize_verified_operation(SignerOperation::Send).unwrap();
         std::thread::sleep(Duration::from_millis(5));
 
         assert!(matches!(
@@ -842,9 +842,9 @@ mod tests {
             secret_data: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
             secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
         });
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.unlock_verified().unwrap();
+        session.authorize_verified_operation(SignerOperation::Send).unwrap();
 
         let result = load_signing_secret(&wallet, &secret_backend, &keystore, &session).unwrap();
 
@@ -863,9 +863,9 @@ mod tests {
             )
             .unwrap(),
         );
-        let session = SessionManager::new(Duration::from_secs(30));
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.unlock_verified().unwrap();
+        session.authorize_verified_operation(SignerOperation::Send).unwrap();
 
         let result = load_signing_secret(&wallet, &secret_backend, &keystore, &session).unwrap();
 
@@ -884,13 +884,13 @@ mod tests {
         });
         let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
-        let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock_verified().unwrap();
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
+        session.authorize_verified_operation(SignerOperation::Send).unwrap();
 
         let result = send_bitcoin_transaction_with_blockchain_factory(
             SendBitcoinRequest {
                 wallet_id: wallet.id.clone(),
-                to_address: "bc1ptestrecipient".to_string(),
+                to_address: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT".to_string(),
                 amount: 0.0001,
                 fee_rate: None,
                 send_all: None,
@@ -917,13 +917,13 @@ mod tests {
         );
         let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
-        let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock_verified().unwrap();
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
+        session.authorize_verified_operation(SignerOperation::Send).unwrap();
 
         let result = send_bitcoin_transaction_with_blockchain_factory(
             SendBitcoinRequest {
                 wallet_id: wallet.id.clone(),
-                to_address: "bc1ptestrecipient".to_string(),
+                to_address: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT".to_string(),
                 amount: 0.0001,
                 fee_rate: None,
                 send_all: None,
@@ -948,8 +948,8 @@ mod tests {
         });
         let secret_backend = ready_secret_backend();
         let keystore = SqliteKeystore::new(&DB, Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter))));
-        let session = SessionManager::new(Duration::from_secs(30));
-        session.unlock_verified().unwrap();
+        let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
+        session.authorize_verified_operation(SignerOperation::Send).unwrap();
 
         let result = send_bitcoin_transaction_with_blockchain_factory(
             SendBitcoinRequest {

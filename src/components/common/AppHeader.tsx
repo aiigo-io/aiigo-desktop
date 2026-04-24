@@ -4,7 +4,7 @@ import { Lock } from 'lucide-react';
 
 import { useSecuritySession } from '@/components/common/SecuritySession';
 import { Button } from '@/components/ui/button';
-import { notifySecurityChanged, securityLock } from '@/lib/security';
+import { LOCAL_PASSWORD_DEVICE_MESSAGE, notifySecurityChanged, securityLock } from '@/lib/security';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -59,6 +59,9 @@ const AppHeader: React.FC = () => {
             Degraded Security
           </div>
         )}
+        <div className="hidden max-w-xs text-right text-[10px] uppercase tracking-[0.14em] text-slate-400 xl:block">
+          {LOCAL_PASSWORD_DEVICE_MESSAGE} Send, approve, and export always ask again.
+        </div>
         <Button
           variant="outline"
           size="sm"
