@@ -7,6 +7,7 @@ use once_cell::sync::Lazy;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::{env, fs, path::Path, path::PathBuf, time::SystemTime};
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
 use wallet::bitcoin::{
     commands as bitcoin_commands, mnemonic as bitcoin_mnemonic, private_key as bitcoin_private_key,
@@ -33,47 +34,151 @@ use wallet::transaction_commands;
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
+#[derive(Debug, Clone)]
+struct LegacyDbCandidate {
+    path: PathBuf,
+    size: u64,
+    modified_at: SystemTime,
+}
+
 pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
-    let db_path = if cfg!(debug_assertions) {
-        "aiigo_debug.db".to_string()
-    } else {
-        #[cfg(target_os = "macos")]
-        let data_dir = {
-            if let Ok(home) = std::env::var("HOME") {
-                std::path::PathBuf::from(home).join("Library/Application Support")
-            } else {
-                std::path::PathBuf::from(".")
-            }
-        };
+    #[cfg(test)]
+    let database = db::Database::new(":memory:")
+        .unwrap_or_else(|e| panic!("Failed to initialize in-memory test database: {}", e));
 
-        #[cfg(target_os = "windows")]
-        let data_dir = {
-            if let Ok(app_data) = std::env::var("APPDATA") {
-                std::path::PathBuf::from(app_data)
-            } else {
-                std::path::PathBuf::from(".")
-            }
-        };
-
-        #[cfg(target_os = "linux")]
-        let data_dir = {
-            if let Ok(home) = std::env::var("HOME") {
-                std::path::PathBuf::from(home).join(".local/share")
-            } else {
-                std::path::PathBuf::from(".")
-            }
-        };
-
-        let db_path = data_dir.join("aiigo_desktop").join("wallets.db");
-        std::fs::create_dir_all(&db_path.parent().unwrap()).ok();
-        db_path.to_str().unwrap().to_string()
+    #[cfg(not(test))]
+    let database = {
+        let db_path = resolve_db_path();
+        db::Database::new(&db_path.to_string_lossy())
+            .unwrap_or_else(|e| panic!("Failed to initialize database: {}", e))
     };
 
-    match db::Database::new(&db_path) {
-        Ok(db) => Mutex::new(db),
-        Err(e) => panic!("Failed to initialize database: {}", e),
-    }
+    Mutex::new(database)
 });
+
+fn resolve_db_path() -> PathBuf {
+    let db_path = stable_db_path(cfg!(debug_assertions));
+
+    if let Some(parent) = db_path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    if cfg!(debug_assertions) {
+        migrate_legacy_debug_db_if_needed(&db_path);
+    }
+
+    db_path
+}
+
+fn stable_db_path(debug: bool) -> PathBuf {
+    let file_name = if debug { "aiigo_debug.db" } else { "wallets.db" };
+    app_data_dir().join("aiigo_desktop").join(file_name)
+}
+
+fn app_data_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join("Library/Application Support");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(app_data) = env::var("APPDATA") {
+            return PathBuf::from(app_data);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = env::var("HOME") {
+            return PathBuf::from(home).join(".local/share");
+        }
+    }
+
+    PathBuf::from(".")
+}
+
+fn migrate_legacy_debug_db_if_needed(target_path: &Path) {
+    if target_has_user_data(target_path) {
+        return;
+    }
+
+    let Some(source) = select_legacy_debug_db_candidate() else {
+        return;
+    };
+
+    if source.path == target_path {
+        return;
+    }
+
+    match fs::copy(&source.path, target_path) {
+        Ok(_) => {
+            tracing::info!(
+                source = %source.path.display(),
+                target = %target_path.display(),
+                "migrated legacy debug database to stable application support path"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                source = %source.path.display(),
+                target = %target_path.display(),
+                %error,
+                "failed to migrate legacy debug database"
+            );
+        }
+    }
+}
+
+fn target_has_user_data(path: &Path) -> bool {
+    fs::metadata(path).map(|meta| meta.len() > 0).unwrap_or(false)
+}
+
+fn select_legacy_debug_db_candidate() -> Option<LegacyDbCandidate> {
+    legacy_debug_db_candidates()
+        .into_iter()
+        .filter_map(|path| {
+            let metadata = fs::metadata(&path).ok()?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                return None;
+            }
+
+            Some(LegacyDbCandidate {
+                path,
+                size: metadata.len(),
+                modified_at: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            })
+        })
+        .max_by(|left, right| {
+            left.modified_at
+                .cmp(&right.modified_at)
+                .then(left.size.cmp(&right.size))
+        })
+}
+
+fn legacy_debug_db_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(cwd) = env::current_dir() {
+        candidates.push(cwd.join("aiigo_debug.db"));
+        candidates.push(cwd.join("src-tauri").join("aiigo_debug.db"));
+
+        if let Some(parent) = cwd.parent() {
+            candidates.push(parent.join("aiigo_debug.db"));
+            candidates.push(parent.join("src-tauri").join("aiigo_debug.db"));
+        }
+    }
+
+    let mut unique = Vec::new();
+    for candidate in candidates {
+        if !unique.iter().any(|existing| existing == &candidate) {
+            unique.push(candidate);
+        }
+    }
+    unique
+}
 
 fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
@@ -175,6 +280,7 @@ pub fn run() {
             transaction_commands::get_supported_evm_history_chains,
             transaction_commands::evm_send_transaction,
             transaction_commands::evm_approve_token,
+            transaction_commands::refresh_evm_transaction_lifecycle,
             // Dashboard handlers
             dashboard::commands::get_dashboard_stats,
             dashboard::commands::refresh_dashboard_stats,
@@ -215,6 +321,10 @@ mod tests {
     impl SecretBackendAdapter for PanicOnProbeAdapter {
         fn probe(&self) -> Result<(), SecretEnvelopeError> {
             panic!("startup should not probe the secret backend");
+        }
+
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
+            unreachable!("test should not initialize empty-store keyring state during startup wiring");
         }
 
         fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {

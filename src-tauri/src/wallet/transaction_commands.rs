@@ -3,6 +3,7 @@ use crate::wallet::evm::transaction as evm_transaction;
 use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::sync::engine;
 use crate::wallet::sync::types::SyncReason;
+use crate::wallet::transaction_types::TransactionStatus;
 use crate::wallet::transaction_types::{
     BitcoinFeeEstimationResponse, BitcoinTransaction, EvmTransaction, SendBitcoinRequest,
     SendEvmRequest, SendTransactionResponse,
@@ -15,6 +16,13 @@ pub struct SupportedEvmHistoryChain {
     pub chain: String,
     pub chain_id: u64,
     pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EvmTransactionLifecycleUpdate {
+    pub status: TransactionStatus,
+    pub block_number: Option<u64>,
+    pub should_refresh_balance: bool,
 }
 
 // Bitcoin Transaction Commands
@@ -204,6 +212,28 @@ pub async fn evm_send_transaction(
     )
     .await?;
     Ok(response.tx_hash)
+}
+
+#[tauri::command]
+pub async fn refresh_evm_transaction_lifecycle(
+    tx_hash: String,
+    chain_id: u64,
+) -> Result<EvmTransactionLifecycleUpdate, String> {
+    let (status, block_number, _) =
+        engine::refresh_evm_transaction_receipt_status(tx_hash.clone(), chain_id, SyncReason::AfterBroadcast)
+            .await?;
+
+    {
+        let db = DB.lock().unwrap();
+        db.update_evm_transaction_lifecycle(&tx_hash, chain_id, status, block_number)
+            .map_err(|e| format!("Failed to persist EVM transaction lifecycle: {}", e))?;
+    }
+
+    Ok(EvmTransactionLifecycleUpdate {
+        status,
+        block_number,
+        should_refresh_balance: status.is_terminal(),
+    })
 }
 
 #[tauri::command]

@@ -6,7 +6,7 @@ import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, RefreshCw, Send, ExternalLink, HelpCircle } from 'lucide-react';
 import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE, isTauriUnavailableError } from '@/lib/tauri';
-import { parseSecurityError, securityProbeBackend } from '@/lib/security';
+import { parseSecurityError, securityGetBackendState } from '@/lib/security';
 import { formatFreshnessLabel, getFreshnessBadgeClass, FreshnessMetadata } from '@/lib/evm-wallet';
 import { describeWalletRecovery, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 import { shortAddress, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
@@ -197,8 +197,18 @@ const BitcoinAssets: React.FC = () => {
       }
       setWallets(enrichedWallets);
       setWalletBalanceStates(states);
+
+      if (enrichedWallets.length > 0) {
+        void refreshWalletsOnStartup(enrichedWallets);
+      }
     } catch (error) {
       console.error('Error loading wallets:', error);
+    }
+  };
+
+  const refreshWalletsOnStartup = async (walletsToRefresh: WalletInfo[]) => {
+    for (const wallet of walletsToRefresh) {
+      await handleRefreshBalance(wallet.id, { silent: true, background: true });
     }
   };
 
@@ -335,7 +345,7 @@ const BitcoinAssets: React.FC = () => {
       return false;
     }
 
-    const backendState = await securityProbeBackend();
+    const backendState = await securityGetBackendState();
     const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
 
     if (backendUnavailable) {
@@ -343,6 +353,24 @@ const BitcoinAssets: React.FC = () => {
     }
 
     return true;
+  };
+
+  const syncImportedWallet = async (wallet: WalletInfo) => {
+    setWallets((current) => {
+      const withoutWallet = current.filter((existing) => existing.id !== wallet.id);
+      return [...withoutWallet, wallet];
+    });
+
+    try {
+      const response = await invoke<BitcoinWalletBalanceResponse>('refresh_bitcoin_wallet_balance', { walletId: wallet.id });
+      setWallets((current) => current.map((existing) => (
+        existing.id === wallet.id ? response.wallet : existing
+      )));
+      setWalletBalanceStates((current) => new Map(current).set(wallet.id, response.balance_state));
+    } catch (error) {
+      console.error(`Error refreshing imported Bitcoin wallet ${wallet.id}:`, error);
+      toast.warning('Wallet imported, but the first balance refresh did not complete. You can retry with Refresh.');
+    }
   };
 
   const handleCreateMnemonic = async () => {
@@ -385,7 +413,7 @@ const BitcoinAssets: React.FC = () => {
         walletLabel: walletLabel || undefined,
       });
 
-      setWallets([...wallets, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setMnemonicInput('');
       setWalletLabel('');
       setIsDialogOpen(false);
@@ -413,7 +441,7 @@ const BitcoinAssets: React.FC = () => {
         walletLabel: walletLabel || undefined,
       });
 
-      setWallets([...wallets, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setPrivateKeyInput('');
       setWalletLabel('');
       setIsDialogOpen(false);
@@ -456,7 +484,7 @@ const BitcoinAssets: React.FC = () => {
     setIsPersistingMnemonic(true);
     setWalletFlowRecovery(null);
     try {
-      const backendState = await securityProbeBackend();
+      const backendState = await securityGetBackendState();
       const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
       if (backendUnavailable) {
         throw 'secret_backend_unavailable';
@@ -467,12 +495,11 @@ const BitcoinAssets: React.FC = () => {
         walletLabel: pendingMnemonicBackup.walletLabel || undefined,
       });
 
-      setWallets((current) => [...current, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setPendingMnemonicBackup(null);
       setMnemonicCopied(false);
       setWalletLabel('');
       setIsDialogOpen(false);
-      loadWallets();
     } catch (error) {
       console.error('Error saving created wallet:', error);
       setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'bitcoin' }));
@@ -531,20 +558,33 @@ const BitcoinAssets: React.FC = () => {
     }
   };
 
-  const handleRefreshBalance = async (walletId: string) => {
-    setRefreshingBalance(walletId);
+  const handleRefreshBalance = async (
+    walletId: string,
+    options?: {
+      silent?: boolean;
+      background?: boolean;
+    }
+  ) => {
+    if (!options?.background) {
+      setRefreshingBalance(walletId);
+    }
+
     try {
       const response = await invoke<BitcoinWalletBalanceResponse>('refresh_bitcoin_wallet_balance', { walletId });
-      setWallets(wallets.map(w => w.id === walletId ? response.wallet : w));
+      setWallets(current => current.map(w => w.id === walletId ? response.wallet : w));
       setWalletBalanceStates(prev => new Map(prev).set(walletId, response.balance_state));
-      if (response.balance_state.freshness.status !== 'fresh') {
+      if (!options?.silent && response.balance_state.freshness.status !== 'fresh') {
         toast.warning('BTC balance refresh is degraded. Showing the most honest state available.');
       }
     } catch (error) {
       console.error('Error refreshing balance:', error);
-      alert(`Error refreshing balance: ${error}`);
+      if (!options?.silent) {
+        alert(`Error refreshing balance: ${error}`);
+      }
     } finally {
-      setRefreshingBalance(null);
+      if (!options?.background) {
+        setRefreshingBalance(null);
+      }
     }
   };
 
@@ -699,17 +739,6 @@ const BitcoinAssets: React.FC = () => {
 
   const handleConfirmReviewedSend = async () => {
     if (!pendingSendReview) {
-      return;
-    }
-
-    const authorized = await requestUnlock({
-      mode: 'reauth',
-      operation: 'send',
-      reason: 'reauth_required',
-      prompt: 'Re-enter your local password to send BTC.',
-    });
-
-    if (!authorized) {
       return;
     }
 

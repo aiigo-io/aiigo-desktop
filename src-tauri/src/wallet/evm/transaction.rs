@@ -640,7 +640,7 @@ pub async fn send_evm_transaction(
 
     Ok(SendTransactionResponse {
         tx_hash: format!("{:?}", tx_hash),
-        message: "Transaction sent successfully".to_string(),
+        message: "Transaction broadcasted".to_string(),
     })
 }
 
@@ -779,7 +779,7 @@ pub async fn send_raw_evm_transaction(
 
     Ok(SendTransactionResponse {
         tx_hash: tx_hash_str,
-        message: "Transaction sent successfully".to_string(),
+        message: "Transaction broadcasted".to_string(),
     })
 }
 
@@ -1040,6 +1040,10 @@ mod tests {
 
     impl SecretBackendAdapter for TestSecretBackendAdapter {
         fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Ok(())
+        }
+
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
             Ok(())
         }
 

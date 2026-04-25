@@ -1,14 +1,23 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use thiserror::Error;
+
+#[cfg(all(target_os = "macos", not(test)))]
+use security_framework::base::Error as MacSecurityError;
+#[cfg(all(target_os = "macos", not(test)))]
+use security_framework::os::macos::keychain::{SecKeychain, SecPreferencesDomain};
 
 pub const SECRET_FORMAT_PLAINTEXT_V0: &str = "plaintext_v0";
 pub const SECRET_FORMAT_KEYRING_AES256_GCM_V1: &str = "keyring_aes256_gcm_v1";
 
 const KEYRING_SERVICE: &str = "aiigo-desktop";
 const KEYRING_ACCOUNT: &str = "wallet-secret-master-key";
+
+static MASTER_KEY_CACHE: Lazy<Mutex<Option<[u8; 32]>>> = Lazy::new(|| Mutex::new(None));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SecretEnvelope {
@@ -117,23 +126,85 @@ pub(crate) fn probe_secret_backend() -> Result<(), SecretEnvelopeError> {
     Ok(())
 }
 
+pub(crate) fn initialize_master_key_for_empty_store() -> Result<(), SecretEnvelopeError> {
+    if let Some(master_key) = cached_master_key() {
+        store_cached_master_key(master_key);
+        return Ok(());
+    }
+
+    if let Some(master_key) = load_existing_master_key()? {
+        store_cached_master_key(master_key);
+        return Ok(());
+    }
+
+    let master_key: [u8; 32] = rand::random();
+    store_master_key(master_key)?;
+    Ok(())
+}
+
+pub(crate) fn reset_master_key_after_local_data_reset() -> Result<(), SecretEnvelopeError> {
+    clear_cached_master_key();
+
+    #[cfg(not(test))]
+    {
+        let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+            .map_err(|error| SecretEnvelopeError::Keyring(error.to_string()))?;
+
+        match entry.delete_password() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(SecretEnvelopeError::Keyring(error.to_string())),
+        }
+    }
+
+    #[cfg(test)]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(not(test))]
 fn load_or_create_master_key() -> Result<[u8; 32], SecretEnvelopeError> {
+    if let Some(master_key) = cached_master_key() {
+        return Ok(master_key);
+    }
+
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
         .map_err(|error| SecretEnvelopeError::Keyring(error.to_string()))?;
 
     match entry.get_password() {
-        Ok(encoded_key) => decode_master_key(&encoded_key),
+        Ok(encoded_key) => {
+            let master_key = decode_master_key(&encoded_key)?;
+            store_cached_master_key(master_key);
+            Ok(master_key)
+        }
         Err(keyring::Error::NoEntry) => {
             let master_key: [u8; 32] = rand::random();
-            let encoded_key = STANDARD.encode(master_key);
-            entry
-                .set_password(&encoded_key)
-                .map_err(|error| SecretEnvelopeError::Keyring(error.to_string()))?;
+            store_master_key(master_key)?;
             Ok(master_key)
         }
         Err(error) => Err(SecretEnvelopeError::Keyring(error.to_string())),
     }
+}
+
+#[cfg(not(test))]
+fn load_existing_master_key() -> Result<Option<[u8; 32]>, SecretEnvelopeError> {
+    if let Some(master_key) = cached_master_key() {
+        return Ok(Some(master_key));
+    }
+
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|error| SecretEnvelopeError::Keyring(error.to_string()))?;
+
+    match entry.get_password() {
+        Ok(encoded_key) => Ok(Some(decode_master_key(&encoded_key)?)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(SecretEnvelopeError::Keyring(error.to_string())),
+    }
+}
+
+#[cfg(test)]
+fn load_existing_master_key() -> Result<Option<[u8; 32]>, SecretEnvelopeError> {
+    Ok(cached_master_key())
 }
 
 #[cfg(test)]
@@ -150,6 +221,64 @@ fn decode_master_key(encoded_key: &str) -> Result<[u8; 32], SecretEnvelopeError>
     let mut key = [0_u8; 32];
     key.copy_from_slice(&decoded);
     Ok(key)
+}
+
+#[cfg(not(test))]
+fn store_master_key(master_key: [u8; 32]) -> Result<(), SecretEnvelopeError> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = store_master_key_macos(master_key) {
+            if !is_duplicate_item_error(&error) {
+                return Err(SecretEnvelopeError::Keyring(error.to_string()));
+            }
+        } else {
+            store_cached_master_key(master_key);
+            return Ok(());
+        }
+    }
+
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .map_err(|error| SecretEnvelopeError::Keyring(error.to_string()))?;
+    let encoded_key = STANDARD.encode(master_key);
+    entry
+        .set_password(&encoded_key)
+        .map_err(|error| SecretEnvelopeError::Keyring(error.to_string()))?;
+    store_cached_master_key(master_key);
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn store_master_key_macos(master_key: [u8; 32]) -> Result<(), MacSecurityError> {
+    let keychain = SecKeychain::default_for_domain(SecPreferencesDomain::User)?;
+    let encoded_key = STANDARD.encode(master_key);
+    keychain.add_generic_password(KEYRING_SERVICE, KEYRING_ACCOUNT, encoded_key.as_bytes())
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn is_duplicate_item_error(error: &MacSecurityError) -> bool {
+    error.code() == -25299
+}
+
+#[cfg(test)]
+fn store_master_key(master_key: [u8; 32]) -> Result<(), SecretEnvelopeError> {
+    store_cached_master_key(master_key);
+    Ok(())
+}
+
+fn cached_master_key() -> Option<[u8; 32]> {
+    MASTER_KEY_CACHE.lock().ok().and_then(|cache| *cache)
+}
+
+fn store_cached_master_key(master_key: [u8; 32]) {
+    if let Ok(mut cache) = MASTER_KEY_CACHE.lock() {
+        *cache = Some(master_key);
+    }
+}
+
+fn clear_cached_master_key() {
+    if let Ok(mut cache) = MASTER_KEY_CACHE.lock() {
+        *cache = None;
+    }
 }
 
 #[cfg(test)]

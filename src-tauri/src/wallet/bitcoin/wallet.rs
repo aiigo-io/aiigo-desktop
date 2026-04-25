@@ -1,6 +1,6 @@
 use crate::wallet::bitcoin::private_key::map_security_error;
 use crate::wallet::security::backend::SecretBackend;
-use crate::wallet::security::commands::ensure_local_password_boundary_ready;
+use crate::wallet::security::commands::ensure_local_password_configured;
 use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::security::secret_envelope::StoredSecret;
 use crate::wallet::types::CreateWalletResponse;
@@ -26,7 +26,7 @@ pub fn bitcoin_create_wallet_from_mnemonic(
     reveal_secret: Option<bool>,
     state: tauri::State<'_, AppSecurity>,
 ) -> Result<CreateWalletResponse, String> {
-    ensure_local_password_boundary_ready(&state).map_err(map_security_error)?;
+    ensure_local_password_configured().map_err(map_security_error)?;
 
     // Validate and parse mnemonic
     let mnemonic = Mnemonic::parse_in_normalized(Language::English, &mnemonic_phrase)
@@ -59,6 +59,17 @@ pub fn bitcoin_create_wallet_from_mnemonic(
 
     let address_str = address.to_string();
     let label = wallet_label.unwrap_or_else(|| "Bitcoin Wallet".to_string());
+    let has_existing_secrets = {
+        let db = DB.lock().unwrap();
+        db.has_any_wallet_secret_rows()
+            .map_err(|e| format!("Failed to inspect existing wallet secrets: {}", e))?
+    };
+    if !has_existing_secrets {
+        state
+            .secret_backend()
+            .initialize_for_empty_store()
+            .map_err(map_security_error)?;
+    }
     let stored_secret = prepare_mnemonic_secret(state.secret_backend(), &mnemonic.to_string())?;
 
     // Store wallet in database
@@ -97,6 +108,10 @@ mod tests {
 
     impl SecretBackendAdapter for UnavailableSecretBackendAdapter {
         fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Err(SecretEnvelopeError::Keyring("offline".to_string()))
+        }
+
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
             Err(SecretEnvelopeError::Keyring("offline".to_string()))
         }
 

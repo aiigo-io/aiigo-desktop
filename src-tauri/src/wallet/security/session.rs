@@ -144,7 +144,9 @@ impl SessionManager {
                     && self.now().saturating_duration_since(current.granted_at)
                         < self.reauth_ttl =>
             {
-                *grant = None;
+                if !operation_grant_is_reusable(operation) {
+                    *grant = None;
+                }
                 Ok(())
             }
             _ => {
@@ -162,6 +164,10 @@ impl SessionManager {
         *grant = None;
         Ok(())
     }
+}
+
+fn operation_grant_is_reusable(operation: SignerOperation) -> bool {
+    matches!(operation, SignerOperation::Send | SignerOperation::Approve)
 }
 
 enum AuthorizationState {
@@ -198,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn verified_send_grant_is_single_use() {
+    fn verified_send_grant_is_reusable_within_reauth_window() {
         let (session, _) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
         session
@@ -206,14 +212,23 @@ mod tests {
             .unwrap();
 
         assert_eq!(session.authorize(SignerOperation::Send), Ok(()));
-        assert_eq!(
-            session.authorize(SignerOperation::Send),
-            Err(SecurityError::ReauthRequired)
-        );
+        assert_eq!(session.authorize(SignerOperation::Send), Ok(()));
     }
 
     #[test]
-    fn verified_export_grant_is_single_use() {
+    fn verified_approve_grant_is_reusable_within_reauth_window() {
+        let (session, _) = test_session(Duration::from_secs(30), Duration::from_secs(90));
+
+        session
+            .authorize_verified_operation(SignerOperation::Approve)
+            .unwrap();
+
+        assert_eq!(session.authorize(SignerOperation::Approve), Ok(()));
+        assert_eq!(session.authorize(SignerOperation::Approve), Ok(()));
+    }
+
+    #[test]
+    fn export_grant_remains_single_use() {
         let (session, _) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
         session

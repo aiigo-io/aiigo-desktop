@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { invoke, isTauriRuntimeAvailable } from '@/lib/tauri';
+import { TRANSACTION_STATE_EVENT } from '@/lib/transactions';
 import {
     DashboardStats,
     PortfolioHistoryPoint,
@@ -52,7 +53,7 @@ export const useDashboardData = () => {
         });
     };
 
-    const loadData = useCallback(async () => {
+    const loadCachedData = useCallback(async () => {
         if (!isTauriRuntimeAvailable()) {
             setStats({
                 total_balance_usd: '$0.00',
@@ -76,7 +77,6 @@ export const useDashboardData = () => {
 
         setLoading(true);
         try {
-            // 1. Load cached data immediately
             const cachedStats = await invoke<DashboardStats>('get_dashboard_stats');
             setStats(cachedStats);
 
@@ -89,18 +89,6 @@ export const useDashboardData = () => {
             setAllocation(allocationData);
 
             await loadRecentTransactions();
-
-            // 2. Refresh data in background
-            const freshStats = await invoke<DashboardStats>('refresh_dashboard_stats');
-            setStats(freshStats);
-
-            const updatedHistory = await invoke<PortfolioHistoryPoint[]>('get_portfolio_history');
-            if (updatedHistory && updatedHistory.length > 0) {
-                setChartData(formatChartData(updatedHistory));
-            }
-
-            const updatedAllocation = await invoke<AssetAllocation[]>('get_asset_allocation');
-            setAllocation(updatedAllocation);
         } catch (error) {
             console.error('Failed to load dashboard data:', error);
         } finally {
@@ -108,9 +96,48 @@ export const useDashboardData = () => {
         }
     }, [loadRecentTransactions]);
 
+    const refreshData = useCallback(async () => {
+        if (!isTauriRuntimeAvailable()) {
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const freshStats = await invoke<DashboardStats>('refresh_dashboard_stats');
+            setStats(freshStats);
+
+            const updatedHistory = await invoke<PortfolioHistoryPoint[]>('get_portfolio_history');
+            if (updatedHistory && updatedHistory.length > 0) {
+                setChartData(formatChartData(updatedHistory));
+            } else {
+                setChartData([]);
+            }
+
+            const updatedAllocation = await invoke<AssetAllocation[]>('get_asset_allocation');
+            setAllocation(updatedAllocation);
+
+            await loadRecentTransactions();
+        } catch (error) {
+            console.error('Failed to refresh dashboard data:', error);
+        } finally {
+            setLoading(false);
+        }
+    }, [loadRecentTransactions]);
+
     useEffect(() => {
-        loadData();
-    }, [loadData]);
+        loadCachedData();
+    }, [loadCachedData]);
+
+    useEffect(() => {
+        const handleTransactionStateChange = () => {
+            void loadRecentTransactions();
+        };
+
+        window.addEventListener(TRANSACTION_STATE_EVENT, handleTransactionStateChange);
+        return () => {
+            window.removeEventListener(TRANSACTION_STATE_EVENT, handleTransactionStateChange);
+        };
+    }, [loadRecentTransactions]);
 
     return {
         stats,
@@ -118,6 +145,6 @@ export const useDashboardData = () => {
         allocation,
         recentTransactions,
         loading,
-        refresh: loadData
+        refresh: refreshData
     };
 };

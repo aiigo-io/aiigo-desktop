@@ -182,6 +182,10 @@ impl SecretBackendAdapter for TestSecretBackendAdapter {
         Ok(())
     }
 
+    fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
+        Ok(())
+    }
+
     fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
         Ok(StoredSecret {
             secret_data: plaintext.to_string(),

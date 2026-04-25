@@ -1,4 +1,4 @@
-use crate::wallet::security::commands::{ensure_local_password_boundary_ready, AppSecurity};
+use crate::wallet::security::commands::{ensure_local_password_configured, AppSecurity};
 use crate::wallet::security::types::SecurityError;
 use bip39::{Language, Mnemonic};
 use rand::Rng;
@@ -18,7 +18,8 @@ fn map_security_error(error: SecurityError) -> String {
 }
 
 fn evm_create_mnemonic_inner(state: &AppSecurity) -> Result<String, String> {
-    ensure_local_password_boundary_ready(state).map_err(map_security_error)?;
+    let _ = state;
+    ensure_local_password_configured().map_err(map_security_error)?;
 
     let mut rng = rand::rng();
     let entropy: [u8; 16] = rng.random();

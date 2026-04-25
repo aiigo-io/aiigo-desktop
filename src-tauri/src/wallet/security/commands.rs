@@ -1,6 +1,7 @@
 use super::auth::{hash_password, verify_password};
 use super::backend::SecretBackend;
 use super::keystore::Keystore;
+use super::secret_envelope::reset_master_key_after_local_data_reset;
 use super::session::SessionManager;
 use super::types::{
     LocalPasswordPolicy, SecretMigrationState, SecurityBackendState, SecurityError, SignerOperation,
@@ -85,6 +86,14 @@ pub(crate) fn ensure_local_password_boundary_ready(
     state.secret_backend().ensure_ready_for_command()
 }
 
+pub(crate) fn ensure_local_password_configured() -> Result<(), SecurityError> {
+    if !security_has_password_inner()? {
+        return Err(SecurityError::NoPassword);
+    }
+
+    Ok(())
+}
+
 fn security_lock_inner(state: &AppSecurity) -> Result<(), SecurityError> {
     state.session_manager().lock();
     Ok(())
@@ -152,6 +161,7 @@ fn security_reset_local_wallet_data_inner(state: &AppSecurity) -> Result<(), Sec
     db.clear_local_wallet_data()
         .map_err(|_| SecurityError::OperationNotAllowed)?;
     drop(db);
+    reset_master_key_after_local_data_reset().map_err(|_| SecurityError::OperationNotAllowed)?;
 
     if let Ok(mut startup_state) = state.startup_state().lock() {
         *startup_state = StartupSecurityState::default();
@@ -265,6 +275,10 @@ mod tests {
 
     impl SecretBackendAdapter for UnavailableSecretBackendAdapter {
         fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Err(SecretEnvelopeError::Keyring("offline".to_string()))
+        }
+
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
             Err(SecretEnvelopeError::Keyring("offline".to_string()))
         }
 

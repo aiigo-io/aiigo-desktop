@@ -1,4 +1,4 @@
-use crate::wallet::security::commands::{ensure_local_password_boundary_ready, AppSecurity};
+use crate::wallet::security::commands::{ensure_local_password_configured, AppSecurity};
 use crate::wallet::security::types::SecurityError;
 use bip39::{Language, Mnemonic};
 use rand::RngCore;
@@ -18,7 +18,8 @@ fn map_security_error(error: SecurityError) -> String {
 }
 
 fn bitcoin_create_mnemonic_inner(state: &AppSecurity) -> Result<String, String> {
-    ensure_local_password_boundary_ready(state).map_err(map_security_error)?;
+    let _ = state;
+    ensure_local_password_configured().map_err(map_security_error)?;
 
     // 生成 128-bit 随机熵（对应 12 个助记词）
     let mut entropy = [0u8; 16];

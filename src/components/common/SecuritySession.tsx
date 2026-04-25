@@ -41,7 +41,6 @@ import {
   securityHasPassword,
   securityIsUnlocked,
   securityLock,
-  securityProbeBackend,
   securityResetLocalWalletData,
   securitySetupPassword,
   securityUnlock,
@@ -278,7 +277,7 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         : 'unlocked';
 
       setStatus(nextStatus);
-      setBackendState(await securityProbeBackend());
+      setBackendState(await securityGetBackendState());
       setIsDialogOpen(false);
       setPassword('');
       notifySecurityChanged();
@@ -326,7 +325,7 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         ? 'Session expired'
         : 'Unlock wallet';
   const dialogDescription = dialogMode === 'reauth'
-    ? 'High-risk actions require you to re-enter the local password even when the wallet is already unlocked.'
+    ? 'High-risk actions require a fresh local-password check. Send and approve stay trusted briefly; export actions ask again every time.'
     : isPasswordSetup
       ? 'Create the per-installation local password before create, import, send, approve, reveal, or export continue.'
       : pendingAction?.reason === 'expired'
@@ -500,7 +499,7 @@ const SecuritySessionProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               <p className="mt-1">{LOCAL_PASSWORD_SYNC_MESSAGE}</p>
               {policy && (
                 <p className="mt-1 text-cyan-100/80">
-                  Session auto-locks after {Math.round(policy.idle_lock_seconds / 60)} minutes of inactivity{policy.lock_on_system_sleep ? ' and after system sleep' : ''}. Fresh password re-auth stays valid for up to {policy.reauth_window_seconds} seconds and is consumed by one high-risk action.
+                  Session auto-locks after {Math.round(policy.idle_lock_seconds / 60)} minutes of inactivity{policy.lock_on_system_sleep ? ' and after system sleep' : ''}. Fresh password re-auth stays valid for up to {policy.reauth_window_seconds} seconds for send and approve. Export actions still require a fresh confirmation each time.
                 </p>
               )}
             </div>

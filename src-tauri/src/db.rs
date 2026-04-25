@@ -542,6 +542,14 @@ impl Database {
         Ok(bitcoin + evm)
     }
 
+    pub fn has_any_wallet_secret_rows(&self) -> SqliteResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let bitcoin: i64 = conn.query_row("SELECT COUNT(*) FROM bitcoin_wallet_secrets", [], |row| row.get(0))?;
+        let evm: i64 = conn.query_row("SELECT COUNT(*) FROM evm_wallet_secrets", [], |row| row.get(0))?;
+
+        Ok((bitcoin + evm) > 0)
+    }
+
     #[cfg(test)]
     pub fn clear_security_password_state_for_tests(&self) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
@@ -1223,6 +1231,23 @@ impl Database {
         Ok(result)
     }
 
+    pub fn update_evm_transaction_lifecycle(
+        &self,
+        tx_hash: &str,
+        chain_id: u64,
+        status: TransactionStatus,
+        block_number: Option<u64>,
+    ) -> SqliteResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.execute(
+            "UPDATE evm_transactions SET status = ?1, block_number = ?2 WHERE tx_hash = ?3 AND chain_id = ?4",
+            params![status.as_str(), block_number, tx_hash, chain_id],
+        )?;
+
+        Ok(())
+    }
+
     // Dashboard Methods
     pub fn get_dashboard_stats(
         &self,
@@ -1385,8 +1410,11 @@ mod tests {
         SECRET_FORMAT_KEYRING_AES256_GCM_V1, SECRET_FORMAT_PLAINTEXT_V0,
     };
     use crate::wallet::state::types::FreshnessStatus;
+    use crate::wallet::transaction_types::{EvmTransaction, TransactionStatus, TransactionType};
+    use chrono::Utc;
     use rusqlite::{params, Connection};
     use std::sync::Arc;
+    use uuid::Uuid;
 
     fn legacy_database() -> Database {
         let conn = Connection::open_in_memory().unwrap();
@@ -1665,6 +1693,14 @@ mod tests {
             }
         }
 
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
+            if self.encrypt_should_fail {
+                Err(SecretEnvelopeError::Keyring("offline".to_string()))
+            } else {
+                Ok(())
+            }
+        }
+
         fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
             if self.encrypt_should_fail {
                 Err(SecretEnvelopeError::Keyring("offline".to_string()))
@@ -1818,5 +1854,58 @@ mod tests {
             decrypt_secret(&evm_secret.0, &evm_secret.2).unwrap(),
             "0xdeadbeef"
         );
+    }
+
+    #[test]
+    fn update_evm_transaction_lifecycle_persists_terminal_status_and_block() {
+        let db = Database::new(":memory:").unwrap();
+        let wallet = db
+            .insert_evm_wallet_with_secret(
+                "Main".to_string(),
+                "private-key".to_string(),
+                "0xabc".to_string(),
+                StoredSecret {
+                    secret_data: "test-secret".to_string(),
+                    secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+                },
+                "private-key".to_string(),
+            )
+            .unwrap();
+
+        db.add_evm_transaction(&EvmTransaction {
+            id: Uuid::new_v4().to_string(),
+            wallet_id: wallet.id,
+            tx_hash: "0xtx".to_string(),
+            tx_type: TransactionType::Send,
+            from_address: "0xfrom".to_string(),
+            to_address: "0xto".to_string(),
+            amount: "1".to_string(),
+            amount_float: 1.0,
+            asset_symbol: "ETH".to_string(),
+            asset_name: "Ethereum".to_string(),
+            contract_address: None,
+            chain: "sepolia".to_string(),
+            chain_id: 11155111,
+            gas_used: "21000".to_string(),
+            gas_price: "1".to_string(),
+            fee: 0.0,
+            status: TransactionStatus::Broadcasted,
+            block_number: None,
+            timestamp: Utc::now().to_rfc3339(),
+            created_at: Utc::now().to_rfc3339(),
+        })
+        .unwrap();
+
+        db.update_evm_transaction_lifecycle(
+            "0xtx",
+            11155111,
+            TransactionStatus::Confirmed,
+            Some(123),
+        )
+        .unwrap();
+
+        let tx = db.get_all_evm_transactions().unwrap().pop().unwrap();
+        assert_eq!(tx.status, TransactionStatus::Confirmed);
+        assert_eq!(tx.block_number, Some(123));
     }
 }

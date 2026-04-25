@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { invoke, isTauriRuntimeAvailable } from '@/lib/tauri';
+import { TRANSACTION_STATE_EVENT } from '@/lib/transactions';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -58,6 +59,17 @@ const Transactions: React.FC = () => {
 
   useEffect(() => {
     fetchTransactions();
+  }, []);
+
+  useEffect(() => {
+    const handleTransactionStateChange = () => {
+      void fetchTransactions();
+    };
+
+    window.addEventListener(TRANSACTION_STATE_EVENT, handleTransactionStateChange);
+    return () => {
+      window.removeEventListener(TRANSACTION_STATE_EVENT, handleTransactionStateChange);
+    };
   }, []);
 
   useEffect(() => {

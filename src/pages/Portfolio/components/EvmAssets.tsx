@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { MnemonicBackupDialog } from '@/components/common/MnemonicBackupDialog';
 import RecoveryPanel from '@/components/common/RecoveryPanel';
 import { useSecuritySession } from '@/components/common/SecuritySession';
@@ -6,7 +6,8 @@ import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge, Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, Send, ChevronRight, HelpCircle, ExternalLink } from 'lucide-react';
 import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE, isTauriUnavailableError } from '@/lib/tauri';
-import { parseSecurityError, securityProbeBackend } from '@/lib/security';
+import { parseSecurityError, securityGetBackendState } from '@/lib/security';
+import { notifyTransactionStateChanged } from '@/lib/transactions';
 import {
   EvmAssetBalance,
   EvmWalletBalancesResponse,
@@ -21,6 +22,16 @@ import {
 import { describeWalletRecovery, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 import { shortAddress, getEvmExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
+import type { ToastT } from 'sonner';
+
+const EVM_RECEIPT_POLL_INTERVAL_MS = 5_000;
+const EVM_RECEIPT_POLL_MAX_ATTEMPTS = 24;
+
+interface EvmTransactionLifecycleUpdate {
+  status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
+  block_number: number | null;
+  should_refresh_balance: boolean;
+}
 
 interface WalletInfo {
   id: string;
@@ -213,6 +224,8 @@ const EvmAssets: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingWalletId, setRefreshingWalletId] = useState<string | null>(null);
   const [lastRefreshTime, setLastRefreshTime] = useState<Map<string, Date>>(new Map());
+  const receiptPollTimeoutsRef = useRef<number[]>([]);
+  const transactionToastIdsRef = useRef<Map<string, ToastT['id']>>(new Map());
 
   // Send EVM State
   const [isSendDialogOpen, setIsSendDialogOpen] = useState(false);
@@ -352,6 +365,141 @@ const EvmAssets: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of receiptPollTimeoutsRef.current) {
+        window.clearTimeout(timeoutId);
+      }
+      receiptPollTimeoutsRef.current = [];
+    };
+  }, []);
+
+  const removeReceiptPollTimeout = (timeoutId: number) => {
+    receiptPollTimeoutsRef.current = receiptPollTimeoutsRef.current.filter((currentId) => currentId !== timeoutId);
+  };
+
+  const buildEvmLifecycleToastContent = (
+    title: string,
+    txHash: string,
+    chainId: number,
+    subtitle?: string,
+  ) => (
+    <div className="flex flex-col gap-1">
+      <div className="font-semibold">{title}</div>
+      <div className="text-xs font-mono text-muted-foreground break-all">{txHash}</div>
+      {subtitle ? <div className="text-xs text-muted-foreground">{subtitle}</div> : null}
+      <Button
+        variant="link"
+        size="sm"
+        className="p-0 h-auto text-indigo-400 hover:text-indigo-300 justify-start"
+        onClick={() => openExternalLink(getEvmExplorerUrl(txHash, chainId))}
+      >
+        <ExternalLink className="w-3 h-3 mr-1" />
+        View on Explorer
+      </Button>
+    </div>
+  );
+
+  const showEvmLifecycleToast = (
+    status: EvmTransactionLifecycleUpdate['status'],
+    txHash: string,
+    chainId: number,
+    toastId?: ToastT['id'],
+  ) => {
+    const content = buildEvmLifecycleToastContent(
+      status === 'confirmed'
+        ? 'Transaction Confirmed'
+        : status === 'failed'
+          ? 'Transaction Failed'
+          : status === 'replaced'
+            ? 'Transaction Replaced'
+            : status === 'dropped'
+              ? 'Transaction Dropped'
+              : 'Transaction Pending',
+      txHash,
+      chainId,
+      status === 'confirmed'
+        ? 'Finalized on chain.'
+        : status === 'failed'
+          ? 'Execution failed on chain.'
+          : status === 'replaced'
+            ? 'A newer transaction replaced this submission.'
+            : status === 'dropped'
+              ? 'The network no longer tracks this submission.'
+              : 'Still waiting for chain confirmation.',
+    );
+
+    if (status === 'confirmed') {
+      return toast.success(content, { duration: 10000, id: toastId });
+    }
+
+    if (status === 'failed') {
+      return toast.error(content, { duration: 10000, id: toastId });
+    }
+
+    return toast.warning(content, { duration: 10000, id: toastId });
+  };
+
+  const pollEvmTransactionLifecycle = (
+    txHash: string,
+    chainId: number,
+    walletId: string,
+    attempt = 0,
+  ) => {
+    const timeoutId = window.setTimeout(async () => {
+      removeReceiptPollTimeout(timeoutId);
+
+      if (!isTauriRuntimeAvailable()) {
+        return;
+      }
+
+      try {
+        const lifecycle = await invoke<EvmTransactionLifecycleUpdate>('refresh_evm_transaction_lifecycle', {
+          txHash,
+          chainId,
+        });
+
+        const existingToastId = transactionToastIdsRef.current.get(txHash);
+
+        if (lifecycle.status === 'broadcasted' || lifecycle.status === 'pending') {
+          const nextToastId = toast.loading(
+            buildEvmLifecycleToastContent(
+              lifecycle.status === 'pending' ? 'Transaction Pending' : 'Transaction Broadcasted',
+              txHash,
+              chainId,
+              'Waiting for chain confirmation. You can keep using the app.',
+            ),
+            {
+              duration: Infinity,
+              id: existingToastId,
+            }
+          );
+          transactionToastIdsRef.current.set(txHash, nextToastId);
+
+          if (attempt + 1 < EVM_RECEIPT_POLL_MAX_ATTEMPTS) {
+            pollEvmTransactionLifecycle(txHash, chainId, walletId, attempt + 1);
+          }
+          return;
+        }
+
+        notifyTransactionStateChanged();
+        const nextToastId = showEvmLifecycleToast(lifecycle.status, txHash, chainId, existingToastId);
+        transactionToastIdsRef.current.set(txHash, nextToastId);
+
+        if (lifecycle.should_refresh_balance) {
+          await handleRefreshBalance(walletId);
+        }
+      } catch (error) {
+        console.error(`Error polling lifecycle for EVM transaction ${txHash}:`, error);
+        if (attempt + 1 < EVM_RECEIPT_POLL_MAX_ATTEMPTS) {
+          pollEvmTransactionLifecycle(txHash, chainId, walletId, attempt + 1);
+        }
+      }
+    }, attempt === 0 ? 0 : EVM_RECEIPT_POLL_INTERVAL_MS);
+
+    receiptPollTimeoutsRef.current.push(timeoutId);
+  };
+
   const loadWallets = async () => {
     if (!isTauriRuntimeAvailable()) {
       setWallets([]);
@@ -374,6 +522,14 @@ const EvmAssets: React.FC = () => {
         }
       }
       setWalletsWithBalances(balances);
+
+      if (result.length > 0) {
+        void handleRefreshBalance(undefined, {
+          walletsToRefresh: result,
+          silent: true,
+          background: true,
+        });
+      }
     } catch (error) {
       if (!isTauriUnavailableError(error)) {
         console.error('Error loading wallets:', error);
@@ -381,41 +537,62 @@ const EvmAssets: React.FC = () => {
     }
   };
 
-  const handleRefreshBalance = async (walletId?: string) => {
-    setIsRefreshing(true);
+  const handleRefreshBalance = async (
+    walletId?: string,
+    options?: {
+      walletsToRefresh?: WalletInfo[];
+      silent?: boolean;
+      background?: boolean;
+    }
+  ) => {
+    if (!options?.background) {
+      setIsRefreshing(true);
+    }
+
     try {
       if (walletId) {
         // Refresh specific wallet
-        setRefreshingWalletId(walletId);
+        if (!options?.background) {
+          setRefreshingWalletId(walletId);
+        }
         const walletWithBalances = await fetchWalletWithMetrics(walletId, 'single');
         setWalletsWithBalances(prev => new Map(prev).set(walletId, walletWithBalances));
         setLastRefreshTime(prev => new Map(prev).set(walletId, new Date()));
       } else {
         // Refresh all wallets
-        const balances = new Map<string, EvmWalletBalancesResponse>();
-        const refreshTimes = new Map<string, Date>();
-        for (const wallet of wallets) {
+        const walletsToRefresh = options?.walletsToRefresh ?? wallets;
+        const nextBalances = new Map(walletsWithBalances);
+        const nextRefreshTimes = new Map(lastRefreshTime);
+
+        for (const wallet of walletsToRefresh) {
           try {
             const walletWithBalances = await fetchWalletWithMetrics(wallet.id, 'all');
-            balances.set(wallet.id, walletWithBalances);
-            refreshTimes.set(wallet.id, new Date());
+            nextBalances.set(wallet.id, walletWithBalances);
+            nextRefreshTimes.set(wallet.id, new Date());
           } catch (error) {
             console.error(`Error refreshing balances for wallet ${wallet.id}:`, error);
           }
         }
-        setWalletsWithBalances(balances);
-        setLastRefreshTime(refreshTimes);
+
+        setWalletsWithBalances(nextBalances);
+        setLastRefreshTime(nextRefreshTimes);
       }
     } catch (error) {
       if (isTauriUnavailableError(error)) {
-        toast.error(TAURI_UNAVAILABLE_MESSAGE);
+        if (!options?.silent) {
+          toast.error(TAURI_UNAVAILABLE_MESSAGE);
+        }
       } else {
         console.error('Error refreshing balance:', error);
-        alert(`Error refreshing balance: ${error}`);
+        if (!options?.silent) {
+          alert(`Error refreshing balance: ${error}`);
+        }
       }
     } finally {
-      setIsRefreshing(false);
-      setRefreshingWalletId(null);
+      if (!options?.background) {
+        setIsRefreshing(false);
+        setRefreshingWalletId(null);
+      }
     }
   };
 
@@ -430,7 +607,7 @@ const EvmAssets: React.FC = () => {
       return false;
     }
 
-    const backendState = await securityProbeBackend();
+    const backendState = await securityGetBackendState();
     const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
 
     if (backendUnavailable) {
@@ -438,6 +615,22 @@ const EvmAssets: React.FC = () => {
     }
 
     return true;
+  };
+
+  const syncImportedWallet = async (wallet: WalletInfo) => {
+    setWallets((current) => {
+      const withoutWallet = current.filter((existing) => existing.id !== wallet.id);
+      return [...withoutWallet, wallet];
+    });
+
+    try {
+      const walletWithBalances = await fetchWalletWithMetrics(wallet.id, 'single');
+      setWalletsWithBalances((current) => new Map(current).set(wallet.id, walletWithBalances));
+      setLastRefreshTime((current) => new Map(current).set(wallet.id, new Date()));
+    } catch (error) {
+      console.error(`Error refreshing imported wallet ${wallet.id}:`, error);
+      toast.warning('Wallet imported, but the first balance refresh did not complete. You can retry with Refresh.');
+    }
   };
 
   const handleCreateMnemonic = async () => {
@@ -480,11 +673,10 @@ const EvmAssets: React.FC = () => {
         walletLabel: walletLabel || undefined,
       });
 
-      setWallets([...wallets, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setMnemonicInput('');
       setWalletLabel('');
       setIsDialogOpen(false);
-      loadWallets();
     } catch (error) {
       console.error('Error importing mnemonic:', error);
       setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'evm' }));
@@ -509,11 +701,10 @@ const EvmAssets: React.FC = () => {
         walletLabel: walletLabel || undefined,
       });
 
-      setWallets([...wallets, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setPrivateKeyInput('');
       setWalletLabel('');
       setIsDialogOpen(false);
-      loadWallets();
     } catch (error) {
       console.error('Error importing private key:', error);
       setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'evm' }));
@@ -553,7 +744,7 @@ const EvmAssets: React.FC = () => {
     setIsPersistingMnemonic(true);
     setWalletFlowRecovery(null);
     try {
-      const backendState = await securityProbeBackend();
+      const backendState = await securityGetBackendState();
       const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
       if (backendUnavailable) {
         throw 'secret_backend_unavailable';
@@ -564,12 +755,11 @@ const EvmAssets: React.FC = () => {
         walletLabel: pendingMnemonicBackup.walletLabel || undefined,
       });
 
-      setWallets((current) => [...current, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setPendingMnemonicBackup(null);
       setMnemonicCopied(false);
       setWalletLabel('');
       setIsDialogOpen(false);
-      loadWallets();
     } catch (error) {
       console.error('Error saving created wallet:', error);
       setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'evm' }));
@@ -699,36 +889,28 @@ const EvmAssets: React.FC = () => {
     setIsSending(true);
     setSendFlowRecovery(null);
     try {
+      const submittedRequest = pendingSendReview.request;
       const response = await invoke<{ tx_hash: string; message: string }>('send_evm', {
-        request: pendingSendReview.request
+        request: submittedRequest
       });
 
-      toast.success(
-        <div className="flex flex-col gap-1">
-          <div className="font-semibold">Transaction Sent Successfully</div>
-          <div className="text-xs font-mono text-muted-foreground break-all">
-            {response.tx_hash}
-          </div>
-          <Button
-            variant="link"
-            size="sm"
-            className="p-0 h-auto text-indigo-400 hover:text-indigo-300 justify-start"
-            onClick={() => openExternalLink(getEvmExplorerUrl(response.tx_hash, pendingSendReview.request.chain_id))}
-          >
-            <ExternalLink className="w-3 h-3 mr-1" />
-            View on Explorer
-          </Button>
-        </div>,
+      const broadcastToastId = toast.loading(
+        buildEvmLifecycleToastContent(
+          'Transaction Broadcasted',
+          response.tx_hash,
+          submittedRequest.chain_id,
+          'Waiting for chain confirmation. You can keep using the app.',
+        ),
         {
-          duration: 10000,
+          duration: Infinity,
         }
       );
+      transactionToastIdsRef.current.set(response.tx_hash, broadcastToastId);
 
       setPendingSendReview(null);
       setIsSendDialogOpen(false);
-
-      // Refresh balance after successful send
-      handleRefreshBalance(pendingSendReview.request.wallet_id);
+      notifyTransactionStateChanged();
+      pollEvmTransactionLifecycle(response.tx_hash, submittedRequest.chain_id, submittedRequest.wallet_id);
       resetSendFlow();
     } catch (error) {
       console.error('Error sending EVM asset:', error);
@@ -757,17 +939,6 @@ const EvmAssets: React.FC = () => {
 
   const handleConfirmReviewedSend = async () => {
     if (!pendingSendReview) {
-      return;
-    }
-
-    const authorized = await requestUnlock({
-      mode: 'reauth',
-      operation: 'send',
-      reason: 'reauth_required',
-      prompt: 'Re-enter your local password to send assets.',
-    });
-
-    if (!authorized) {
       return;
     }
 

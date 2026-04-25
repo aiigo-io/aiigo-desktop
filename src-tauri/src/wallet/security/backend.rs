@@ -1,5 +1,6 @@
 use super::secret_envelope::{
-    decrypt_secret, encrypt_secret, probe_secret_backend, SecretEnvelopeError, StoredSecret,
+    decrypt_secret, encrypt_secret, initialize_master_key_for_empty_store, probe_secret_backend,
+    SecretEnvelopeError, StoredSecret,
 };
 use super::types::{
     SecretBackendStatus, SecretBackendUnavailableKind, SecretBackendUnavailableReason,
@@ -9,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 pub trait SecretBackendAdapter {
     fn probe(&self) -> Result<(), SecretEnvelopeError>;
+    fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError>;
     fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError>;
     fn decrypt(
         &self,
@@ -22,6 +24,10 @@ struct DefaultSecretBackendAdapter;
 impl SecretBackendAdapter for DefaultSecretBackendAdapter {
     fn probe(&self) -> Result<(), SecretEnvelopeError> {
         probe_secret_backend()
+    }
+
+    fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
+        initialize_master_key_for_empty_store()
     }
 
     fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
@@ -101,6 +107,21 @@ impl SecretBackend {
             Ok(secret) => {
                 self.set_status(SecretBackendStatus::Ready);
                 Ok(secret)
+            }
+            Err(error) => {
+                self.set_status(SecretBackendStatus::Unavailable {
+                    reason: reason_from_error(&error),
+                });
+                Err(SecurityError::SecretBackendUnavailable)
+            }
+        }
+    }
+
+    pub fn initialize_for_empty_store(&self) -> Result<(), SecurityError> {
+        match self.adapter.initialize_empty_store() {
+            Ok(()) => {
+                self.set_status(SecretBackendStatus::Ready);
+                Ok(())
             }
             Err(error) => {
                 self.set_status(SecretBackendStatus::Unavailable {
@@ -192,6 +213,10 @@ mod tests {
     impl SecretBackendAdapter for StubAdapter {
         fn probe(&self) -> Result<(), SecretEnvelopeError> {
             self.probe_results.lock().unwrap().remove(0)
+        }
+
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
+            Ok(())
         }
 
         fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {

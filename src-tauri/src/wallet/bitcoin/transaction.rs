@@ -763,6 +763,10 @@ mod tests {
             Ok(())
         }
 
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
+            Ok(())
+        }
+
         fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
             encrypt_secret(plaintext)
         }

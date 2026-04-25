@@ -470,8 +470,11 @@ pub async fn refresh_evm_transaction_receipt_status(
     tx_hash: String,
     chain_id: u64,
     reason: SyncReason,
-) -> Result<(TransactionStatus, SyncOutcome), String> {
+) -> Result<(TransactionStatus, Option<u64>, SyncOutcome), String> {
     let receipt = evm_transaction::get_transaction_receipt(tx_hash, chain_id).await?;
+    let block_number = receipt
+        .as_ref()
+        .and_then(|value| value.block_number.map(|number| number.as_u64()));
     let status = match receipt {
         Some(receipt) => TransactionStatus::from_evm_receipt(
             receipt.status.map(|value| value.as_u64() == 1),
@@ -483,6 +486,7 @@ pub async fn refresh_evm_transaction_receipt_status(
 
     Ok((
         status,
+        block_number,
         SyncOutcome {
             reason,
             target: SyncTarget::TransactionLifecycle,

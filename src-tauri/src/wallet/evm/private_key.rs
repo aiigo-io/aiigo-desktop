@@ -1,5 +1,5 @@
 use crate::wallet::security::backend::SecretBackend;
-use crate::wallet::security::commands::ensure_local_password_boundary_ready;
+use crate::wallet::security::commands::ensure_local_password_configured;
 use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
@@ -109,7 +109,7 @@ pub fn evm_create_wallet_from_private_key(
     reveal_secret: Option<bool>,
     state: tauri::State<'_, AppSecurity>,
 ) -> Result<CreateWalletResponse, String> {
-    ensure_local_password_boundary_ready(&state).map_err(map_security_error)?;
+    ensure_local_password_configured().map_err(map_security_error)?;
 
     // Parse private key
     let trimmed = private_key.trim();
@@ -124,6 +124,17 @@ pub fn evm_create_wallet_from_private_key(
     let address = wallet.address();
     let address_str = format!("{:?}", address);
     let label = wallet_label.unwrap_or_else(|| "EVM Wallet".to_string());
+    let has_existing_secrets = {
+        let db = DB.lock().unwrap();
+        db.has_any_wallet_secret_rows()
+            .map_err(|e| format!("Failed to inspect existing wallet secrets: {}", e))?
+    };
+    if !has_existing_secrets {
+        state
+            .secret_backend()
+            .initialize_for_empty_store()
+            .map_err(map_security_error)?;
+    }
     let stored_secret = state
         .secret_backend()
         .prepare_encrypted_secret(&private_key)
@@ -248,6 +259,10 @@ mod tests {
             Ok(())
         }
 
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
+            Ok(())
+        }
+
         fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
             unreachable!()
         }
@@ -263,6 +278,10 @@ mod tests {
 
     impl SecretBackendAdapter for UnavailableSecretBackendAdapter {
         fn probe(&self) -> Result<(), SecretEnvelopeError> {
+            Err(SecretEnvelopeError::Keyring("offline".to_string()))
+        }
+
+        fn initialize_empty_store(&self) -> Result<(), SecretEnvelopeError> {
             Err(SecretEnvelopeError::Keyring("offline".to_string()))
         }
 
