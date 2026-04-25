@@ -36,7 +36,9 @@ impl PortfolioValuationSnapshot {
     }
 }
 
-pub fn build_portfolio_valuation_snapshot(db: &Database) -> Result<PortfolioValuationSnapshot, String> {
+pub fn build_portfolio_valuation_snapshot(
+    db: &Database,
+) -> Result<PortfolioValuationSnapshot, String> {
     let btc_price_state = price_manager::get_cached_price_state("BTC");
     let btc_wallets = db.get_bitcoin_wallets().map_err(|e| e.to_string())?;
     let evm_wallets = db.get_evm_wallets().map_err(|e| e.to_string())?;
@@ -70,8 +72,23 @@ pub fn build_portfolio_valuation_snapshot(db: &Database) -> Result<PortfolioValu
     let mut evm_assets_map: HashMap<String, (String, f64)> = HashMap::new();
 
     for wallet in evm_wallets {
-        let assets = db.get_evm_asset_balances(&wallet.id).map_err(|e| e.to_string())?;
-        for (_chain, symbol, chain_id, name, _contract_address, _decimals, _balance, balance_float, _usd_price, usd_value, valuation_status) in assets {
+        let assets = db
+            .get_evm_asset_balances(&wallet.id)
+            .map_err(|e| e.to_string())?;
+        for (
+            _chain,
+            symbol,
+            chain_id,
+            name,
+            _contract_address,
+            _decimals,
+            _balance,
+            balance_float,
+            _usd_price,
+            usd_value,
+            valuation_status,
+        ) in assets
+        {
             if chain_id == SEPOLIA_CHAIN_ID || balance_float <= 0.0 {
                 continue;
             }
@@ -122,7 +139,11 @@ pub fn build_portfolio_valuation_snapshot(db: &Database) -> Result<PortfolioValu
     });
 
     if priced_allocations.len() > 5 {
-        let other_value = priced_allocations.iter().skip(5).map(|bucket| bucket.value_usd).sum();
+        let other_value = priced_allocations
+            .iter()
+            .skip(5)
+            .map(|bucket| bucket.value_usd)
+            .sum();
         priced_allocations.truncate(5);
         if other_value > 0.0 {
             priced_allocations.push(AllocationBucket {

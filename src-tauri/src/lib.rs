@@ -1,26 +1,37 @@
+mod dashboard;
 mod db;
 mod wallet;
-mod dashboard;
 
-use wallet::bitcoin::{mnemonic as bitcoin_mnemonic, wallet as bitcoin_wallet, commands as bitcoin_commands, private_key as bitcoin_private_key};
-use wallet::evm::{mnemonic as evm_mnemonic, wallet as evm_wallet, commands as evm_commands, private_key as evm_private_key};
-use wallet::security::backend::SecretBackend;
-use wallet::security::commands::{security_authorize_operation, security_get_backend_state, security_get_local_password_policy, security_has_password, security_is_unlocked, security_lock, security_probe_backend, security_reset_local_wallet_data, security_setup_password, security_unlock, AppSecurity, StartupSecurityState};
-use wallet::security::types::{
-    LOCAL_PASSWORD_IDLE_LOCK_SECONDS, LOCAL_PASSWORD_REAUTH_WINDOW_SECONDS,
-};
-use wallet::security::keystore::{Keystore, SqliteKeystore};
-use wallet::security::session::SessionManager;
-use wallet::state::commands as state_commands;
-use wallet::transaction_commands;
 use dotenvy::dotenv;
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri_plugin_window_state::Builder as WindowStatePlugin;
+use wallet::bitcoin::{
+    commands as bitcoin_commands, mnemonic as bitcoin_mnemonic, private_key as bitcoin_private_key,
+    wallet as bitcoin_wallet,
+};
+use wallet::evm::{
+    commands as evm_commands, mnemonic as evm_mnemonic, private_key as evm_private_key,
+    wallet as evm_wallet,
+};
+use wallet::security::backend::SecretBackend;
+use wallet::security::commands::{
+    security_authorize_operation, security_get_backend_state, security_get_local_password_policy,
+    security_has_password, security_is_unlocked, security_lock, security_probe_backend,
+    security_reset_local_wallet_data, security_setup_password, security_unlock, AppSecurity,
+    StartupSecurityState,
+};
+use wallet::security::keystore::{Keystore, SqliteKeystore};
+use wallet::security::session::SessionManager;
+use wallet::security::types::{
+    LOCAL_PASSWORD_IDLE_LOCK_SECONDS, LOCAL_PASSWORD_REAUTH_WINDOW_SECONDS,
+};
+use wallet::state::commands as state_commands;
+use wallet::transaction_commands;
 
-use tracing_subscriber::{fmt, EnvFilter, prelude::*};
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub static DB: Lazy<Mutex<db::Database>> = Lazy::new(|| {
     let db_path = if cfg!(debug_assertions) {
@@ -68,7 +79,12 @@ fn init_tracing() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::registry()
         .with(filter)
-        .with(fmt::layer().with_target(false).with_file(true).with_line_number(true))
+        .with(
+            fmt::layer()
+                .with_target(false)
+                .with_file(true)
+                .with_line_number(true),
+        )
         .init();
 }
 
@@ -117,7 +133,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 wallet::evm::price_manager::start_background_refresh().await;
             });
-            
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -130,7 +146,6 @@ pub fn run() {
             bitcoin_private_key::bitcoin_export_private_key,
             bitcoin_commands::bitcoin_get_wallets,
             bitcoin_commands::bitcoin_get_wallet,
-            bitcoin_commands::bitcoin_get_wallet_with_balance,
             bitcoin_commands::query_bitcoin_wallet_balance,
             bitcoin_commands::refresh_bitcoin_wallet_balance,
             bitcoin_commands::bitcoin_delete_wallet,
@@ -143,7 +158,6 @@ pub fn run() {
             evm_private_key::evm_export_private_key,
             evm_commands::evm_get_wallets,
             evm_commands::evm_get_wallet,
-            evm_commands::evm_get_wallet_with_balances,
             evm_commands::query_evm_wallet_balances,
             evm_commands::refresh_evm_wallet_balances,
             evm_commands::evm_delete_wallet,
@@ -207,7 +221,11 @@ mod tests {
             unreachable!("test should not encrypt during startup wiring");
         }
 
-        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             unreachable!("test should not decrypt during startup wiring");
         }
     }

@@ -12,12 +12,7 @@ pub fn from_fetch(
     fresh_within_secs: i64,
     stale_after_secs: i64,
 ) -> PriceState {
-    let freshness = classify_age(
-        Some(fetched_at),
-        now,
-        fresh_within_secs,
-        stale_after_secs,
-    );
+    let freshness = classify_age(Some(fetched_at), now, fresh_within_secs, stale_after_secs);
 
     let status = match freshness {
         super::types::FreshnessStatus::Fresh => PriceStatus::Fresh,
@@ -88,7 +83,8 @@ mod tests {
 
     // M-PS-2
     #[test]
-    fn synthetic_is_not_usable_for_price_checks() { // assert PriceStatus::Synthetic per ADR-0003
+    fn synthetic_is_not_usable_for_price_checks() {
+        // assert PriceStatus::Synthetic per ADR-0003
         // ADR-0003: synthetic prices are not fresh prices.
         let state = synthetic(1.0, "synthetic-stablecoin", 1_713_000_000);
 
@@ -111,7 +107,8 @@ mod tests {
     }
 
     #[test]
-    fn from_fetch_marks_old_prices_as_stale() { // PriceStatus::Stale
+    fn from_fetch_marks_old_prices_as_stale() {
+        // PriceStatus::Stale
         let state = from_fetch(42.0, "coingecko", 100, 200, 30, 90);
 
         assert_eq!(state.status, PriceStatus::Stale);
@@ -127,5 +124,4 @@ mod tests {
         assert_eq!(state.status, PriceStatus::Fresh);
         assert!(is_usable_fresh(&state));
     }
-
 }

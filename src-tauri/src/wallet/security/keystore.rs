@@ -41,14 +41,19 @@ impl SqliteKeystore {
         }
     }
 
-    fn load_secret(&self, address: &str) -> Result<Option<(String, String, String)>, SecurityError> {
+    fn load_secret(
+        &self,
+        address: &str,
+    ) -> Result<Option<(String, String, String)>, SecurityError> {
         match &self.backend {
             Backend::ExistingDb(db) => {
                 let db = db.lock().map_err(|_| SecurityError::OperationNotAllowed)?;
                 load_secret_from_database(&db, address)
             }
             Backend::Connection(conn) => {
-                let conn = conn.lock().map_err(|_| SecurityError::OperationNotAllowed)?;
+                let conn = conn
+                    .lock()
+                    .map_err(|_| SecurityError::OperationNotAllowed)?;
                 load_secret_from_connection(&conn, address)
             }
         }
@@ -62,9 +67,11 @@ impl Keystore for SqliteKeystore {
             .and_then(|(secret_data, secret_type, secret_format)| {
                 (secret_type == "mnemonic").then_some((secret_data, secret_format))
             })
-            .map(|(secret_data, secret_format)| self.secret_backend.decrypt_for_command(&secret_data, &secret_format))
-            .transpose()
-            ?) 
+            .map(|(secret_data, secret_format)| {
+                self.secret_backend
+                    .decrypt_for_command(&secret_data, &secret_format)
+            })
+            .transpose()?)
     }
 
     fn load_private_key(&self, address: &str) -> Result<Option<String>, SecurityError> {
@@ -73,9 +80,11 @@ impl Keystore for SqliteKeystore {
             .and_then(|(secret_data, secret_type, secret_format)| {
                 (secret_type == "private-key").then_some((secret_data, secret_format))
             })
-            .map(|(secret_data, secret_format)| self.secret_backend.decrypt_for_command(&secret_data, &secret_format))
-            .transpose()
-            ?)
+            .map(|(secret_data, secret_format)| {
+                self.secret_backend
+                    .decrypt_for_command(&secret_data, &secret_format)
+            })
+            .transpose()?)
     }
 }
 
@@ -117,20 +126,14 @@ fn load_secret_from_connection(
     conn: &Connection,
     address: &str,
 ) -> Result<Option<(String, String, String)>, SecurityError> {
-    if let Some(secret) = query_secret(
-        conn,
-        "bitcoin_wallets",
-        "bitcoin_wallet_secrets",
-        address,
-    )
-    .map_err(|_| SecurityError::OperationNotAllowed)?
+    if let Some(secret) = query_secret(conn, "bitcoin_wallets", "bitcoin_wallet_secrets", address)
+        .map_err(|_| SecurityError::OperationNotAllowed)?
     {
         return Ok(secret);
     }
 
-    if let Some(secret) =
-        query_secret(conn, "evm_wallets", "evm_wallet_secrets", address)
-            .map_err(|_| SecurityError::OperationNotAllowed)?
+    if let Some(secret) = query_secret(conn, "evm_wallets", "evm_wallet_secrets", address)
+        .map_err(|_| SecurityError::OperationNotAllowed)?
     {
         return Ok(secret);
     }
@@ -186,7 +189,11 @@ impl SecretBackendAdapter for TestSecretBackendAdapter {
         })
     }
 
-    fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+    fn decrypt(
+        &self,
+        secret_data: &str,
+        secret_format: &str,
+    ) -> Result<String, SecretEnvelopeError> {
         decrypt_secret(secret_data, secret_format)
     }
 }

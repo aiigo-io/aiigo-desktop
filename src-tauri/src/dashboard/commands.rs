@@ -1,10 +1,11 @@
-use crate::DB;
 use crate::dashboard::valuation::build_portfolio_valuation_snapshot;
 use crate::wallet::state::freshness::classify_age;
 use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
 use crate::wallet::sync::engine;
+use crate::wallet::sync::types::SyncOutcome;
 use crate::wallet::sync::types::SyncReason;
 use crate::wallet::types::ValuationStatus;
+use crate::DB;
 use serde::{Deserialize, Serialize};
 
 const DASHBOARD_FRESH_WITHIN_SECS: i64 = 60;
@@ -28,7 +29,7 @@ fn format_currency(value: f64) -> String {
     let parts: Vec<&str> = formatted.split('.').collect();
     let integer_part = parts[0];
     let decimal_part = if parts.len() > 1 { parts[1] } else { "00" };
-    
+
     // Add thousand separators
     let mut result = String::new();
     for (i, c) in integer_part.chars().rev().enumerate() {
@@ -37,16 +38,20 @@ fn format_currency(value: f64) -> String {
         }
         result.push(c);
     }
-    
+
     let formatted_integer: String = result.chars().rev().collect();
     format!("{}.{}", formatted_integer, decimal_part)
 }
 
-fn dashboard_freshness_from_row_with_failures(updated_at: &str, failed_sources_json: &str) -> FreshnessMetadata {
+fn dashboard_freshness_from_row_with_failures(
+    updated_at: &str,
+    failed_sources_json: &str,
+) -> FreshnessMetadata {
     let updated_at_unix = chrono::DateTime::parse_from_rfc3339(updated_at)
         .map(|dt| dt.timestamp())
         .ok();
-    let failed_sources = serde_json::from_str::<Vec<String>>(failed_sources_json).unwrap_or_default();
+    let failed_sources =
+        serde_json::from_str::<Vec<String>>(failed_sources_json).unwrap_or_default();
 
     let now = chrono::Utc::now().timestamp();
     let age_status = match updated_at_unix {
@@ -59,7 +64,9 @@ fn dashboard_freshness_from_row_with_failures(updated_at: &str, failed_sources_j
         None => FreshnessStatus::Cached,
     };
 
-    let status = if !failed_sources.is_empty() && matches!(age_status, FreshnessStatus::Fresh | FreshnessStatus::Cached) {
+    let status = if !failed_sources.is_empty()
+        && matches!(age_status, FreshnessStatus::Fresh | FreshnessStatus::Cached)
+    {
         FreshnessStatus::Partial
     } else {
         age_status
@@ -86,7 +93,8 @@ fn format_dashboard_stats(
         .iter()
         .any(|source| source == "price:btc_unavailable");
     let has_priced_subtotal = total_balance_usd > 0.0;
-    let hide_totals_for_unpriced = matches!(valuation_status, ValuationStatus::Unpriced) && !has_priced_subtotal;
+    let hide_totals_for_unpriced =
+        matches!(valuation_status, ValuationStatus::Unpriced) && !has_priced_subtotal;
 
     DashboardStats {
         total_balance_usd: if price_unavailable || hide_totals_for_unpriced {
@@ -102,17 +110,98 @@ fn format_dashboard_stats(
         change_24h_amount: if price_unavailable || hide_totals_for_unpriced {
             "--".to_string()
         } else {
-            format!("{}${}", if change_24h_amount >= 0.0 { "+" } else { "" }, format_currency(change_24h_amount))
+            format!(
+                "{}${}",
+                if change_24h_amount >= 0.0 { "+" } else { "" },
+                format_currency(change_24h_amount)
+            )
         },
         change_24h_percentage: if price_unavailable || hide_totals_for_unpriced {
             "--".to_string()
         } else {
-            format!("{}{:.2}%", if change_24h_percentage >= 0.0 { "+" } else { "" }, change_24h_percentage)
+            format!(
+                "{}{:.2}%",
+                if change_24h_percentage >= 0.0 {
+                    "+"
+                } else {
+                    ""
+                },
+                change_24h_percentage
+            )
         },
         freshness,
         valuation_status,
         unpriced_asset_count,
     }
+}
+
+fn dashboard_freshness_from_sync(sync: &SyncOutcome) -> FreshnessMetadata {
+    FreshnessMetadata {
+        status: if sync.failed_sources.is_empty() {
+            classify_age(
+                sync.updated_at,
+                chrono::Utc::now().timestamp(),
+                DASHBOARD_FRESH_WITHIN_SECS,
+                DASHBOARD_STALE_AFTER_SECS,
+            )
+        } else {
+            FreshnessStatus::Partial
+        },
+        updated_at: sync.updated_at,
+        failed_sources: sync.failed_sources.clone(),
+    }
+}
+
+fn format_dashboard_stats_without_snapshot(
+    db: &crate::db::Database,
+    valuation_snapshot: &crate::dashboard::valuation::PortfolioValuationSnapshot,
+) -> Result<DashboardStats, String> {
+    let valuation_status = valuation_snapshot.valuation_status();
+    let total_balance_usd = valuation_snapshot.priced_total_usd;
+    let total_btc_balance: f64 = db
+        .get_bitcoin_wallets()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|wallet| wallet.balance)
+        .sum();
+    let btc_price_state = crate::wallet::evm::price_manager::get_cached_price_state("BTC");
+    let btc_price_unavailable = total_btc_balance > 0.0 && btc_price_state.price_usd.is_none();
+    let has_priced_subtotal = total_balance_usd > 0.0;
+    let hide_totals_for_unpriced =
+        matches!(valuation_status, ValuationStatus::Unpriced) && !has_priced_subtotal;
+    let hide_totals = btc_price_unavailable || hide_totals_for_unpriced;
+
+    Ok(DashboardStats {
+        total_balance_usd: if hide_totals {
+            "$--".to_string()
+        } else {
+            format!("${}", format_currency(total_balance_usd))
+        },
+        total_balance_btc: if hide_totals {
+            "≈ -- BTC".to_string()
+        } else if let Some(btc_price) = btc_price_state.price_usd {
+            if btc_price > 0.0 {
+                format!("≈ {:.4} BTC", total_balance_usd / btc_price)
+            } else {
+                "≈ 0.0000 BTC".to_string()
+            }
+        } else {
+            "≈ -- BTC".to_string()
+        },
+        change_24h_amount: "--".to_string(),
+        change_24h_percentage: "--".to_string(),
+        freshness: FreshnessMetadata {
+            status: FreshnessStatus::Unavailable,
+            updated_at: None,
+            failed_sources: if btc_price_unavailable {
+                vec!["price:btc_unavailable".to_string()]
+            } else {
+                Vec::new()
+            },
+        },
+        valuation_status,
+        unpriced_asset_count: valuation_snapshot.unpriced_asset_count,
+    })
 }
 
 #[tauri::command]
@@ -122,7 +211,8 @@ pub fn get_dashboard_stats() -> Result<DashboardStats, String> {
     let valuation_snapshot = build_portfolio_valuation_snapshot(&db)?;
 
     if let Some((usd, btc, change_amt, change_pct, updated_at, failed_sources_json)) = stats {
-        let freshness = dashboard_freshness_from_row_with_failures(&updated_at, &failed_sources_json);
+        let freshness =
+            dashboard_freshness_from_row_with_failures(&updated_at, &failed_sources_json);
         Ok(format_dashboard_stats(
             usd,
             btc,
@@ -133,26 +223,28 @@ pub fn get_dashboard_stats() -> Result<DashboardStats, String> {
             valuation_snapshot.unpriced_asset_count,
         ))
     } else {
-        Ok(format_dashboard_stats(
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-            FreshnessMetadata {
-                status: FreshnessStatus::Unavailable,
-                updated_at: None,
-                failed_sources: Vec::new(),
-            },
-            valuation_snapshot.valuation_status(),
-            valuation_snapshot.unpriced_asset_count,
-        ))
+        format_dashboard_stats_without_snapshot(&db, &valuation_snapshot)
     }
 }
 
 #[tauri::command]
 pub async fn refresh_dashboard_stats() -> Result<DashboardStats, String> {
-    let _ = engine::refresh_dashboard(SyncReason::Manual).await?;
-    get_dashboard_stats()
+    let (result, sync) = engine::refresh_dashboard(SyncReason::Manual).await?;
+    if sync.failed_sources.is_empty() {
+        get_dashboard_stats()
+    } else {
+        let db = DB.lock().map_err(|e| e.to_string())?;
+        let valuation_snapshot = build_portfolio_valuation_snapshot(&db)?;
+        Ok(format_dashboard_stats(
+            result.total_balance_usd,
+            result.total_balance_btc,
+            result.change_24h_amount,
+            result.change_24h_percentage,
+            dashboard_freshness_from_sync(&sync),
+            valuation_snapshot.valuation_status(),
+            valuation_snapshot.unpriced_asset_count,
+        ))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -165,11 +257,12 @@ pub struct PortfolioHistoryPoint {
 pub fn get_portfolio_history() -> Result<Vec<PortfolioHistoryPoint>, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
     let history = db.get_portfolio_history(7).map_err(|e| e.to_string())?;
-    
-    let result = history.into_iter().map(|(date, value)| {
-        PortfolioHistoryPoint { date, value }
-    }).collect();
-    
+
+    let result = history
+        .into_iter()
+        .map(|(date, value)| PortfolioHistoryPoint { date, value })
+        .collect();
+
     Ok(result)
 }
 
@@ -193,7 +286,9 @@ pub async fn get_asset_allocation() -> Result<Vec<AssetAllocation>, String> {
         .allocations
         .into_iter()
         .map(|allocation| AssetAllocation {
-            percentage: if matches!(allocation.valuation_status, ValuationStatus::Valued) && priced_total_usd > 0.0 {
+            percentage: if matches!(allocation.valuation_status, ValuationStatus::Valued)
+                && priced_total_usd > 0.0
+            {
                 (allocation.value_usd / priced_total_usd) * 100.0
             } else {
                 0.0
@@ -207,11 +302,10 @@ pub async fn get_asset_allocation() -> Result<Vec<AssetAllocation>, String> {
         .collect())
 }
 
-
 #[derive(Debug, Serialize)]
 pub struct UnifiedTransaction {
     pub id: String,
-    pub r#type: String, // "bitcoin" or "evm"
+    pub r#type: String,  // "bitcoin" or "evm"
     pub tx_type: String, // "send", "receive", etc.
     pub status: String,
     pub tx_hash: String,
@@ -225,7 +319,9 @@ pub fn get_unified_recent_transactions() -> Result<Vec<UnifiedTransaction>, Stri
     let db = DB.lock().map_err(|e| e.to_string())?;
 
     // 1. Get Bitcoin Transactions
-    let btc_txs = db.get_all_bitcoin_transactions().map_err(|e| e.to_string())?;
+    let btc_txs = db
+        .get_all_bitcoin_transactions()
+        .map_err(|e| e.to_string())?;
     let mut unified: Vec<UnifiedTransaction> = btc_txs
         .into_iter()
         .map(|tx| UnifiedTransaction {
@@ -283,13 +379,13 @@ pub struct UnifiedAsset {
 #[tauri::command]
 pub fn get_unified_assets() -> Result<Vec<UnifiedAsset>, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
-    
+
     let mut result = Vec::new();
 
     // 1. BTC Wallets
     let btc_wallets = db.get_bitcoin_wallets().map_err(|e| e.to_string())?;
     let total_btc_balance: f64 = btc_wallets.iter().map(|w| w.balance).sum();
-    
+
     if total_btc_balance > 0.0 {
         let btc_price_state = crate::wallet::evm::price_manager::get_cached_price_state("BTC");
         let btc_value = btc_price_state
@@ -314,7 +410,9 @@ pub fn get_unified_assets() -> Result<Vec<UnifiedAsset>, String> {
     // 2. EVM Assets
     let evm_wallets = db.get_evm_wallets().map_err(|e| e.to_string())?;
     for wallet in evm_wallets {
-        let assets = db.get_evm_asset_balances(&wallet.id).map_err(|e| e.to_string())?;
+        let assets = db
+            .get_evm_asset_balances(&wallet.id)
+            .map_err(|e| e.to_string())?;
         for (chain, symbol, chain_id, name, _, _, _, balance_float, _, usd_value, _) in assets {
             result.push(UnifiedAsset {
                 name,
@@ -332,7 +430,13 @@ pub fn get_unified_assets() -> Result<Vec<UnifiedAsset>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dashboard_freshness_from_row_with_failures, format_dashboard_stats};
+    use super::{
+        dashboard_freshness_from_row_with_failures, format_dashboard_stats,
+        format_dashboard_stats_without_snapshot,
+    };
+    use crate::dashboard::valuation::build_portfolio_valuation_snapshot;
+    use crate::db::Database;
+    use crate::wallet::security::secret_envelope::{StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
     use crate::wallet::state::types::FreshnessStatus;
     use crate::wallet::types::ValuationStatus;
 
@@ -383,12 +487,54 @@ mod tests {
     #[test]
     fn dashboard_row_with_failed_sources_degrades_to_partial() {
         let updated_at = chrono::Utc::now().to_rfc3339();
-        let freshness = dashboard_freshness_from_row_with_failures(
-            &updated_at,
-            "[\"price:btc_unavailable\"]",
-        );
+        let freshness =
+            dashboard_freshness_from_row_with_failures(&updated_at, "[\"price:btc_unavailable\"]");
 
         assert!(matches!(freshness.status, FreshnessStatus::Partial));
-        assert_eq!(freshness.failed_sources, vec!["price:btc_unavailable".to_string()]);
+        assert_eq!(
+            freshness.failed_sources,
+            vec!["price:btc_unavailable".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_dashboard_snapshot_uses_priced_subtotal_instead_of_zero() {
+        let db = Database::new(":memory:").unwrap();
+        let wallet = db
+            .insert_evm_wallet_with_secret(
+                "Main".to_string(),
+                "mnemonic".to_string(),
+                "0xabc".to_string(),
+                StoredSecret {
+                    secret_data: "test-secret".to_string(),
+                    secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+                },
+                "mnemonic".to_string(),
+            )
+            .unwrap();
+
+        db.save_evm_asset_balance(
+            wallet.id,
+            "ethereum".to_string(),
+            1,
+            "ETH".to_string(),
+            "Ethereum".to_string(),
+            18,
+            None,
+            "1".to_string(),
+            1.0,
+            Some(150.0),
+            Some(150.0),
+            "valued".to_string(),
+        )
+        .unwrap();
+
+        let snapshot = build_portfolio_valuation_snapshot(&db).unwrap();
+        let stats = format_dashboard_stats_without_snapshot(&db, &snapshot).unwrap();
+
+        assert_eq!(stats.total_balance_usd, "$150.00");
+        assert_eq!(stats.change_24h_amount, "--");
+        assert_eq!(stats.change_24h_percentage, "--");
+        assert_eq!(stats.freshness.status, FreshnessStatus::Unavailable);
     }
 }

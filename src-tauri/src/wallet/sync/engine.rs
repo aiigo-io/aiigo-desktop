@@ -8,7 +8,9 @@ use crate::wallet::evm::transaction as evm_transaction;
 use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
 use crate::wallet::sync::types::{SyncOutcome, SyncReason, SyncTarget};
 use crate::wallet::transaction_types::{BitcoinTransaction, EvmTransaction, TransactionStatus};
-use crate::wallet::types::{EvmAssetBalance, EvmChainAssets, EvmWalletInfo, ValuationStatus, WalletInfo};
+use crate::wallet::types::{
+    EvmAssetBalance, EvmChainAssets, EvmWalletInfo, ValuationStatus, WalletInfo,
+};
 use crate::DB;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -24,18 +26,29 @@ pub struct DashboardRefreshResult {
     pub change_24h_percentage: f64,
 }
 
-fn asset_valuation(symbol: &str, balance_float: f64) -> (Option<f64>, Option<f64>, ValuationStatus) {
+fn asset_valuation(
+    symbol: &str,
+    balance_float: f64,
+) -> (Option<f64>, Option<f64>, ValuationStatus) {
     match crate::wallet::evm::price_manager::get_cached_price_state(symbol).price_usd {
-        Some(usd_price) => (Some(usd_price), Some(balance_float * usd_price), ValuationStatus::Valued),
+        Some(usd_price) => (
+            Some(usd_price),
+            Some(balance_float * usd_price),
+            ValuationStatus::Valued,
+        ),
         None => (None, None, ValuationStatus::Unpriced),
     }
 }
 
-pub(crate) fn summarize_asset_valuations(assets: &[EvmAssetBalance]) -> (f64, usize, ValuationStatus) {
+pub(crate) fn summarize_asset_valuations(
+    assets: &[EvmAssetBalance],
+) -> (f64, usize, ValuationStatus) {
     let total_balance_usd = assets.iter().filter_map(|asset| asset.usd_value).sum();
     let unpriced_asset_count = assets
         .iter()
-        .filter(|asset| matches!(asset.valuation_status, ValuationStatus::Unpriced) && asset.balance_float > 0.0)
+        .filter(|asset| {
+            matches!(asset.valuation_status, ValuationStatus::Unpriced) && asset.balance_float > 0.0
+        })
         .count();
 
     (
@@ -104,10 +117,7 @@ pub async fn sync_bitcoin_wallet_balance(
     }
 
     Ok((
-        WalletInfo {
-            balance,
-            ..wallet
-        },
+        WalletInfo { balance, ..wallet },
         SyncOutcome {
             reason,
             target: SyncTarget::BitcoinWalletBalance,
@@ -122,14 +132,23 @@ pub async fn sync_evm_wallet_balances(
     wallet_id: &str,
     reason: SyncReason,
 ) -> Result<(EvmWalletInfo, SyncOutcome), String> {
-    let wallet = {
+    let (wallet, previous_wallet_updated_at) = {
         let db = DB.lock().unwrap();
-        db.get_evm_wallet(wallet_id)
+        let wallet = db
+            .get_evm_wallet(wallet_id)
             .map_err(|e| format!("Failed to get wallet: {}", e))?
-            .ok_or_else(|| "Wallet not found".to_string())?
+            .ok_or_else(|| "Wallet not found".to_string())?;
+        let wallet_freshness = db
+            .get_evm_wallet_balance_freshness(wallet_id, Utc::now().timestamp(), 60, 300)
+            .map_err(|e| format!("Failed to get wallet freshness: {}", e))?;
+
+        (
+            wallet,
+            wallet_freshness.and_then(|freshness| freshness.updated_at),
+        )
     };
 
-            let cached_chain_assets = cached_evm_chain_assets(&wallet.id)?;
+    let cached_chain_assets = cached_evm_chain_assets(&wallet.id)?;
 
     let chains_config = get_all_chains();
     let concurrency_limit = chain_concurrency_limit();
@@ -144,6 +163,7 @@ pub async fn sync_evm_wallet_balances(
             .get(chain_config.name())
             .cloned()
             .unwrap_or_default();
+        let previous_wallet_updated_at = previous_wallet_updated_at;
 
         set.spawn(async move {
             let _permit = semaphore
@@ -160,7 +180,12 @@ pub async fn sync_evm_wallet_balances(
                 )),
                 Err(error) => Ok((
                     order,
-                    failed_chain_assets(chain_config.name(), chain_config.chain_id(), cached_assets),
+                    failed_chain_assets(
+                        chain_config.name(),
+                        chain_config.chain_id(),
+                        cached_assets,
+                        previous_wallet_updated_at,
+                    ),
                     vec![chain_config.name().to_string(), error],
                 )),
             }
@@ -211,8 +236,18 @@ pub async fn sync_evm_wallet_balances(
             db.batch_save_evm_asset_balances(&all_asset_data)
                 .map_err(|e| format!("Failed to save balances: {}", e))?;
         }
-        db.update_evm_wallet_sync_metadata(&wallet.id, total_balance_usd, &failed_sources)
-            .map_err(|e| format!("Failed to update wallet metadata: {}", e))?;
+        let wallet_balance_updated_at = if failed_sources.is_empty() {
+            Some(Utc::now().timestamp())
+        } else {
+            previous_wallet_updated_at
+        };
+        db.update_evm_wallet_sync_metadata(
+            &wallet.id,
+            total_balance_usd,
+            wallet_balance_updated_at,
+            &failed_sources,
+        )
+        .map_err(|e| format!("Failed to update wallet metadata: {}", e))?;
     }
 
     let deduped_failed_sources = dedupe_failed_sources(failed_sources);
@@ -237,7 +272,11 @@ pub async fn sync_evm_wallet_balances(
         SyncOutcome {
             reason,
             target: SyncTarget::EvmWalletBalances,
-            updated_at: Some(Utc::now().timestamp()),
+            updated_at: if deduped_failed_sources.is_empty() {
+                Some(Utc::now().timestamp())
+            } else {
+                previous_wallet_updated_at
+            },
             partial: !deduped_failed_sources.is_empty(),
             failed_sources: deduped_failed_sources,
         },
@@ -289,7 +328,10 @@ pub async fn refresh_dashboard(
         let btc_price_state = crate::wallet::evm::price_manager::get_cached_price_state("BTC");
         let btc_price = btc_price_state.price_usd.unwrap_or(0.0);
         let btc_price_unavailable = total_btc_balance > 0.0
-            && matches!(btc_price_state.status, crate::wallet::state::types::PriceStatus::Unavailable);
+            && matches!(
+                btc_price_state.status,
+                crate::wallet::state::types::PriceStatus::Unavailable
+            );
         if btc_price_unavailable {
             failed_sources.push("price:btc_unavailable".to_string());
         }
@@ -304,7 +346,9 @@ pub async fn refresh_dashboard(
         let mut all_assets = Vec::new();
 
         for wallet in evm_wallets {
-            let assets = db.get_evm_asset_balances(&wallet.id).map_err(|e| e.to_string())?;
+            let assets = db
+                .get_evm_asset_balances(&wallet.id)
+                .map_err(|e| e.to_string())?;
             for asset in assets {
                 if asset.2 != 11155111 {
                     total_evm_usd += asset.9.unwrap_or(0.0);
@@ -320,7 +364,8 @@ pub async fn refresh_dashboard(
             0.0
         };
 
-        let btc_24h_change = crate::wallet::evm::price_manager::get_cached_24h_change("BTC").unwrap_or(0.0);
+        let btc_24h_change =
+            crate::wallet::evm::price_manager::get_cached_24h_change("BTC").unwrap_or(0.0);
         let btc_change_amount = if btc_price_unavailable {
             0.0
         } else {
@@ -344,15 +389,15 @@ pub async fn refresh_dashboard(
             0.0
         };
 
-        db.update_dashboard_stats(
-            total_portfolio_usd,
-            total_portfolio_btc,
-            total_change_amount,
-            total_change_percentage,
-            &failed_sources,
-        )
-        .map_err(|e| e.to_string())?;
-        if !btc_price_unavailable {
+        if failed_sources.is_empty() {
+            db.update_dashboard_stats(
+                total_portfolio_usd,
+                total_portfolio_btc,
+                total_change_amount,
+                total_change_percentage,
+                &failed_sources,
+            )
+            .map_err(|e| e.to_string())?;
             db.save_portfolio_snapshot(total_portfolio_usd)
                 .map_err(|e| e.to_string())?;
         }
@@ -384,7 +429,8 @@ pub async fn refresh_bitcoin_history(
     address: String,
     reason: SyncReason,
 ) -> Result<(Vec<BitcoinTransaction>, SyncOutcome), String> {
-    let transactions = bitcoin_transaction::fetch_bitcoin_transaction_history(wallet_id, address).await?;
+    let transactions =
+        bitcoin_transaction::fetch_bitcoin_transaction_history(wallet_id, address).await?;
 
     Ok((
         transactions,
@@ -463,7 +509,8 @@ fn chain_snapshot_to_assets(
     let mut unpriced_asset_count = 0;
 
     for asset in snapshot.assets {
-        let (usd_price, usd_value, valuation_status) = asset_valuation(&asset.symbol, asset.display_amount);
+        let (usd_price, usd_value, valuation_status) =
+            asset_valuation(&asset.symbol, asset.display_amount);
         if let Some(usd_value) = usd_value {
             chain_total_usd += usd_value;
         } else if asset.display_amount > 0.0 {
@@ -548,8 +595,10 @@ fn failed_chain_assets(
     chain_name: &str,
     chain_id: u64,
     assets: Vec<EvmAssetBalance>,
+    updated_at: Option<i64>,
 ) -> (EvmChainAssets, Vec<AssetBalanceData>) {
-    let (total_balance_usd, unpriced_asset_count, valuation_status) = summarize_asset_valuations(&assets);
+    let (total_balance_usd, unpriced_asset_count, valuation_status) =
+        summarize_asset_valuations(&assets);
 
     (
         EvmChainAssets {
@@ -558,7 +607,7 @@ fn failed_chain_assets(
             total_balance_usd,
             valuation_status,
             unpriced_asset_count,
-            freshness: failed_chain_freshness(chain_name, !assets.is_empty(), None),
+            freshness: failed_chain_freshness(chain_name, !assets.is_empty(), updated_at),
             assets,
         },
         Vec::new(),
@@ -569,28 +618,46 @@ fn cached_evm_chain_assets(
     wallet_id: &str,
 ) -> Result<HashMap<String, Vec<EvmAssetBalance>>, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
-    let rows = db.get_evm_asset_balances(wallet_id).map_err(|e| e.to_string())?;
+    let rows = db
+        .get_evm_asset_balances(wallet_id)
+        .map_err(|e| e.to_string())?;
     let mut chains = HashMap::new();
 
-    for (chain, symbol, _chain_id, name, contract_address, decimals, balance, balance_float, usd_price, usd_value, valuation_status) in rows {
-        chains.entry(chain.clone()).or_insert_with(Vec::new).push(EvmAssetBalance {
-            chain,
-            asset: crate::wallet::types::EvmAsset {
-                symbol,
-                name,
-                decimals,
-                contract_address,
-            },
-            balance,
-            balance_float,
-            usd_price,
-            usd_value,
-            valuation_status: if valuation_status == "unpriced" {
-                ValuationStatus::Unpriced
-            } else {
-                ValuationStatus::Valued
-            },
-        });
+    for (
+        chain,
+        symbol,
+        _chain_id,
+        name,
+        contract_address,
+        decimals,
+        balance,
+        balance_float,
+        usd_price,
+        usd_value,
+        valuation_status,
+    ) in rows
+    {
+        chains
+            .entry(chain.clone())
+            .or_insert_with(Vec::new)
+            .push(EvmAssetBalance {
+                chain,
+                asset: crate::wallet::types::EvmAsset {
+                    symbol,
+                    name,
+                    decimals,
+                    contract_address,
+                },
+                balance,
+                balance_float,
+                usd_price,
+                usd_value,
+                valuation_status: if valuation_status == "unpriced" {
+                    ValuationStatus::Unpriced
+                } else {
+                    ValuationStatus::Valued
+                },
+            });
     }
 
     Ok(chains)
@@ -610,7 +677,10 @@ fn dedupe_failed_sources(failed_sources: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dedupe_failed_sources, failed_chain_assets, failed_chain_freshness, summarize_asset_valuations};
+    use super::{
+        dedupe_failed_sources, failed_chain_assets, failed_chain_freshness,
+        summarize_asset_valuations,
+    };
     use crate::wallet::state::types::FreshnessStatus;
     use crate::wallet::types::{EvmAsset, EvmAssetBalance, ValuationStatus};
 
@@ -640,15 +710,17 @@ mod tests {
                 usd_value: Some(10.0),
                 valuation_status: ValuationStatus::Valued,
             }],
+            Some(1_713_499_200),
         );
 
         assert_eq!(chain.freshness.status, FreshnessStatus::Partial);
+        assert_eq!(chain.freshness.updated_at, Some(1_713_499_200));
         assert_eq!(chain.total_balance_usd, 10.0);
     }
 
     #[test]
     fn failed_chain_assets_marks_uncached_chain_as_unavailable() {
-        let (chain, _) = failed_chain_assets("arbitrum", 42161, Vec::new());
+        let (chain, _) = failed_chain_assets("arbitrum", 42161, Vec::new(), None);
 
         assert_eq!(chain.freshness.status, FreshnessStatus::Unavailable);
         assert_eq!(chain.total_balance_usd, 0.0);

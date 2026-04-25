@@ -1,27 +1,26 @@
-use crate::wallet::transaction_types::{
-    BitcoinFeeEstimationResponse, BitcoinTransaction, SendBitcoinRequest, SendTransactionResponse,
-    TransactionStatus, TransactionType,
+use crate::wallet::bitcoin::private_key::{
+    load_authorized_mnemonic, load_authorized_private_key, map_security_error,
 };
-use crate::wallet::sync::types::BITCOIN_MIN_CONFIRMATIONS;
 use crate::wallet::security::backend::SecretBackend;
 use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
-use crate::wallet::types::WalletInfo;
-use crate::wallet::bitcoin::private_key::{
-    load_authorized_mnemonic, load_authorized_private_key,
-    map_security_error,
+use crate::wallet::sync::types::BITCOIN_MIN_CONFIRMATIONS;
+use crate::wallet::transaction_types::{
+    BitcoinFeeEstimationResponse, BitcoinTransaction, SendBitcoinRequest, SendTransactionResponse,
+    TransactionStatus, TransactionType,
 };
+use crate::wallet::types::WalletInfo;
 use crate::DB;
+use bdk::bitcoin::Network as BdkNetwork;
 use bdk::blockchain::{Blockchain, ElectrumBlockchain};
 use bdk::database::MemoryDatabase;
 use bdk::electrum_client::Client;
 use bdk::psbt::PsbtUtils;
 use bdk::{FeeRate, SignOptions, SyncOptions, Wallet};
+use bip39::{Language, Mnemonic};
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::Network;
-use bdk::bitcoin::Network as BdkNetwork;
-use bip39::{Language, Mnemonic};
 use chrono::Utc;
 use serde::Deserialize;
 use std::str::FromStr;
@@ -90,9 +89,9 @@ struct BlockstreamTxStatus {
 /// Fetch Bitcoin transaction history from Blockstream API
 async fn fetch_transactions_from_blockstream(address: &str) -> Result<Vec<BlockstreamTx>, String> {
     let url = format!("https://blockstream.info/api/address/{}/txs", address);
-    
+
     crate::safe_log!("[INFO] Fetching transactions from Blockstream API: {}", url);
-    
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
@@ -117,7 +116,7 @@ async fn fetch_transactions_from_blockstream(address: &str) -> Result<Vec<Blocks
         "[INFO] Successfully fetched {} transactions from Blockstream",
         transactions.len()
     );
-    
+
     Ok(transactions)
 }
 
@@ -126,13 +125,19 @@ pub async fn fetch_bitcoin_transaction_history(
     wallet_id: String,
     address: String,
 ) -> Result<Vec<BitcoinTransaction>, String> {
-    crate::safe_log!("[INFO] Fetching Bitcoin transaction history for wallet: {}", wallet_id);
+    crate::safe_log!(
+        "[INFO] Fetching Bitcoin transaction history for wallet: {}",
+        wallet_id
+    );
     crate::safe_log!("[INFO] Address: {}", address);
-    
+
     // Fetch transactions from Blockstream API
     let blockstream_txs = fetch_transactions_from_blockstream(&address).await?;
-    
-    crate::safe_log!("[INFO] Found {} transactions from API", blockstream_txs.len());
+
+    crate::safe_log!(
+        "[INFO] Found {} transactions from API",
+        blockstream_txs.len()
+    );
 
     let mut result = Vec::new();
 
@@ -227,10 +232,8 @@ pub async fn fetch_bitcoin_transaction_history(
             0
         };
 
-        let status = TransactionStatus::from_bitcoin_confirmations(
-            confirmations,
-            BITCOIN_MIN_CONFIRMATIONS,
-        );
+        let status =
+            TransactionStatus::from_bitcoin_confirmations(confirmations, BITCOIN_MIN_CONFIRMATIONS);
 
         let timestamp = if let Some(block_time) = tx.status.block_time {
             chrono::DateTime::from_timestamp(block_time as i64, 0)
@@ -267,11 +270,10 @@ pub async fn fetch_bitcoin_transaction_history(
         // Save to database
         {
             let db = DB.lock().unwrap();
-            db.add_bitcoin_transaction(&tx_record)
-                .map_err(|e| {
-                    crate::safe_log!("[ERROR] Failed to save transaction {}: {}", tx_hash, e);
-                    format!("Failed to save transaction: {}", e)
-                })?;
+            db.add_bitcoin_transaction(&tx_record).map_err(|e| {
+                crate::safe_log!("[ERROR] Failed to save transaction {}: {}", tx_hash, e);
+                format!("Failed to save transaction: {}", e)
+            })?;
         }
 
         crate::safe_log!("[SUCCESS] Transaction {} saved to database", tx_hash);
@@ -288,7 +290,7 @@ pub async fn fetch_bitcoin_transaction_history(
 /// Get current block height from Blockstream API
 async fn get_current_block_height() -> Result<u32, String> {
     let url = "https://blockstream.info/api/blocks/tip/height";
-    
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
@@ -328,7 +330,7 @@ struct MempoolFees {
 /// Estimate Bitcoin fees from mempool.space
 pub async fn estimate_bitcoin_fees() -> Result<BitcoinFeeEstimationResponse, String> {
     let url = "https://mempool.space/api/v1/fees/recommended";
-    
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .build()
@@ -363,13 +365,16 @@ pub async fn send_bitcoin_transaction(
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
-    crate::safe_log!("[INFO] Sending Bitcoin transaction from wallet: {}", request.wallet_id);
+    crate::safe_log!(
+        "[INFO] Sending Bitcoin transaction from wallet: {}",
+        request.wallet_id
+    );
     crate::safe_log!(
         "[INFO] Recipient: {}, Amount: {} BTC",
         request.to_address,
         request.amount
     );
-    
+
     // Get wallet info
     let wallet_info = {
         let db = DB.lock().unwrap();
@@ -397,11 +402,10 @@ pub async fn send_bitcoin_transaction(
 
 fn connect_electrum_blockchain() -> Result<ElectrumBlockchain, String> {
     crate::safe_log!("[INFO] Connecting to Electrum server...");
-    let client = Client::new("ssl://electrum.blockstream.info:50002")
-        .map_err(|e| {
-            crate::safe_log!("[ERROR] Failed to connect to Electrum: {}", e);
-            format!("Failed to connect to Electrum: {}", e)
-        })?;
+    let client = Client::new("ssl://electrum.blockstream.info:50002").map_err(|e| {
+        crate::safe_log!("[ERROR] Failed to connect to Electrum: {}", e);
+        format!("Failed to connect to Electrum: {}", e)
+    })?;
     crate::safe_log!("[INFO] Connected to Electrum server");
     Ok(ElectrumBlockchain::from(client))
 }
@@ -417,7 +421,6 @@ async fn send_bitcoin_transaction_resolved<F>(
 where
     F: FnOnce() -> Result<ElectrumBlockchain, String>,
 {
-
     let signing_secret =
         load_signing_secret(&wallet_info, secret_backend, keystore, session_manager)
             .map_err(map_security_error)?
@@ -439,11 +442,10 @@ where
     // Parse recipient address before network IO so mismatch fails closed locally.
     let to_address = request.to_address.trim();
     crate::safe_log!("[INFO] Parsing recipient address: {}", to_address);
-    let recipient = bdk::bitcoin::Address::from_str(to_address)
-        .map_err(|e| {
-            crate::safe_log!("[ERROR] Invalid recipient address '{}': {}", to_address, e);
-            format!("Invalid recipient address: {}", e)
-        })?;
+    let recipient = bdk::bitcoin::Address::from_str(to_address).map_err(|e| {
+        crate::safe_log!("[ERROR] Invalid recipient address '{}': {}", to_address, e);
+        format!("Invalid recipient address: {}", e)
+    })?;
 
     if recipient.network != bdk_network {
         crate::safe_log!(
@@ -451,11 +453,14 @@ where
             bdk_network,
             recipient.network
         );
-        return Err(format!("Address network mismatch: expected {:?}, got {:?}", bdk_network, recipient.network));
+        return Err(format!(
+            "Address network mismatch: expected {:?}, got {:?}",
+            bdk_network, recipient.network
+        ));
     }
 
-    let wallet = Wallet::new(&descriptor, None, bdk_network, MemoryDatabase::default())
-        .map_err(|e| {
+    let wallet =
+        Wallet::new(&descriptor, None, bdk_network, MemoryDatabase::default()).map_err(|e| {
             crate::safe_log!("[ERROR] Failed to create wallet: {}", e);
             format!("Failed to create wallet: {}", e)
         })?;
@@ -471,9 +476,11 @@ where
             format!("Failed to sync wallet: {}", e)
         })?;
     crate::safe_log!("[INFO] Wallet synced successfully");
-    
+
     // Check balance
-    let balance = wallet.get_balance().map_err(|e| format!("Failed to get balance: {}", e))?;
+    let balance = wallet
+        .get_balance()
+        .map_err(|e| format!("Failed to get balance: {}", e))?;
     let total_balance = balance.get_total();
     crate::safe_log!("[INFO] Wallet total balance: {} satoshis", total_balance);
 
@@ -487,13 +494,16 @@ where
     // Build transaction
     crate::safe_log!("[INFO] Building transaction...");
     let mut tx_builder = wallet.build_tx();
-    
+
     // Auto-drain if amount is >= total balance
-    let should_drain = request.send_all.unwrap_or(false) || (amount_satoshis >= total_balance && total_balance > 0);
-    
+    let should_drain = request.send_all.unwrap_or(false)
+        || (amount_satoshis >= total_balance && total_balance > 0);
+
     if should_drain {
         crate::safe_log!("[INFO] Using drain_wallet() to send all available funds");
-        tx_builder.drain_wallet().drain_to(recipient.payload.script_pubkey());
+        tx_builder
+            .drain_wallet()
+            .drain_to(recipient.payload.script_pubkey());
     } else {
         tx_builder.add_recipient(recipient.payload.script_pubkey(), amount_satoshis);
     }
@@ -504,12 +514,10 @@ where
         tx_builder.fee_rate(FeeRate::from_sat_per_vb(fee_rate as f32));
     }
 
-    let (mut psbt, _) = tx_builder
-        .finish()
-        .map_err(|e| {
-            crate::safe_log!("[ERROR] Failed to build transaction: {}", e);
-            format!("Failed to build transaction: {}", e)
-        })?;
+    let (mut psbt, _) = tx_builder.finish().map_err(|e| {
+        crate::safe_log!("[ERROR] Failed to build transaction: {}", e);
+        format!("Failed to build transaction: {}", e)
+    })?;
     crate::safe_log!("[INFO] Transaction built successfully");
 
     // Calculate fee before extracting tx (psbt moves after extract_tx)
@@ -536,12 +544,10 @@ where
     crate::safe_log!("[INFO] Transaction hash: {}", tx_hash);
 
     crate::safe_log!("[INFO] Broadcasting transaction...");
-    blockchain
-        .broadcast(&tx)
-        .map_err(|e| {
-            crate::safe_log!("[ERROR] Failed to broadcast transaction: {}", e);
-            format!("Failed to broadcast transaction: {}", e)
-        })?;
+    blockchain.broadcast(&tx).map_err(|e| {
+        crate::safe_log!("[ERROR] Failed to broadcast transaction: {}", e);
+        format!("Failed to broadcast transaction: {}", e)
+    })?;
     crate::safe_log!("[SUCCESS] Transaction broadcasted successfully");
 
     // Save transaction to database
@@ -565,11 +571,10 @@ where
 
     {
         let db = DB.lock().unwrap();
-        db.add_bitcoin_transaction(&tx_record)
-            .map_err(|e| {
-                crate::safe_log!("[ERROR] Failed to save transaction: {}", e);
-                format!("Failed to save transaction: {}", e)
-            })?;
+        db.add_bitcoin_transaction(&tx_record).map_err(|e| {
+            crate::safe_log!("[ERROR] Failed to save transaction: {}", e);
+            format!("Failed to save transaction: {}", e)
+        })?;
     }
 
     crate::safe_log!("[SUCCESS] Transaction saved to database");
@@ -664,12 +669,17 @@ fn descriptor_from_signing_secret(
 
 #[cfg(test)]
 mod tests {
-    use super::{load_signing_secret, send_bitcoin_transaction_with_blockchain_factory, BitcoinSigningSecret};
+    use super::{
+        load_signing_secret, send_bitcoin_transaction_with_blockchain_factory, BitcoinSigningSecret,
+    };
     use crate::db::Database;
     use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
     use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
     use crate::wallet::security::log_sanitize::take_test_log_lines;
-    use crate::wallet::security::secret_envelope::{encrypt_secret, decrypt_secret, SecretEnvelopeError, StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
+    use crate::wallet::security::secret_envelope::{
+        decrypt_secret, encrypt_secret, SecretEnvelopeError, StoredSecret,
+        SECRET_FORMAT_PLAINTEXT_V0,
+    };
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{SecurityError, SignerOperation};
     use crate::wallet::transaction_types::SendBitcoinRequest;
@@ -696,7 +706,10 @@ mod tests {
     }
 
     impl DatabaseBackedKeystore {
-        fn load_secret(&self, address: &str) -> Result<Option<(String, String, String)>, SecurityError> {
+        fn load_secret(
+            &self,
+            address: &str,
+        ) -> Result<Option<(String, String, String)>, SecurityError> {
             if let Some(wallet_id) = self
                 .db
                 .get_bitcoin_wallets()
@@ -754,7 +767,11 @@ mod tests {
             encrypt_secret(plaintext)
         }
 
-        fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            secret_data: &str,
+            secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             decrypt_secret(secret_data, secret_format)
         }
     }
@@ -763,7 +780,9 @@ mod tests {
         SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter))
     }
 
-    fn insert_bitcoin_wallet_with_secret(stored_secret: StoredSecret) -> (WalletInfo, DatabaseBackedKeystore) {
+    fn insert_bitcoin_wallet_with_secret(
+        stored_secret: StoredSecret,
+    ) -> (WalletInfo, DatabaseBackedKeystore) {
         let db = Database::new(":memory:").unwrap();
         let wallet = db
             .insert_bitcoin_wallet_with_secret(
@@ -818,7 +837,12 @@ mod tests {
         let secret_backend = ready_secret_backend();
 
         assert!(matches!(
-            load_signing_secret(&test_wallet("mnemonic"), &secret_backend, &PanicKeystore, &session),
+            load_signing_secret(
+                &test_wallet("mnemonic"),
+                &secret_backend,
+                &PanicKeystore,
+                &session
+            ),
             Err(SecurityError::Locked)
         ));
     }
@@ -827,11 +851,18 @@ mod tests {
     fn send_signing_returns_expired_without_keystore_access() {
         let session = SessionManager::new(Duration::from_millis(1), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
         std::thread::sleep(Duration::from_millis(5));
 
         assert!(matches!(
-            load_signing_secret(&test_wallet("mnemonic"), &secret_backend, &PanicKeystore, &session),
+            load_signing_secret(
+                &test_wallet("mnemonic"),
+                &secret_backend,
+                &PanicKeystore,
+                &session
+            ),
             Err(SecurityError::Expired)
         ));
     }
@@ -844,7 +875,9 @@ mod tests {
         });
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         let result = load_signing_secret(&wallet, &secret_backend, &keystore, &session).unwrap();
 
@@ -865,7 +898,9 @@ mod tests {
         );
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         let result = load_signing_secret(&wallet, &secret_backend, &keystore, &session).unwrap();
 
@@ -882,10 +917,14 @@ mod tests {
             secret_data: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".to_string(),
             secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
         });
-        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(
+            TestSecretBackendAdapter,
+        )));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         let result = send_bitcoin_transaction_with_blockchain_factory(
             SendBitcoinRequest {
@@ -915,10 +954,14 @@ mod tests {
             )
             .unwrap(),
         );
-        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(
+            TestSecretBackendAdapter,
+        )));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         let result = send_bitcoin_transaction_with_blockchain_factory(
             SendBitcoinRequest {
@@ -947,9 +990,16 @@ mod tests {
             secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
         });
         let secret_backend = ready_secret_backend();
-        let keystore = SqliteKeystore::new(&DB, Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter))));
+        let keystore = SqliteKeystore::new(
+            &DB,
+            Arc::new(SecretBackend::with_adapter(Arc::new(
+                TestSecretBackendAdapter,
+            ))),
+        );
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         let result = send_bitcoin_transaction_with_blockchain_factory(
             SendBitcoinRequest {

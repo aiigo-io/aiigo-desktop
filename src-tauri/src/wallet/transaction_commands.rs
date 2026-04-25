@@ -39,7 +39,9 @@ pub async fn bitcoin_estimate_fees() -> Result<BitcoinFeeEstimationResponse, Str
 }
 
 #[tauri::command]
-pub async fn get_bitcoin_transactions(wallet_id: String) -> Result<Vec<BitcoinTransaction>, String> {
+pub async fn get_bitcoin_transactions(
+    wallet_id: String,
+) -> Result<Vec<BitcoinTransaction>, String> {
     let db = DB.lock().unwrap();
     db.get_bitcoin_transactions(&wallet_id)
         .map_err(|e| format!("Failed to get transactions: {}", e))
@@ -121,14 +123,16 @@ pub async fn fetch_evm_history(
 
 #[tauri::command]
 pub fn get_supported_evm_history_chains() -> Result<Vec<SupportedEvmHistoryChain>, String> {
-    Ok(crate::wallet::evm::config::get_history_sync_supported_chains()
-        .into_iter()
-        .map(|chain| SupportedEvmHistoryChain {
-            chain: chain.name().to_string(),
-            chain_id: chain.chain_id(),
-            display_name: chain.display_name().to_string(),
-        })
-        .collect())
+    Ok(
+        crate::wallet::evm::config::get_history_sync_supported_chains()
+            .into_iter()
+            .map(|chain| SupportedEvmHistoryChain {
+                chain: chain.name().to_string(),
+                chain_id: chain.chain_id(),
+                display_name: chain.display_name().to_string(),
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -152,27 +156,32 @@ pub async fn evm_send_transaction(
     state: tauri::State<'_, AppSecurity>,
 ) -> Result<String, String> {
     // Parse the transaction object
-    let to = transaction.get("to")
+    let to = transaction
+        .get("to")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'to' field".to_string())?
         .to_string();
-    
-    let data = transaction.get("data")
+
+    let data = transaction
+        .get("data")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'data' field".to_string())?
         .to_string();
-    
-    let value = transaction.get("value")
+
+    let value = transaction
+        .get("value")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'value' field".to_string())?
         .to_string();
-    
-    let gas_limit = transaction.get("gasLimit")
+
+    let gas_limit = transaction
+        .get("gasLimit")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'gasLimit' field".to_string())?
         .to_string();
-    
-    let gas_price = transaction.get("gasPrice")
+
+    let gas_price = transaction
+        .get("gasPrice")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing 'gasPrice' field".to_string())?
         .to_string();
@@ -215,6 +224,7 @@ pub async fn evm_approve_token(
         state.secret_backend(),
         state.keystore(),
         state.session_manager(),
-    ).await?;
+    )
+    .await?;
     Ok(response.tx_hash)
 }

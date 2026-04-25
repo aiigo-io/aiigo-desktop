@@ -5,14 +5,14 @@
 
 #![allow(dead_code)]
 
-pub mod types;
 pub mod auth;
-pub mod keystore;
 pub mod backend;
-pub mod session;
-pub mod log_sanitize;
 pub mod commands;
+pub mod keystore;
+pub mod log_sanitize;
 pub mod secret_envelope;
+pub mod session;
+pub mod types;
 #[allow(unused_imports)]
 pub use crate::safe_log;
 #[allow(unused_imports)]

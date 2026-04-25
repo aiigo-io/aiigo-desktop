@@ -1,7 +1,10 @@
+use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
 use crate::wallet::sync::engine;
 use crate::wallet::sync::types::SyncReason;
-use crate::wallet::types::{EvmAsset, EvmAssetBalance, EvmChainAssets, EvmWalletBalancesResponse, EvmWalletInfo, ValuationStatus, WalletInfo};
-use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
+use crate::wallet::types::{
+    EvmAsset, EvmAssetBalance, EvmChainAssets, EvmWalletBalancesResponse, EvmWalletInfo,
+    ValuationStatus, WalletInfo,
+};
 use crate::DB;
 
 const BALANCE_FRESH_WITHIN_SECS: i64 = 60;
@@ -19,7 +22,9 @@ fn load_wallet_level_freshness(wallet_id: &str) -> Result<FreshnessMetadata, Str
     .ok_or_else(|| "EVM wallet freshness not found".to_string())
 }
 
-fn query_sync_outcome(wallet_freshness: &FreshnessMetadata) -> crate::wallet::sync::types::SyncOutcome {
+fn query_sync_outcome(
+    wallet_freshness: &FreshnessMetadata,
+) -> crate::wallet::sync::types::SyncOutcome {
     crate::wallet::sync::types::SyncOutcome {
         reason: SyncReason::Query,
         target: crate::wallet::sync::types::SyncTarget::EvmWalletBalances,
@@ -40,7 +45,11 @@ fn query_chain_freshness(
         .any(|source| source == chain_name);
 
     if has_failure {
-        return engine::failed_chain_freshness(chain_name, !assets.is_empty(), wallet_freshness.updated_at);
+        return engine::failed_chain_freshness(
+            chain_name,
+            !assets.is_empty(),
+            wallet_freshness.updated_at,
+        );
     }
 
     if assets.is_empty() {
@@ -74,7 +83,20 @@ fn query_evm_wallet_balances_inner(wallet_id: &str) -> Result<EvmWalletBalancesR
     };
 
     let mut chains = std::collections::BTreeMap::<(String, u64), Vec<EvmAssetBalance>>::new();
-    for (chain, symbol, chain_id, name, contract_address, decimals, balance, balance_float, usd_price, usd_value, valuation_status) in rows {
+    for (
+        chain,
+        symbol,
+        chain_id,
+        name,
+        contract_address,
+        decimals,
+        balance,
+        balance_float,
+        usd_price,
+        usd_value,
+        valuation_status,
+    ) in rows
+    {
         chains
             .entry((chain.clone(), chain_id))
             .or_default()
@@ -105,7 +127,8 @@ fn query_evm_wallet_balances_inner(wallet_id: &str) -> Result<EvmWalletBalancesR
             let key = (chain_config.name().to_string(), chain_config.chain_id());
             let assets = chains.remove(&key).unwrap_or_default();
             let freshness = query_chain_freshness(chain_config.name(), &assets, &wallet_freshness);
-            let (total_balance_usd, unpriced_asset_count, valuation_status) = engine::summarize_asset_valuations(&assets);
+            let (total_balance_usd, unpriced_asset_count, valuation_status) =
+                engine::summarize_asset_valuations(&assets);
 
             EvmChainAssets {
                 chain: chain_config.name().to_string(),
@@ -166,8 +189,10 @@ pub fn evm_get_wallet(wallet_id: String) -> Result<Option<WalletInfo>, String> {
 }
 
 #[tauri::command]
-pub async fn evm_get_wallet_with_balances(wallet_id: String) -> Result<EvmWalletBalancesResponse, String> {
-    refresh_evm_wallet_balances(wallet_id).await
+pub async fn evm_get_wallet_with_balances(
+    wallet_id: String,
+) -> Result<EvmWalletBalancesResponse, String> {
+    query_evm_wallet_balances_inner(&wallet_id)
 }
 
 #[tauri::command]
@@ -176,7 +201,9 @@ pub fn query_evm_wallet_balances(wallet_id: String) -> Result<EvmWalletBalancesR
 }
 
 #[tauri::command]
-pub async fn refresh_evm_wallet_balances(wallet_id: String) -> Result<EvmWalletBalancesResponse, String> {
+pub async fn refresh_evm_wallet_balances(
+    wallet_id: String,
+) -> Result<EvmWalletBalancesResponse, String> {
     engine::sync_evm_wallet_balances(&wallet_id, SyncReason::Manual)
         .await
         .map(|(wallet, sync)| EvmWalletBalancesResponse { wallet, sync })
@@ -187,7 +214,9 @@ mod tests {
     use super::{evm_get_wallet_with_balances, query_chain_freshness, query_sync_outcome};
     use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
     use crate::wallet::sync::types::SyncReason;
-    use crate::wallet::types::{EvmAsset, EvmAssetBalance, EvmWalletBalancesResponse, ValuationStatus};
+    use crate::wallet::types::{
+        EvmAsset, EvmAssetBalance, EvmWalletBalancesResponse, ValuationStatus,
+    };
     use std::future::Future;
 
     fn assert_command_shape<F, Fut>(_command: F)

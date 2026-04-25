@@ -1,7 +1,7 @@
 use crate::wallet::security::backend::SecretBackend;
-use crate::wallet::security::keystore::Keystore;
-use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::security::commands::ensure_local_password_boundary_ready;
+use crate::wallet::security::commands::AppSecurity;
+use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
 use crate::wallet::types::CreateWalletResponse;
@@ -277,7 +277,10 @@ fn derive_private_key_from_mnemonic(mnemonic_str: &str) -> Result<String, String
 
 #[cfg(test)]
 mod tests {
-    use super::{export_mnemonic_inner, export_private_key_inner, load_authorized_mnemonic, load_authorized_private_key};
+    use super::{
+        export_mnemonic_inner, export_private_key_inner, load_authorized_mnemonic,
+        load_authorized_private_key,
+    };
     use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
     use crate::wallet::security::keystore::Keystore;
     use crate::wallet::security::secret_envelope::{SecretEnvelopeError, StoredSecret};
@@ -303,7 +306,11 @@ mod tests {
             unreachable!()
         }
 
-        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             unreachable!()
         }
     }
@@ -317,7 +324,11 @@ mod tests {
             unreachable!()
         }
 
-        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             unreachable!()
         }
     }

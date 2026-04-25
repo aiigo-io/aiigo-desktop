@@ -1,12 +1,12 @@
-use once_cell::sync::Lazy;
 use crate::wallet::security::sanitize;
 use crate::wallet::state::price as state_price;
 use crate::wallet::state::types::PriceState;
+use chrono::Utc;
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use chrono::Utc;
 
 const RETRY_ATTEMPTS: u32 = 2;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
@@ -71,9 +71,9 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
     // 1. Handle stablecoins and check cache
     {
         let cache = PRICE_CACHE.lock().unwrap();
-        let cache_valid = cache.last_update.map_or(false, |last| {
-            last.elapsed().as_secs() < CACHE_DURATION_SECS
-        });
+        let cache_valid = cache
+            .last_update
+            .map_or(false, |last| last.elapsed().as_secs() < CACHE_DURATION_SECS);
 
         for symbol in &symbols {
             if let Some(price) = get_stablecoin_price(symbol) {
@@ -132,7 +132,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
                 let mut result = HashMap::new();
                 for symbol in &symbols {
                     if let Some(price) = get_stablecoin_price(symbol) {
-                         result.insert(symbol.clone(), (price, 0.0));
+                        result.insert(symbol.clone(), (price, 0.0));
                     } else if let Some(coingecko_id) = get_coingecko_id(symbol) {
                         if let Some(&data) = response_map.get(coingecko_id) {
                             result.insert(symbol.clone(), data);
@@ -168,7 +168,7 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
                         tracing::info!("Using stale cache as fallback");
                         let mut result = HashMap::new();
                         for symbol in &symbols {
-                             if let Some(price) = get_stablecoin_price(symbol) {
+                            if let Some(price) = get_stablecoin_price(symbol) {
                                 result.insert(symbol.clone(), (price, 0.0));
                             } else if let Some(coingecko_id) = get_coingecko_id(symbol) {
                                 if let Some(&data) = cache.prices.get(coingecko_id) {
@@ -252,7 +252,11 @@ pub async fn fetch_price_state(symbol: &str) -> Result<PriceState, String> {
     let now = Utc::now().timestamp();
 
     if let Some(price_usd) = get_stablecoin_price(symbol) {
-        return Ok(state_price::synthetic(price_usd, "synthetic-stablecoin", now));
+        return Ok(state_price::synthetic(
+            price_usd,
+            "synthetic-stablecoin",
+            now,
+        ));
     }
 
     let prices = fetch_prices(vec![symbol.to_string()]).await?;
@@ -295,11 +299,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fetch_price() {
-        // This test requires internet connection
-        let result = fetch_price("ETH").await;
-        // Just check that it doesn't error - actual price will vary
-        assert!(result.is_ok() || result.is_err());
+    async fn test_fetch_price_state_uses_synthetic_stablecoin_path() {
+        let result = fetch_price_state("USDC").await.unwrap();
+
+        assert_eq!(result.price_usd, Some(1.0));
+        assert_eq!(
+            result.status,
+            crate::wallet::state::types::PriceStatus::Synthetic
+        );
     }
 }
 

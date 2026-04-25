@@ -52,7 +52,10 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn authorize_verified_operation(&self, operation: SignerOperation) -> Result<(), SecurityError> {
+    pub fn authorize_verified_operation(
+        &self,
+        operation: SignerOperation,
+    ) -> Result<(), SecurityError> {
         let granted_at = self.now();
 
         {
@@ -102,7 +105,10 @@ impl SessionManager {
     }
 
     fn refresh_state(&self) -> Result<bool, SecurityError> {
-        Ok(matches!(self.authorization_state()?, AuthorizationState::Unlocked))
+        Ok(matches!(
+            self.authorization_state()?,
+            AuthorizationState::Unlocked
+        ))
     }
 
     fn authorization_state(&self) -> Result<AuthorizationState, SecurityError> {
@@ -135,7 +141,8 @@ impl SessionManager {
         match *grant {
             Some(current)
                 if current.operation == operation
-                    && self.now().saturating_duration_since(current.granted_at) < self.reauth_ttl =>
+                    && self.now().saturating_duration_since(current.granted_at)
+                        < self.reauth_ttl =>
             {
                 *grant = None;
                 Ok(())
@@ -184,76 +191,114 @@ mod tests {
         session.unlock_verified().unwrap();
 
         assert!(session.is_unlocked());
-        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::ReauthRequired));
+        assert_eq!(
+            session.authorize(SignerOperation::Send),
+            Err(SecurityError::ReauthRequired)
+        );
     }
 
     #[test]
     fn verified_send_grant_is_single_use() {
         let (session, _) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
         assert_eq!(session.authorize(SignerOperation::Send), Ok(()));
-        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::ReauthRequired));
+        assert_eq!(
+            session.authorize(SignerOperation::Send),
+            Err(SecurityError::ReauthRequired)
+        );
     }
 
     #[test]
     fn verified_export_grant_is_single_use() {
         let (session, _) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
-        session.authorize_verified_operation(SignerOperation::ExportMnemonic).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::ExportMnemonic)
+            .unwrap();
 
         assert_eq!(session.authorize(SignerOperation::ExportMnemonic), Ok(()));
-        assert_eq!(session.authorize(SignerOperation::ExportMnemonic), Err(SecurityError::ReauthRequired));
+        assert_eq!(
+            session.authorize(SignerOperation::ExportMnemonic),
+            Err(SecurityError::ReauthRequired)
+        );
     }
 
     #[test]
     fn wrong_operation_requires_reauth() {
         let (session, _) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
 
-        assert_eq!(session.authorize(SignerOperation::ExportPrivateKey), Err(SecurityError::ReauthRequired));
+        assert_eq!(
+            session.authorize(SignerOperation::ExportPrivateKey),
+            Err(SecurityError::ReauthRequired)
+        );
     }
 
     #[test]
     fn authorize_returns_expired_after_ttl_expiry() {
         let (session, clock) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
         *clock.lock().unwrap() += Duration::from_secs(31);
 
-        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Expired));
+        assert_eq!(
+            session.authorize(SignerOperation::Send),
+            Err(SecurityError::Expired)
+        );
     }
 
     #[test]
     fn expired_state_survives_is_unlocked_polling() {
         let (session, clock) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
         *clock.lock().unwrap() += Duration::from_secs(31);
 
         assert!(!session.is_unlocked());
-        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Expired));
+        assert_eq!(
+            session.authorize(SignerOperation::Send),
+            Err(SecurityError::Expired)
+        );
     }
 
     #[test]
     fn lock_after_unlock_revokes_authorization() {
         let (session, _) = test_session(Duration::from_secs(30), Duration::from_secs(90));
 
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
         session.lock();
 
-        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::Locked));
+        assert_eq!(
+            session.authorize(SignerOperation::Send),
+            Err(SecurityError::Locked)
+        );
     }
 
     #[test]
     fn reauth_grant_expires_before_use() {
         let (session, clock) = test_session(Duration::from_secs(300), Duration::from_secs(10));
 
-        session.authorize_verified_operation(SignerOperation::Send).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Send)
+            .unwrap();
         *clock.lock().unwrap() += Duration::from_secs(11);
 
-        assert_eq!(session.authorize(SignerOperation::Send), Err(SecurityError::ReauthRequired));
+        assert_eq!(
+            session.authorize(SignerOperation::Send),
+            Err(SecurityError::ReauthRequired)
+        );
     }
 }

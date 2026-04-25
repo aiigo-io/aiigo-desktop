@@ -399,7 +399,10 @@ mod tests {
         assert_eq!(get_chain_by_id(10), Some(EvmChainConfig::Optimism));
         assert_eq!(get_chain_by_id(137), Some(EvmChainConfig::Polygon));
         assert_eq!(get_chain_by_id(56), Some(EvmChainConfig::BinanceSmartChain));
-        assert_eq!(get_chain_by_id(11155111), Some(EvmChainConfig::EthereumSepolia));
+        assert_eq!(
+            get_chain_by_id(11155111),
+            Some(EvmChainConfig::EthereumSepolia)
+        );
         assert_eq!(get_chain_by_id(999999), None);
     }
 }

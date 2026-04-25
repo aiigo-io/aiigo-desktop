@@ -1,9 +1,7 @@
-use crate::wallet::chain::traits::{
-    ChainAdapter, ChainAssetBalanceSnapshot, ChainBalanceSnapshot,
-};
-use crate::wallet::security::sanitize;
+use crate::wallet::chain::traits::{ChainAdapter, ChainAssetBalanceSnapshot, ChainBalanceSnapshot};
 use crate::wallet::evm::config::EvmChainConfig;
 use crate::wallet::evm::provider::{HybridProvider, ProviderError, ProviderRegistry};
+use crate::wallet::security::sanitize;
 use ethers::prelude::*;
 use ethers::types::transaction::eip2718::TypedTransaction;
 use std::future::Future;
@@ -60,7 +58,9 @@ impl ChainAdapter for EvmChainAdapter {
                         .iter()
                         .find(|asset| asset.symbol == symbol)
                         .cloned()
-                        .unwrap_or_else(|| crate::wallet::types::EvmAsset::new(&symbol, &symbol, 18, None));
+                        .unwrap_or_else(|| {
+                            crate::wallet::types::EvmAsset::new(&symbol, &symbol, 18, None)
+                        });
 
                     ChainAssetBalanceSnapshot {
                         symbol,

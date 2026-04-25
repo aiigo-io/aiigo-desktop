@@ -4,8 +4,8 @@
 
 #![allow(dead_code)]
 
-pub mod types;
-pub mod freshness;
-pub mod price;
-pub mod portfolio;
 pub mod commands;
+pub mod freshness;
+pub mod portfolio;
+pub mod price;
+pub mod types;

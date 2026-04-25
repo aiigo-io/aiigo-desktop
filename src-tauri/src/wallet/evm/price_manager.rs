@@ -1,12 +1,12 @@
 use crate::wallet::security::sanitize;
 use crate::wallet::state::price as state_price;
 use crate::wallet::state::types::PriceState;
+use chrono::Utc;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time;
-use chrono::Utc;
 
 const PRICE_FRESH_WITHIN_SECS: i64 = 60;
 const PRICE_STALE_AFTER_SECS: i64 = 300;
@@ -105,19 +105,22 @@ impl PriceManager {
         // Update cache
         let mut cache = self.cache.lock().unwrap();
         let now = Utc::now().timestamp();
-        
+
         for (symbol, data) in fresh_prices {
             let source = if get_stablecoin_price(&symbol).is_some() {
                 "synthetic-stablecoin".to_string()
             } else {
                 "coingecko".to_string()
             };
-            cache.insert(symbol, PriceEntry {
-                price: data.0,
-                change_24h: data.1,
-                fetched_at_unix: now,
-                source,
-            });
+            cache.insert(
+                symbol,
+                PriceEntry {
+                    price: data.0,
+                    change_24h: data.1,
+                    fetched_at_unix: now,
+                    source,
+                },
+            );
         }
 
         tracing::info!(
@@ -153,7 +156,7 @@ pub async fn start_background_refresh() {
     let mut interval = time::interval(PRICE_MANAGER.refresh_interval);
     loop {
         interval.tick().await;
-        
+
         if let Err(e) = PRICE_MANAGER.refresh_prices().await {
             tracing::warn!(
                 error = %sanitize(&format!("{}", e)),

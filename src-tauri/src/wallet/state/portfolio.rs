@@ -1,6 +1,8 @@
 use super::{
     freshness::combine,
-    types::{BalanceState, FreshnessMetadata, FreshnessStatus, PortfolioState, PriceState, PriceStatus},
+    types::{
+        BalanceState, FreshnessMetadata, FreshnessStatus, PortfolioState, PriceState, PriceStatus,
+    },
 };
 
 fn price_to_freshness(source: &str, price_state: &PriceState) -> FreshnessMetadata {
@@ -13,7 +15,10 @@ fn price_to_freshness(source: &str, price_state: &PriceState) -> FreshnessMetada
         (PriceStatus::Synthetic, Some(_)) => FreshnessStatus::Partial,
     };
 
-    let failed_sources = if matches!(status, FreshnessStatus::Partial | FreshnessStatus::Unavailable) {
+    let failed_sources = if matches!(
+        status,
+        FreshnessStatus::Partial | FreshnessStatus::Unavailable
+    ) {
         vec![source.to_string()]
     } else {
         Vec::new()
@@ -123,12 +128,16 @@ mod tests {
 
         assert_eq!(stale_round_trip.freshness.status, FreshnessStatus::Stale);
         assert_eq!(cached_round_trip.freshness.status, FreshnessStatus::Cached);
-        assert_ne!(stale_round_trip.freshness.status, cached_round_trip.freshness.status);
+        assert_ne!(
+            stale_round_trip.freshness.status,
+            cached_round_trip.freshness.status
+        );
     }
 
     // M-PT-1
     #[test]
-    fn unavailable_component_never_yields_a_fresh_portfolio() { // PortfolioState Unavailable Fresh
+    fn unavailable_component_never_yields_a_fresh_portfolio() {
+        // PortfolioState Unavailable Fresh
         let items = vec![
             (
                 "bitcoin".to_string(),
@@ -137,7 +146,11 @@ mod tests {
             ),
             (
                 "ethereum".to_string(),
-                balance(2.0, Some("ethereum"), freshness(FreshnessStatus::Unavailable, None)),
+                balance(
+                    2.0,
+                    Some("ethereum"),
+                    freshness(FreshnessStatus::Unavailable, None),
+                ),
                 from_fetch(2_000.0, "coingecko", 200, 205, 30, 120),
             ),
         ];
@@ -149,7 +162,11 @@ mod tests {
             FreshnessStatus::Partial | FreshnessStatus::Unavailable
         ));
         assert_ne!(portfolio.freshness.status, FreshnessStatus::Fresh);
-        assert!(portfolio.freshness.failed_sources.iter().any(|source| source == "ethereum"));
+        assert!(portfolio
+            .freshness
+            .failed_sources
+            .iter()
+            .any(|source| source == "ethereum"));
         assert_eq!(portfolio.value_usd, Some(100_000.0));
     }
 
@@ -164,7 +181,11 @@ mod tests {
             ),
             (
                 "ethereum".to_string(),
-                balance(2.0, Some("ethereum"), freshness(FreshnessStatus::Fresh, Some(201))),
+                balance(
+                    2.0,
+                    Some("ethereum"),
+                    freshness(FreshnessStatus::Fresh, Some(201)),
+                ),
                 from_fetch(2_000.0, "coingecko", 201, 205, 30, 120),
             ),
         ];
@@ -181,14 +202,22 @@ mod tests {
             ),
             (
                 "ethereum".to_string(),
-                balance(2.0, Some("ethereum"), freshness(FreshnessStatus::Fresh, Some(201))),
+                balance(
+                    2.0,
+                    Some("ethereum"),
+                    freshness(FreshnessStatus::Fresh, Some(201)),
+                ),
                 from_fetch(2_000.0, "coingecko", 201, 205, 30, 120),
             ),
         ];
         let synthetic_items = vec![
             (
                 "usdc".to_string(),
-                balance(10.0, Some("ethereum"), freshness(FreshnessStatus::Fresh, Some(205))),
+                balance(
+                    10.0,
+                    Some("ethereum"),
+                    freshness(FreshnessStatus::Fresh, Some(205)),
+                ),
                 synthetic(1.0, "synthetic-stablecoin", 205),
             ),
             (
@@ -197,38 +226,32 @@ mod tests {
                 from_fetch(100_000.0, "coingecko", 200, 205, 30, 120),
             ),
         ];
-        let cached_balance_items = vec![
-            (
-                "bitcoin".to_string(),
-                balance(1.0, None, freshness(FreshnessStatus::Cached, None)),
-                from_fetch(100_000.0, "coingecko", 200, 205, 30, 120),
-            ),
-        ];
+        let cached_balance_items = vec![(
+            "bitcoin".to_string(),
+            balance(1.0, None, freshness(FreshnessStatus::Cached, None)),
+            from_fetch(100_000.0, "coingecko", 200, 205, 30, 120),
+        )];
 
-        let cached_price_items = vec![
-            (
-                "bitcoin".to_string(),
-                balance(1.0, None, freshness(FreshnessStatus::Fresh, Some(200))),
-                PriceState {
-                    price_usd: Some(100_000.0),
-                    price_source: Some("coingecko".to_string()),
-                    price_updated_at: Some(200),
-                    status: PriceStatus::Cached,
-                },
-            ),
-        ];
-        let partial_price_items = vec![
-            (
-                "bitcoin".to_string(),
-                balance(1.0, None, freshness(FreshnessStatus::Fresh, Some(200))),
-                PriceState {
-                    price_usd: Some(100_000.0),
-                    price_source: Some("coingecko".to_string()),
-                    price_updated_at: Some(200),
-                    status: PriceStatus::Partial,
-                },
-            ),
-        ];
+        let cached_price_items = vec![(
+            "bitcoin".to_string(),
+            balance(1.0, None, freshness(FreshnessStatus::Fresh, Some(200))),
+            PriceState {
+                price_usd: Some(100_000.0),
+                price_source: Some("coingecko".to_string()),
+                price_updated_at: Some(200),
+                status: PriceStatus::Cached,
+            },
+        )];
+        let partial_price_items = vec![(
+            "bitcoin".to_string(),
+            balance(1.0, None, freshness(FreshnessStatus::Fresh, Some(200))),
+            PriceState {
+                price_usd: Some(100_000.0),
+                price_source: Some("coingecko".to_string()),
+                price_updated_at: Some(200),
+                status: PriceStatus::Partial,
+            },
+        )];
 
         let fresh_portfolio = aggregate(&fresh_items);
         let stale_portfolio = aggregate(&stale_items);
@@ -239,11 +262,24 @@ mod tests {
 
         assert_eq!(fresh_portfolio.freshness.status, FreshnessStatus::Fresh);
         assert_eq!(stale_portfolio.freshness.status, FreshnessStatus::Stale);
-        assert_eq!(synthetic_portfolio.freshness.status, FreshnessStatus::Partial);
+        assert_eq!(
+            synthetic_portfolio.freshness.status,
+            FreshnessStatus::Partial
+        );
         assert_eq!(cached_portfolio.freshness.status, FreshnessStatus::Cached);
-        assert_eq!(cached_price_portfolio.freshness.status, FreshnessStatus::Cached);
-        assert_eq!(partial_price_portfolio.freshness.status, FreshnessStatus::Partial);
-        assert!(synthetic_portfolio.freshness.failed_sources.iter().any(|source| source == "usdc"));
+        assert_eq!(
+            cached_price_portfolio.freshness.status,
+            FreshnessStatus::Cached
+        );
+        assert_eq!(
+            partial_price_portfolio.freshness.status,
+            FreshnessStatus::Partial
+        );
+        assert!(synthetic_portfolio
+            .freshness
+            .failed_sources
+            .iter()
+            .any(|source| source == "usdc"));
     }
 
     #[test]
@@ -251,12 +287,20 @@ mod tests {
         let items = vec![
             (
                 "usdc".to_string(),
-                balance(10.0, Some("ethereum"), freshness(FreshnessStatus::Fresh, Some(205))),
+                balance(
+                    10.0,
+                    Some("ethereum"),
+                    freshness(FreshnessStatus::Fresh, Some(205)),
+                ),
                 synthetic(1.0, "synthetic-stablecoin", 205),
             ),
             (
                 "doge".to_string(),
-                balance(5.0, Some("dogecoin"), freshness(FreshnessStatus::Fresh, Some(205))),
+                balance(
+                    5.0,
+                    Some("dogecoin"),
+                    freshness(FreshnessStatus::Fresh, Some(205)),
+                ),
                 unavailable(),
             ),
         ];
@@ -269,6 +313,10 @@ mod tests {
             portfolio.freshness.status,
             FreshnessStatus::Partial | FreshnessStatus::Unavailable
         ));
-        assert!(portfolio.freshness.failed_sources.iter().any(|source| source == "doge"));
+        assert!(portfolio
+            .freshness
+            .failed_sources
+            .iter()
+            .any(|source| source == "doge"));
     }
 }

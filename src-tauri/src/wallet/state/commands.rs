@@ -17,7 +17,10 @@ fn bitcoin_balance_state_from_parts(balance: f64, freshness: FreshnessMetadata) 
     }
 }
 
-fn bitcoin_portfolio_state_from_items(items: &[(String, BalanceState)], price_state: &PriceState) -> PortfolioState {
+fn bitcoin_portfolio_state_from_items(
+    items: &[(String, BalanceState)],
+    price_state: &PriceState,
+) -> PortfolioState {
     let portfolio_items: Vec<(String, BalanceState, PriceState)> = items
         .iter()
         .cloned()
@@ -49,7 +52,9 @@ pub fn state_get_bitcoin_wallet_balance_state(wallet_id: String) -> Result<Balan
 
 #[tauri::command]
 pub fn state_get_bitcoin_price_state() -> Result<PriceState, String> {
-    Ok(crate::wallet::evm::price_manager::get_cached_price_state("BTC"))
+    Ok(crate::wallet::evm::price_manager::get_cached_price_state(
+        "BTC",
+    ))
 }
 
 #[tauri::command]
@@ -86,8 +91,7 @@ pub fn state_get_bitcoin_portfolio_state() -> Result<PortfolioState, String> {
 mod tests {
     use super::{bitcoin_balance_state_from_parts, bitcoin_portfolio_state_from_items};
     use crate::wallet::state::{
-        freshness,
-        price,
+        freshness, price,
         types::{FreshnessMetadata, FreshnessStatus},
     };
     use serde_json::Value;
@@ -116,7 +120,10 @@ mod tests {
         );
 
         let json = serde_json::to_value(&state).unwrap();
-        assert_eq!(top_level_keys(&json), vec!["chain_id", "display_amount", "freshness", "raw_amount"]);
+        assert_eq!(
+            top_level_keys(&json),
+            vec!["chain_id", "display_amount", "freshness", "raw_amount"]
+        );
     }
 
     #[test]
@@ -124,7 +131,10 @@ mod tests {
         let state = price::unavailable();
 
         let json = serde_json::to_value(&state).unwrap();
-        assert_eq!(top_level_keys(&json), vec!["price_source", "price_updated_at", "price_usd", "status"]);
+        assert_eq!(
+            top_level_keys(&json),
+            vec!["price_source", "price_updated_at", "price_usd", "status"]
+        );
     }
 
     #[test]
@@ -145,6 +155,9 @@ mod tests {
         );
 
         let json = serde_json::to_value(&state).unwrap();
-        assert_eq!(top_level_keys(&json), vec!["freshness", "value_btc", "value_usd"]);
+        assert_eq!(
+            top_level_keys(&json),
+            vec!["freshness", "value_btc", "value_usd"]
+        );
     }
 }

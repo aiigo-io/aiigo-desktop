@@ -56,13 +56,16 @@ pub fn hash_password(password: &str) -> Result<PasswordAuthState, SecurityError>
     })
 }
 
-pub fn verify_password(password: &str, auth_state: &PasswordAuthState) -> Result<bool, SecurityError> {
+pub fn verify_password(
+    password: &str,
+    auth_state: &PasswordAuthState,
+) -> Result<bool, SecurityError> {
     validate_password(password)?;
 
-    let salt_bytes = hex::decode(&auth_state.password_salt)
-        .map_err(|_| SecurityError::OperationNotAllowed)?;
-    let expected_hash = hex::decode(&auth_state.password_hash)
-        .map_err(|_| SecurityError::OperationNotAllowed)?;
+    let salt_bytes =
+        hex::decode(&auth_state.password_salt).map_err(|_| SecurityError::OperationNotAllowed)?;
+    let expected_hash =
+        hex::decode(&auth_state.password_hash).map_err(|_| SecurityError::OperationNotAllowed)?;
 
     if expected_hash.len() != PASSWORD_HASH_LEN {
         return Err(SecurityError::OperationNotAllowed);

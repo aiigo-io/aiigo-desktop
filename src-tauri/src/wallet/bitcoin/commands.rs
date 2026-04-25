@@ -1,7 +1,9 @@
 use crate::wallet::state::types::BalanceState;
 use crate::wallet::sync::engine;
 use crate::wallet::sync::types::SyncReason;
-use crate::wallet::types::{BitcoinWalletBalanceResponse, FreshnessBackedBitcoinBalance, WalletInfo};
+use crate::wallet::types::{
+    BitcoinWalletBalanceResponse, FreshnessBackedBitcoinBalance, WalletInfo,
+};
 use crate::DB;
 
 const BALANCE_FRESH_WITHIN_SECS: i64 = 60;
@@ -31,7 +33,10 @@ fn load_bitcoin_balance_state(wallet_id: &str) -> Result<BalanceState, String> {
     })
 }
 
-fn to_bitcoin_balance_response(wallet: WalletInfo, balance_state: BalanceState) -> BitcoinWalletBalanceResponse {
+fn to_bitcoin_balance_response(
+    wallet: WalletInfo,
+    balance_state: BalanceState,
+) -> BitcoinWalletBalanceResponse {
     BitcoinWalletBalanceResponse {
         wallet,
         balance_state: FreshnessBackedBitcoinBalance {
@@ -59,13 +64,16 @@ pub fn bitcoin_get_wallet(wallet_id: String) -> Result<Option<WalletInfo>, Strin
 
 #[tauri::command]
 pub async fn bitcoin_get_wallet_with_balance(wallet_id: String) -> Result<WalletInfo, String> {
-    refresh_bitcoin_wallet_balance(wallet_id)
-        .await
-        .map(|response| response.wallet)
+    let db = DB.lock().map_err(|e| e.to_string())?;
+    db.get_bitcoin_wallet(&wallet_id)
+        .map_err(|e| format!("Failed to get wallet: {}", e))?
+        .ok_or_else(|| "Wallet not found".to_string())
 }
 
 #[tauri::command]
-pub fn query_bitcoin_wallet_balance(wallet_id: String) -> Result<BitcoinWalletBalanceResponse, String> {
+pub fn query_bitcoin_wallet_balance(
+    wallet_id: String,
+) -> Result<BitcoinWalletBalanceResponse, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
     let wallet = db
         .get_bitcoin_wallet(&wallet_id)
@@ -78,7 +86,9 @@ pub fn query_bitcoin_wallet_balance(wallet_id: String) -> Result<BitcoinWalletBa
 }
 
 #[tauri::command]
-pub async fn refresh_bitcoin_wallet_balance(wallet_id: String) -> Result<BitcoinWalletBalanceResponse, String> {
+pub async fn refresh_bitcoin_wallet_balance(
+    wallet_id: String,
+) -> Result<BitcoinWalletBalanceResponse, String> {
     let (wallet, _) = engine::sync_bitcoin_wallet_balance(&wallet_id, SyncReason::Manual).await?;
     let balance_state = load_bitcoin_balance_state(&wallet_id)?;
     Ok(to_bitcoin_balance_response(wallet, balance_state))

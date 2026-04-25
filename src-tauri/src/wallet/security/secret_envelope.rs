@@ -45,7 +45,8 @@ pub enum SecretEnvelopeError {
 
 pub(crate) fn encrypt_secret(plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
     let master_key = load_or_create_master_key()?;
-    let cipher = Aes256Gcm::new_from_slice(&master_key).map_err(|_| SecretEnvelopeError::Encrypt)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&master_key).map_err(|_| SecretEnvelopeError::Encrypt)?;
     let nonce_bytes: [u8; 12] = rand::random();
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
@@ -63,7 +64,10 @@ pub(crate) fn encrypt_secret(plaintext: &str) -> Result<StoredSecret, SecretEnve
     })
 }
 
-pub(crate) fn decrypt_secret(secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+pub(crate) fn decrypt_secret(
+    secret_data: &str,
+    secret_format: &str,
+) -> Result<String, SecretEnvelopeError> {
     match normalize_secret_format(secret_format) {
         SECRET_FORMAT_PLAINTEXT_V0 => Ok(secret_data.to_string()),
         SECRET_FORMAT_KEYRING_AES256_GCM_V1 => decrypt_secret_envelope(secret_data),
@@ -90,7 +94,8 @@ fn decrypt_secret_envelope(secret_data: &str) -> Result<String, SecretEnvelopeEr
 
     let ciphertext = STANDARD.decode(envelope.ciphertext)?;
     let master_key = load_or_create_master_key()?;
-    let cipher = Aes256Gcm::new_from_slice(&master_key).map_err(|_| SecretEnvelopeError::Decrypt)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&master_key).map_err(|_| SecretEnvelopeError::Decrypt)?;
     let plaintext = cipher
         .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
         .map_err(|_| SecretEnvelopeError::Decrypt)?;

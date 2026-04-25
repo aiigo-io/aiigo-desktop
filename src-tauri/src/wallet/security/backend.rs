@@ -1,4 +1,6 @@
-use super::secret_envelope::{decrypt_secret, encrypt_secret, probe_secret_backend, SecretEnvelopeError, StoredSecret};
+use super::secret_envelope::{
+    decrypt_secret, encrypt_secret, probe_secret_backend, SecretEnvelopeError, StoredSecret,
+};
 use super::types::{
     SecretBackendStatus, SecretBackendUnavailableKind, SecretBackendUnavailableReason,
     SecurityError,
@@ -8,7 +10,11 @@ use std::sync::{Arc, Mutex};
 pub trait SecretBackendAdapter {
     fn probe(&self) -> Result<(), SecretEnvelopeError>;
     fn encrypt(&self, plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError>;
-    fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError>;
+    fn decrypt(
+        &self,
+        secret_data: &str,
+        secret_format: &str,
+    ) -> Result<String, SecretEnvelopeError>;
 }
 
 struct DefaultSecretBackendAdapter;
@@ -22,7 +28,11 @@ impl SecretBackendAdapter for DefaultSecretBackendAdapter {
         encrypt_secret(plaintext)
     }
 
-    fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+    fn decrypt(
+        &self,
+        secret_data: &str,
+        secret_format: &str,
+    ) -> Result<String, SecretEnvelopeError> {
         decrypt_secret(secret_data, secret_format)
     }
 }
@@ -49,12 +59,14 @@ impl SecretBackend {
     }
 
     pub fn current_status(&self) -> SecretBackendStatus {
-        self.status.lock().map(|status| status.clone()).unwrap_or(SecretBackendStatus::Unavailable {
-            reason: SecretBackendUnavailableReason {
-                kind: SecretBackendUnavailableKind::UnknownBackendError,
-                message: "secret backend status lock poisoned".to_string(),
+        self.status.lock().map(|status| status.clone()).unwrap_or(
+            SecretBackendStatus::Unavailable {
+                reason: SecretBackendUnavailableReason {
+                    kind: SecretBackendUnavailableKind::UnknownBackendError,
+                    message: "secret backend status lock poisoned".to_string(),
+                },
             },
-        })
+        )
     }
 
     pub fn refresh_status(&self) -> SecretBackendStatus {
@@ -132,11 +144,17 @@ fn reason_from_error(error: &SecretEnvelopeError) -> SecretBackendUnavailableRea
         SecretEnvelopeError::Keyring(message) => {
             let lower = message.to_ascii_lowercase();
             if lower.contains("secret service") {
-                (SecretBackendUnavailableKind::SecretServiceUnreachable, message.clone())
+                (
+                    SecretBackendUnavailableKind::SecretServiceUnreachable,
+                    message.clone(),
+                )
             } else if lower.contains("denied") || lower.contains("permission") {
                 (SecretBackendUnavailableKind::AccessDenied, message.clone())
             } else {
-                (SecretBackendUnavailableKind::KeyringUnavailable, message.clone())
+                (
+                    SecretBackendUnavailableKind::KeyringUnavailable,
+                    message.clone(),
+                )
             }
         }
         SecretEnvelopeError::InvalidMasterKeyLength(length) => (
@@ -173,10 +191,7 @@ mod tests {
 
     impl SecretBackendAdapter for StubAdapter {
         fn probe(&self) -> Result<(), SecretEnvelopeError> {
-            self.probe_results
-                .lock()
-                .unwrap()
-                .remove(0)
+            self.probe_results.lock().unwrap().remove(0)
         }
 
         fn encrypt(&self, _plaintext: &str) -> Result<StoredSecret, SecretEnvelopeError> {
@@ -187,7 +202,11 @@ mod tests {
             }
         }
 
-        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             if self.decrypt_should_fail {
                 Err(SecretEnvelopeError::Decrypt)
             } else {

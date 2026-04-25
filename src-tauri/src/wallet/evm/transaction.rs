@@ -1,29 +1,27 @@
-use crate::wallet::transaction_types::{
-    EvmTransaction, SendEvmRequest, SendTransactionResponse,
-    TransactionStatus, TransactionType,
-};
-use crate::wallet::sync::types::EVM_MIN_BLOCK_DEPTH;
 use crate::wallet::evm::config::get_chain_by_id;
 use crate::wallet::evm::private_key::{
-    load_authorized_mnemonic, load_authorized_private_key,
-    map_security_error,
+    load_authorized_mnemonic, load_authorized_private_key, map_security_error,
 };
 use crate::wallet::security::backend::SecretBackend;
 use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
+use crate::wallet::sync::types::EVM_MIN_BLOCK_DEPTH;
+use crate::wallet::transaction_types::{
+    EvmTransaction, SendEvmRequest, SendTransactionResponse, TransactionStatus, TransactionType,
+};
 use crate::wallet::types::WalletInfo;
 use crate::DB;
 use chrono::Utc;
 use ethers::prelude::*;
 use ethers::providers::{Http, Provider};
-use ethers::types::{Address as EthAddress, TransactionReceipt, H256, U256};
 use ethers::signers::coins_bip39::English;
 use ethers::signers::MnemonicBuilder;
+use ethers::types::{Address as EthAddress, TransactionReceipt, H256, U256};
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
-use serde::{Deserialize, Serialize};
 
 const ETHERSCAN_API_KEY: &str = "TKG5YYYPSX97W8HG7ZHA319UXKWMXFKKG6";
 
@@ -123,8 +121,8 @@ pub async fn fetch_evm_transaction_history(
     let api_url = get_etherscan_api_url(chain_id)
         .ok_or_else(|| format!("Chain ID {} not supported for Etherscan API", chain_id))?;
 
-    let chain_config = get_chain_by_id(chain_id)
-        .ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
+    let chain_config =
+        get_chain_by_id(chain_id).ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
 
     let mut all_transactions = Vec::new();
 
@@ -138,13 +136,15 @@ pub async fn fetch_evm_transaction_history(
 
     // Convert to EvmTransaction and save to database
     let mut result = Vec::new();
-    let native_symbol = chain_config.assets().first()
+    let native_symbol = chain_config
+        .assets()
+        .first()
         .map(|a| a.symbol.clone())
         .unwrap_or_else(|| "ETH".to_string());
 
     for tx in all_transactions {
         let is_from_me = tx.from.to_lowercase() == address.to_lowercase();
-        
+
         let tx_type = if is_from_me {
             if tx.method_id == "0x095ea7b3" || tx.input.starts_with("0x095ea7b3") {
                 TransactionType::Approve
@@ -163,26 +163,37 @@ pub async fn fetch_evm_transaction_history(
             Some(EVM_MIN_BLOCK_DEPTH),
             EVM_MIN_BLOCK_DEPTH,
         );
-        
-        let timestamp_secs = tx.timestamp.parse::<i64>()
+
+        let timestamp_secs = tx
+            .timestamp
+            .parse::<i64>()
             .unwrap_or_else(|_| Utc::now().timestamp());
         let timestamp = chrono::DateTime::from_timestamp(timestamp_secs, 0)
             .unwrap_or_else(|| Utc::now())
             .to_rfc3339();
 
         // Determine if it's a token transfer or native transfer
-        let (asset_symbol, asset_name, contract_address, decimals) = if !tx.contract_address.is_empty() {
-            // ERC20 token transfer
-            let symbol = tx.token_symbol.clone().unwrap_or_else(|| "UNKNOWN".to_string());
-            let name = tx.token_name.clone().unwrap_or_else(|| "Unknown Token".to_string());
-            let decimals = tx.token_decimal.as_ref()
-                .and_then(|d| d.parse::<u8>().ok())
-                .unwrap_or(18);
-            (symbol, name, Some(tx.contract_address.clone()), decimals)
-        } else {
-            // Native token transfer
-            (native_symbol.clone(), native_symbol.clone(), None, 18)
-        };
+        let (asset_symbol, asset_name, contract_address, decimals) =
+            if !tx.contract_address.is_empty() {
+                // ERC20 token transfer
+                let symbol = tx
+                    .token_symbol
+                    .clone()
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+                let name = tx
+                    .token_name
+                    .clone()
+                    .unwrap_or_else(|| "Unknown Token".to_string());
+                let decimals = tx
+                    .token_decimal
+                    .as_ref()
+                    .and_then(|d| d.parse::<u8>().ok())
+                    .unwrap_or(18);
+                (symbol, name, Some(tx.contract_address.clone()), decimals)
+            } else {
+                // Native token transfer
+                (native_symbol.clone(), native_symbol.clone(), None, 18)
+            };
 
         // Calculate amount
         let value_u256 = U256::from_dec_str(&tx.value).unwrap_or_default();
@@ -265,11 +276,15 @@ async fn fetch_normal_transactions(
         if etherscan_response.message.contains("No transactions found") {
             return Ok(Vec::new());
         }
-        return Err(format!("Etherscan API error: {}", etherscan_response.message));
+        return Err(format!(
+            "Etherscan API error: {}",
+            etherscan_response.message
+        ));
     }
 
-    let transactions: Vec<EtherscanTransaction> = serde_json::from_value(etherscan_response.result.clone())
-        .map_err(|e| format!("Failed to parse normal transactions: {}", e))?;
+    let transactions: Vec<EtherscanTransaction> =
+        serde_json::from_value(etherscan_response.result.clone())
+            .map_err(|e| format!("Failed to parse normal transactions: {}", e))?;
 
     Ok(transactions)
 }
@@ -300,11 +315,15 @@ async fn fetch_token_transactions(
         if etherscan_response.message.contains("No transactions found") {
             return Ok(Vec::new());
         }
-        return Err(format!("Etherscan API error: {}", etherscan_response.message));
+        return Err(format!(
+            "Etherscan API error: {}",
+            etherscan_response.message
+        ));
     }
 
-    let transactions: Vec<EtherscanTransaction> = serde_json::from_value(etherscan_response.result.clone())
-        .map_err(|e| format!("Failed to parse token transactions: {}", e))?;
+    let transactions: Vec<EtherscanTransaction> =
+        serde_json::from_value(etherscan_response.result.clone())
+            .map_err(|e| format!("Failed to parse token transactions: {}", e))?;
 
     Ok(transactions)
 }
@@ -334,8 +353,8 @@ pub async fn estimate_evm_gas(
         .map_err(|e| format!("Invalid recipient address: {}", e))?;
 
     // Parse amount
-    let amount_wei = U256::from_dec_str(&request.amount)
-        .map_err(|e| format!("Invalid amount: {}", e))?;
+    let amount_wei =
+        U256::from_dec_str(&request.amount).map_err(|e| format!("Invalid amount: {}", e))?;
 
     let from_address = EthAddress::from_str(&wallet_info.address)
         .map_err(|e| format!("Invalid wallet address: {}", e))?;
@@ -442,8 +461,8 @@ pub async fn send_evm_transaction(
         .map_err(|e| format!("Invalid recipient address: {}", e))?;
 
     // Parse amount
-    let amount_wei = U256::from_dec_str(&request.amount)
-        .map_err(|e| format!("Invalid amount: {}", e))?;
+    let amount_wei =
+        U256::from_dec_str(&request.amount).map_err(|e| format!("Invalid amount: {}", e))?;
     let from_address = EthAddress::from_str(&wallet_info.address)
         .map_err(|e| format!("Invalid wallet address: {}", e))?;
 
@@ -470,8 +489,7 @@ pub async fn send_evm_transaction(
                 .map_err(|e| format!("Failed to estimate gas: {}", e))?
         };
         let gas_price = if let Some(gas_price) = &request.gas_price {
-            U256::from_dec_str(gas_price)
-                .map_err(|e| format!("Invalid gas price: {}", e))?
+            U256::from_dec_str(gas_price).map_err(|e| format!("Invalid gas price: {}", e))?
         } else {
             provider
                 .get_gas_price()
@@ -530,8 +548,7 @@ pub async fn send_evm_transaction(
                 .map_err(|e| format!("Failed to estimate gas: {}", e))?
         };
         let gas_price = if let Some(gas_price) = &request.gas_price {
-            U256::from_dec_str(gas_price)
-                .map_err(|e| format!("Invalid gas price: {}", e))?
+            U256::from_dec_str(gas_price).map_err(|e| format!("Invalid gas price: {}", e))?
         } else {
             provider
                 .get_gas_price()
@@ -559,8 +576,12 @@ pub async fn send_evm_transaction(
 
     // Find decimals for the asset
     let decimals = if let Some(addr) = &request.contract_address {
-        chain_config.assets().iter()
-            .find(|a| a.contract_address.as_ref().map(|ca| ca.to_lowercase()) == Some(addr.to_lowercase()))
+        chain_config
+            .assets()
+            .iter()
+            .find(|a| {
+                a.contract_address.as_ref().map(|ca| ca.to_lowercase()) == Some(addr.to_lowercase())
+            })
             .map(|a| a.decimals)
             .unwrap_or(18)
     } else {
@@ -574,8 +595,12 @@ pub async fn send_evm_transaction(
 
     // Get asset name from config if possible
     let asset_name = if let Some(addr) = &request.contract_address {
-        chain_config.assets().iter()
-            .find(|a| a.contract_address.as_ref().map(|ca| ca.to_lowercase()) == Some(addr.to_lowercase()))
+        chain_config
+            .assets()
+            .iter()
+            .find(|a| {
+                a.contract_address.as_ref().map(|ca| ca.to_lowercase()) == Some(addr.to_lowercase())
+            })
             .map(|a| a.name.clone())
             .unwrap_or_else(|| "".to_string())
     } else {
@@ -638,7 +663,10 @@ mod estimated_fee_tests {
     #[test]
     fn broadcast_status_stays_broadcasted_after_send_snapshot() {
         assert_eq!(TransactionStatus::after_broadcast().as_str(), "broadcasted");
-        assert_ne!(TransactionStatus::after_broadcast(), TransactionStatus::Confirmed);
+        assert_ne!(
+            TransactionStatus::after_broadcast(),
+            TransactionStatus::Confirmed
+        );
     }
 }
 
@@ -649,16 +677,15 @@ pub async fn get_transaction_receipt(
     chain_id: u64,
 ) -> Result<Option<TransactionReceipt>, String> {
     // Get chain config
-    let chain_config = get_chain_by_id(chain_id)
-        .ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
+    let chain_config =
+        get_chain_by_id(chain_id).ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
 
     // Create provider
     let provider = Provider::<Http>::try_from(chain_config.rpc_url())
         .map_err(|e| format!("Failed to create provider: {}", e))?;
 
     // Parse transaction hash
-    let hash = H256::from_str(&tx_hash)
-        .map_err(|e| format!("Invalid transaction hash: {}", e))?;
+    let hash = H256::from_str(&tx_hash).map_err(|e| format!("Invalid transaction hash: {}", e))?;
 
     // Get receipt
     let receipt = provider
@@ -713,24 +740,21 @@ pub async fn send_raw_evm_transaction(
         .map_err(|e| format!("Invalid recipient address: {}", e))?;
 
     // Parse value (amount of native token to send)
-    let value = U256::from_dec_str(&request.value)
-        .map_err(|e| format!("Invalid value: {}", e))?;
+    let value = U256::from_dec_str(&request.value).map_err(|e| format!("Invalid value: {}", e))?;
 
     // Parse gas limit
-    let gas_limit = U256::from_dec_str(&request.gas_limit)
-        .map_err(|e| format!("Invalid gas limit: {}", e))?;
+    let gas_limit =
+        U256::from_dec_str(&request.gas_limit).map_err(|e| format!("Invalid gas limit: {}", e))?;
 
     // Parse gas price (in wei)
-    let gas_price = U256::from_dec_str(&request.gas_price)
-        .map_err(|e| format!("Invalid gas price: {}", e))?;
+    let gas_price =
+        U256::from_dec_str(&request.gas_price).map_err(|e| format!("Invalid gas price: {}", e))?;
 
     // Parse data (hex string)
     let data = if request.data.starts_with("0x") {
-        hex::decode(&request.data[2..])
-            .map_err(|e| format!("Invalid data hex: {}", e))?
+        hex::decode(&request.data[2..]).map_err(|e| format!("Invalid data hex: {}", e))?
     } else {
-        hex::decode(&request.data)
-            .map_err(|e| format!("Invalid data hex: {}", e))?
+        hex::decode(&request.data).map_err(|e| format!("Invalid data hex: {}", e))?
     };
 
     // Build transaction
@@ -800,7 +824,6 @@ async fn approve_erc20_token_with_wallet(
     keystore: &(dyn Keystore + Send + Sync),
     session_manager: &SessionManager,
 ) -> Result<SendTransactionResponse, String> {
-
     let signing_secret = load_signing_secret(
         &wallet_info,
         secret_backend,
@@ -812,18 +835,8 @@ async fn approve_erc20_token_with_wallet(
     .ok_or_else(|| "Wallet secret not found".to_string())?;
 
     // Get chain config
-    let chain_config = get_chain_by_id(chain_id)
-        .ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
-
-    // Create provider
-    let provider = Provider::<Http>::try_from(chain_config.rpc_url())
-        .map_err(|e| format!("Failed to create provider: {}", e))?;
-    let provider = Arc::new(provider);
-
-    // Create wallet from secret
-    let wallet = wallet_from_signing_secret(signing_secret, chain_id)?;
-
-    let client = SignerMiddleware::new(provider.clone(), wallet);
+    let chain_config =
+        get_chain_by_id(chain_id).ok_or_else(|| format!("Chain ID {} not supported", chain_id))?;
 
     // Parse token contract address
     let contract_address = EthAddress::from_str(&token_address)
@@ -832,12 +845,10 @@ async fn approve_erc20_token_with_wallet(
     // Parse amount to approve (handle both hex and decimal formats)
     let approve_amount = if amount.starts_with("0x") || amount.starts_with("0X") {
         // Hex format (e.g., "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-        U256::from_str_radix(&amount[2..], 16)
-            .map_err(|e| format!("Invalid hex amount: {}", e))?
+        U256::from_str_radix(&amount[2..], 16).map_err(|e| format!("Invalid hex amount: {}", e))?
     } else {
         // Decimal format
-        U256::from_dec_str(&amount)
-            .map_err(|e| format!("Invalid decimal amount: {}", e))?
+        U256::from_dec_str(&amount).map_err(|e| format!("Invalid decimal amount: {}", e))?
     };
 
     // ERC20 ABI for approve function
@@ -846,13 +857,21 @@ async fn approve_erc20_token_with_wallet(
     ])
     .map_err(|e| format!("Failed to parse ABI: {}", e))?;
 
-    let contract = Contract::new(contract_address, abi, Arc::new(client.clone()));
-
     // Parse spender address from parameter (OpenOcean router address)
     let spender = EthAddress::from_str(&spender_address)
         .map_err(|e| format!("Invalid spender address: {}", e))?;
 
+    // Create provider only after request validation succeeds.
+    let provider = Provider::<Http>::try_from(chain_config.rpc_url())
+        .map_err(|e| format!("Failed to create provider: {}", e))?;
+    let provider = Arc::new(provider);
+
+    // Create wallet from secret
+    let wallet = wallet_from_signing_secret(signing_secret, chain_id)?;
+    let client = SignerMiddleware::new(provider.clone(), wallet);
+
     // Call approve function
+    let contract = Contract::new(contract_address, abi, Arc::new(client.clone()));
     let call = contract
         .method::<_, bool>("approve", (spender, approve_amount))
         .map_err(|e| format!("Failed to create approve call: {}", e))?;
@@ -938,7 +957,10 @@ mod tests {
     use crate::db::Database;
     use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
     use crate::wallet::security::keystore::{Keystore, SqliteKeystore};
-    use crate::wallet::security::secret_envelope::{encrypt_secret, decrypt_secret, SecretEnvelopeError, StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
+    use crate::wallet::security::secret_envelope::{
+        decrypt_secret, encrypt_secret, SecretEnvelopeError, StoredSecret,
+        SECRET_FORMAT_PLAINTEXT_V0,
+    };
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{SecurityError, SignerOperation};
     use crate::wallet::types::WalletInfo;
@@ -964,7 +986,10 @@ mod tests {
     }
 
     impl DatabaseBackedKeystore {
-        fn load_secret(&self, address: &str) -> Result<Option<(String, String, String)>, SecurityError> {
+        fn load_secret(
+            &self,
+            address: &str,
+        ) -> Result<Option<(String, String, String)>, SecurityError> {
             if let Some(wallet_id) = self
                 .db
                 .get_evm_wallets()
@@ -1022,7 +1047,11 @@ mod tests {
             encrypt_secret(plaintext)
         }
 
-        fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            secret_data: &str,
+            secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             decrypt_secret(secret_data, secret_format)
         }
     }
@@ -1031,7 +1060,9 @@ mod tests {
         SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter))
     }
 
-    fn insert_evm_wallet_with_secret(stored_secret: StoredSecret) -> (WalletInfo, DatabaseBackedKeystore) {
+    fn insert_evm_wallet_with_secret(
+        stored_secret: StoredSecret,
+    ) -> (WalletInfo, DatabaseBackedKeystore) {
         let db = Database::new(":memory:").unwrap();
         let wallet = db
             .insert_evm_wallet_with_secret(
@@ -1121,7 +1152,9 @@ mod tests {
     fn approve_signing_returns_expired_without_keystore_access() {
         let session = SessionManager::new(Duration::from_millis(1), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Approve)
+            .unwrap();
         std::thread::sleep(Duration::from_millis(5));
 
         assert!(matches!(
@@ -1139,12 +1172,15 @@ mod tests {
     #[test]
     fn approve_signing_reads_plaintext_secret_row_after_unlock() {
         let (wallet, keystore) = insert_evm_wallet_with_secret(StoredSecret {
-            secret_data: "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e".to_string(),
+            secret_data: "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e"
+                .to_string(),
             secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
         });
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Approve)
+            .unwrap();
 
         let result = load_signing_secret(
             &wallet,
@@ -1165,11 +1201,14 @@ mod tests {
     #[test]
     fn approve_signing_reads_migrated_secret_row_after_unlock() {
         let (wallet, keystore) = insert_evm_wallet_with_secret(
-            encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e").unwrap(),
+            encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e")
+                .unwrap(),
         );
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
         let secret_backend = ready_secret_backend();
-        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Approve)
+            .unwrap();
 
         let result = load_signing_secret(
             &wallet,
@@ -1190,13 +1229,18 @@ mod tests {
     #[tokio::test]
     async fn approve_command_path_reads_plaintext_secret_row_before_spender_validation_failure() {
         let wallet = insert_global_evm_wallet_with_secret(StoredSecret {
-            secret_data: "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e".to_string(),
+            secret_data: "0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e"
+                .to_string(),
             secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
         });
-        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(
+            TestSecretBackendAdapter,
+        )));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
-        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Approve)
+            .unwrap();
 
         let result = approve_erc20_token(
             wallet.id.clone(),
@@ -1218,12 +1262,17 @@ mod tests {
     #[tokio::test]
     async fn approve_command_path_reads_migrated_secret_row_before_spender_validation_failure() {
         let wallet = insert_global_evm_wallet_with_secret(
-            encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e").unwrap(),
+            encrypt_secret("0x59c6995e998f97a5a0044966f094538c5f1f6f67cb5a1f2f4c8f5d4f9b3c1d2e")
+                .unwrap(),
         );
-        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(TestSecretBackendAdapter)));
+        let secret_backend = Arc::new(SecretBackend::with_adapter(Arc::new(
+            TestSecretBackendAdapter,
+        )));
         let keystore = SqliteKeystore::new(&DB, secret_backend);
         let session = SessionManager::new(Duration::from_secs(30), Duration::from_secs(90));
-        session.authorize_verified_operation(SignerOperation::Approve).unwrap();
+        session
+            .authorize_verified_operation(SignerOperation::Approve)
+            .unwrap();
 
         let result = approve_erc20_token(
             wallet.id.clone(),

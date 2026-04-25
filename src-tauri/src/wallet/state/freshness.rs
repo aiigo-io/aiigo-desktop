@@ -72,9 +72,7 @@ pub fn combine(components: &[(String, FreshnessMetadata)]) -> FreshnessMetadata 
             {
                 aggregate_status = FreshnessStatus::Stale;
             }
-            FreshnessStatus::Cached
-                if matches!(aggregate_status, FreshnessStatus::Fresh) =>
-            {
+            FreshnessStatus::Cached if matches!(aggregate_status, FreshnessStatus::Fresh) => {
                 aggregate_status = FreshnessStatus::Cached;
             }
             FreshnessStatus::Fresh | FreshnessStatus::Cached | FreshnessStatus::Stale => {}
@@ -120,7 +118,8 @@ mod tests {
 
     // M-FS-2
     #[test]
-    fn partial_freshness_metadata_round_trips_with_failed_sources() { // FreshnessStatus::Partial failed_sources
+    fn partial_freshness_metadata_round_trips_with_failed_sources() {
+        // FreshnessStatus::Partial failed_sources
         let metadata = FreshnessMetadata {
             status: FreshnessStatus::Partial,
             updated_at: Some(1_713_000_000),
@@ -155,7 +154,10 @@ mod tests {
     fn classify_age_uses_cached_for_unknown_and_respects_threshold_boundaries() {
         assert_eq!(classify_age(None, 200, 30, 60), FreshnessStatus::Cached);
         assert_eq!(classify_age(Some(190), 200, 10, 30), FreshnessStatus::Fresh);
-        assert_eq!(classify_age(Some(180), 200, 10, 30), FreshnessStatus::Cached);
+        assert_eq!(
+            classify_age(Some(180), 200, 10, 30),
+            FreshnessStatus::Cached
+        );
         assert_eq!(classify_age(Some(170), 200, 10, 30), FreshnessStatus::Stale);
     }
 

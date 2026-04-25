@@ -182,14 +182,16 @@ fn is_word_start(bytes: &[u8], start: usize) -> bool {
 }
 
 fn has_left_token_boundary(input: &str, index: usize) -> bool {
-    input.get(..index)
+    input
+        .get(..index)
         .and_then(|head| head.chars().next_back())
         .map(|ch| !is_token_char(ch))
         .unwrap_or(true)
 }
 
 fn has_right_token_boundary(input: &str, index: usize) -> bool {
-    input.get(index..)
+    input
+        .get(index..)
         .and_then(|tail| tail.chars().next())
         .map(|ch| !is_token_char(ch))
         .unwrap_or(true)
@@ -255,10 +257,7 @@ mod tests {
     fn sanitize_replaces_embedded_mnemonic_inline() {
         let input = "wallet import: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about failed";
 
-        assert_eq!(
-            sanitize(input),
-            "wallet import: [REDACTED_MNEMONIC] failed"
-        );
+        assert_eq!(sanitize(input), "wallet import: [REDACTED_MNEMONIC] failed");
     }
 
     #[test]

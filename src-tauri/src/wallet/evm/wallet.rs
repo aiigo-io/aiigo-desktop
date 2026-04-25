@@ -1,7 +1,7 @@
-use crate::wallet::security::commands::AppSecurity;
-use crate::wallet::security::commands::ensure_local_password_boundary_ready;
 use crate::wallet::evm::private_key::map_security_error;
 use crate::wallet::security::backend::SecretBackend;
+use crate::wallet::security::commands::ensure_local_password_boundary_ready;
+use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::security::secret_envelope::StoredSecret;
 use crate::wallet::types::CreateWalletResponse;
 use crate::DB;

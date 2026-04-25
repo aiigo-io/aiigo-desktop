@@ -1,10 +1,12 @@
 use crate::wallet::security::backend::SecretBackend;
-use crate::wallet::security::types::{PasswordAuthState, PasswordKdfParams};
 use crate::wallet::security::secret_envelope::{StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
-use crate::wallet::types::WalletInfo;
+use crate::wallet::security::types::{PasswordAuthState, PasswordKdfParams};
 use crate::wallet::state::freshness::classify_age;
 use crate::wallet::state::types::FreshnessMetadata;
-use crate::wallet::transaction_types::{BitcoinTransaction, EvmTransaction, TransactionStatus, TransactionType};
+use crate::wallet::transaction_types::{
+    BitcoinTransaction, EvmTransaction, TransactionStatus, TransactionType,
+};
+use crate::wallet::types::WalletInfo;
 use chrono::Utc;
 use rusqlite::{params, Connection, Result as SqliteResult};
 use std::sync::Mutex;
@@ -235,7 +237,11 @@ impl Database {
     fn migrate_phase2_sync_metadata(conn: &Connection) -> SqliteResult<()> {
         let additive_columns = [
             ("bitcoin_wallets", "balance_updated_at", "INTEGER"),
-            ("bitcoin_wallets", "balance_failed_sources", "TEXT DEFAULT '[]'"),
+            (
+                "bitcoin_wallets",
+                "balance_failed_sources",
+                "TEXT DEFAULT '[]'",
+            ),
             ("evm_wallets", "balance_updated_at", "INTEGER"),
             ("evm_wallets", "balance_failed_sources", "TEXT DEFAULT '[]'"),
             ("evm_asset_balances", "balance_updated_at", "INTEGER"),
@@ -246,7 +252,11 @@ impl Database {
                 "valuation_status",
                 "TEXT NOT NULL DEFAULT 'valued'",
             ),
-            ("dashboard_stats", "failed_sources", "TEXT NOT NULL DEFAULT '[]'"),
+            (
+                "dashboard_stats",
+                "failed_sources",
+                "TEXT NOT NULL DEFAULT '[]'",
+            ),
         ];
 
         for (table, column, definition) in additive_columns {
@@ -311,7 +321,9 @@ impl Database {
             "SELECT COUNT(*) FROM {table} WHERE secret_format = ?1 OR secret_format IS NULL OR TRIM(secret_format) = ''"
         );
 
-        conn.query_row(&count_sql, params![SECRET_FORMAT_PLAINTEXT_V0], |row| row.get(0))
+        conn.query_row(&count_sql, params![SECRET_FORMAT_PLAINTEXT_V0], |row| {
+            row.get(0)
+        })
     }
 
     fn add_column_if_missing(
@@ -356,7 +368,8 @@ impl Database {
         stale_after_secs: i64,
     ) -> SqliteResult<Option<FreshnessMetadata>> {
         let conn = self.conn.lock().unwrap();
-        let sql = format!("SELECT balance_updated_at, balance_failed_sources FROM {table} WHERE id = ?1");
+        let sql =
+            format!("SELECT balance_updated_at, balance_failed_sources FROM {table} WHERE id = ?1");
         let mut stmt = conn.prepare(&sql)?;
 
         let result = stmt.query_row(params![wallet_id], |row| {
@@ -489,7 +502,10 @@ impl Database {
         }
     }
 
-    pub fn upsert_security_password_state(&self, auth_state: &PasswordAuthState) -> SqliteResult<()> {
+    pub fn upsert_security_password_state(
+        &self,
+        auth_state: &PasswordAuthState,
+    ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
 
@@ -671,7 +687,10 @@ impl Database {
 
         conn.execute(
             "UPDATE bitcoin_wallets SET balance_failed_sources = ?1 WHERE id = ?2",
-            params![serde_json::to_string(failed_sources).unwrap_or_else(|_| "[]".to_string()), wallet_id],
+            params![
+                serde_json::to_string(failed_sources).unwrap_or_else(|_| "[]".to_string()),
+                wallet_id
+            ],
         )?;
 
         Ok(())
@@ -820,11 +839,11 @@ impl Database {
         &self,
         wallet_id: &str,
         balance: f64,
+        balance_updated_at: Option<i64>,
         failed_sources: &[String],
     ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
-        let balance_updated_at = Utc::now().timestamp();
 
         conn.execute(
             "UPDATE evm_wallets
@@ -978,12 +997,10 @@ impl Database {
     pub fn clear_evm_asset_balances(&self, wallet_id: &str) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
 
-
         conn.execute(
             "DELETE FROM evm_asset_balances WHERE wallet_id = ?1",
             params![wallet_id],
         )?;
-
 
         Ok(())
     }
@@ -1016,7 +1033,10 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_bitcoin_transactions(&self, wallet_id: &str) -> SqliteResult<Vec<BitcoinTransaction>> {
+    pub fn get_bitcoin_transactions(
+        &self,
+        wallet_id: &str,
+    ) -> SqliteResult<Vec<BitcoinTransaction>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, wallet_id, tx_hash, tx_type, from_address, to_address, amount, fee, status, confirmations, block_height, timestamp, created_at
@@ -1204,13 +1224,15 @@ impl Database {
     }
 
     // Dashboard Methods
-    pub fn get_dashboard_stats(&self) -> SqliteResult<Option<(f64, f64, f64, f64, String, String)>> {
+    pub fn get_dashboard_stats(
+        &self,
+    ) -> SqliteResult<Option<(f64, f64, f64, f64, String, String)>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, updated_at, failed_sources 
+            "SELECT total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, updated_at, failed_sources
              FROM dashboard_stats WHERE id = 1",
         )?;
-        
+
         let result = stmt.query_row([], |row| {
             Ok((
                 row.get(0)?,
@@ -1221,7 +1243,7 @@ impl Database {
                 row.get(5)?,
             ))
         });
-        
+
         match result {
             Ok(stats) => Ok(Some(stats)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -1230,16 +1252,16 @@ impl Database {
     }
 
     pub fn update_dashboard_stats(
-        &self, 
-        total_usd: f64, 
-        total_btc: f64, 
-        change_amount: f64, 
+        &self,
+        total_usd: f64,
+        total_btc: f64,
+        change_amount: f64,
         change_pct: f64,
         failed_sources: &[String],
     ) -> SqliteResult<()> {
         let conn = self.conn.lock().unwrap();
         let now = Utc::now().to_rfc3339();
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO dashboard_stats (id, total_balance_usd, total_balance_btc, change_24h_amount, change_24h_percentage, failed_sources, updated_at)
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1252,7 +1274,7 @@ impl Database {
                 &now
             ],
         )?;
-        
+
         Ok(())
     }
 
@@ -1262,13 +1284,13 @@ impl Database {
         let now = Utc::now();
         let date = now.format("%Y-%m-%d").to_string();
         let created_at = now.to_rfc3339();
-        
+
         conn.execute(
             "INSERT OR REPLACE INTO portfolio_history (date, total_balance_usd, created_at)
              VALUES (?1, ?2, ?3)",
             params![&date, total_usd, &created_at],
         )?;
-        
+
         Ok(())
     }
 
@@ -1280,19 +1302,14 @@ impl Database {
              ORDER BY date DESC 
              LIMIT ?1",
         )?;
-        
-        let history = stmt.query_map(params![days], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-            ))
-        })?;
-        
+
+        let history = stmt.query_map(params![days], |row| Ok((row.get(0)?, row.get(1)?)))?;
+
         let mut result = Vec::new();
         for item in history {
             result.push(item?);
         }
-        
+
         // Reverse to get chronological order (oldest first)
         result.reverse();
         Ok(result)
@@ -1314,7 +1331,10 @@ impl Database {
             return Ok(report);
         }
 
-        if !matches!(status, crate::wallet::security::types::SecretBackendStatus::Ready) {
+        if !matches!(
+            status,
+            crate::wallet::security::types::SecretBackendStatus::Ready
+        ) {
             report.skipped_rows = report.attempted_rows;
             return Ok(report);
         }
@@ -1361,12 +1381,8 @@ mod tests {
     use super::{Database, SecretMigrationReport};
     use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
     use crate::wallet::security::secret_envelope::{
-        decrypt_secret,
-        encrypt_secret,
-        SecretEnvelopeError,
-        SECRET_FORMAT_KEYRING_AES256_GCM_V1,
-        SECRET_FORMAT_PLAINTEXT_V0,
-        StoredSecret,
+        decrypt_secret, encrypt_secret, SecretEnvelopeError, StoredSecret,
+        SECRET_FORMAT_KEYRING_AES256_GCM_V1, SECRET_FORMAT_PLAINTEXT_V0,
     };
     use crate::wallet::state::types::FreshnessStatus;
     use rusqlite::{params, Connection};
@@ -1571,9 +1587,13 @@ mod tests {
         .unwrap();
 
         let conn = db.conn.lock().unwrap();
-        assert!(Database::table_has_column(&conn, "bitcoin_wallets", "balance_updated_at").unwrap());
+        assert!(
+            Database::table_has_column(&conn, "bitcoin_wallets", "balance_updated_at").unwrap()
+        );
         assert!(Database::table_has_column(&conn, "evm_wallets", "balance_updated_at").unwrap());
-        assert!(Database::table_has_column(&conn, "evm_asset_balances", "price_updated_at").unwrap());
+        assert!(
+            Database::table_has_column(&conn, "evm_asset_balances", "price_updated_at").unwrap()
+        );
     }
 
     // M-LG-2
@@ -1608,13 +1628,19 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(freshness.failed_sources, vec!["bitcoin:rpc timeout".to_string()]);
+        assert_eq!(
+            freshness.failed_sources,
+            vec!["bitcoin:rpc timeout".to_string()]
+        );
     }
 
     #[test]
     fn dashboard_stats_persist_failed_sources_across_reads() {
         let db = legacy_database();
-        let failed_sources = vec!["price:btc_unavailable".to_string(), "evm:eth_rpc timeout".to_string()];
+        let failed_sources = vec![
+            "price:btc_unavailable".to_string(),
+            "evm:eth_rpc timeout".to_string(),
+        ];
 
         db.update_dashboard_stats(100.0, 0.001, 2.0, 1.5, &failed_sources)
             .unwrap();
@@ -1647,7 +1673,11 @@ mod tests {
             }
         }
 
-        fn decrypt(&self, secret_data: &str, secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            secret_data: &str,
+            secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             decrypt_secret(secret_data, secret_format)
         }
     }
@@ -1668,7 +1698,12 @@ mod tests {
         conn.execute(
             "INSERT INTO evm_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
              VALUES (?1, ?2, ?3, ?4)",
-            params!["evm-wallet-1", "0xdeadbeef", "private-key", SECRET_FORMAT_PLAINTEXT_V0],
+            params![
+                "evm-wallet-1",
+                "0xdeadbeef",
+                "private-key",
+                SECRET_FORMAT_PLAINTEXT_V0
+            ],
         )
         .unwrap();
 
@@ -1698,14 +1733,25 @@ mod tests {
             })
             .collect();
 
-        assert!(formats.iter().all(|format| format == SECRET_FORMAT_PLAINTEXT_V0));
+        assert!(formats
+            .iter()
+            .all(|format| format == SECRET_FORMAT_PLAINTEXT_V0));
         drop(conn);
 
-        let bitcoin_secret = db.load_bitcoin_wallet_secret("btc-wallet-1").unwrap().unwrap();
+        let bitcoin_secret = db
+            .load_bitcoin_wallet_secret("btc-wallet-1")
+            .unwrap()
+            .unwrap();
         let evm_secret = db.load_evm_wallet_secret("evm-wallet-1").unwrap().unwrap();
 
-        assert_eq!(decrypt_secret(&bitcoin_secret.0, &bitcoin_secret.2).unwrap(), "seed words");
-        assert_eq!(decrypt_secret(&evm_secret.0, &evm_secret.2).unwrap(), "0xdeadbeef");
+        assert_eq!(
+            decrypt_secret(&bitcoin_secret.0, &bitcoin_secret.2).unwrap(),
+            "seed words"
+        );
+        assert_eq!(
+            decrypt_secret(&evm_secret.0, &evm_secret.2).unwrap(),
+            "0xdeadbeef"
+        );
     }
 
     #[test]
@@ -1724,7 +1770,12 @@ mod tests {
         conn.execute(
             "INSERT INTO evm_wallet_secrets (wallet_id, secret_data, secret_type, secret_format)
              VALUES (?1, ?2, ?3, ?4)",
-            params!["evm-wallet-1", "0xdeadbeef", "private-key", SECRET_FORMAT_PLAINTEXT_V0],
+            params![
+                "evm-wallet-1",
+                "0xdeadbeef",
+                "private-key",
+                SECRET_FORMAT_PLAINTEXT_V0
+            ],
         )
         .unwrap();
 
@@ -1759,7 +1810,13 @@ mod tests {
 
         assert_eq!(bitcoin_secret.2, SECRET_FORMAT_KEYRING_AES256_GCM_V1);
         assert_eq!(evm_secret.2, SECRET_FORMAT_KEYRING_AES256_GCM_V1);
-        assert_eq!(decrypt_secret(&bitcoin_secret.0, &bitcoin_secret.2).unwrap(), "seed words");
-        assert_eq!(decrypt_secret(&evm_secret.0, &evm_secret.2).unwrap(), "0xdeadbeef");
+        assert_eq!(
+            decrypt_secret(&bitcoin_secret.0, &bitcoin_secret.2).unwrap(),
+            "seed words"
+        );
+        assert_eq!(
+            decrypt_secret(&evm_secret.0, &evm_secret.2).unwrap(),
+            "0xdeadbeef"
+        );
     }
 }

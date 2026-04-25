@@ -3,8 +3,7 @@ use super::backend::SecretBackend;
 use super::keystore::Keystore;
 use super::session::SessionManager;
 use super::types::{
-    LocalPasswordPolicy, SecretMigrationState, SecurityBackendState, SecurityError,
-    SignerOperation,
+    LocalPasswordPolicy, SecretMigrationState, SecurityBackendState, SecurityError, SignerOperation,
 };
 use crate::DB;
 use std::sync::Arc;
@@ -71,13 +70,14 @@ fn security_unlock_inner(password: &str, state: &AppSecurity) -> Result<(), Secu
 
 fn load_password_auth_state() -> Result<super::types::PasswordAuthState, SecurityError> {
     let db = DB.lock().map_err(|_| SecurityError::OperationNotAllowed)?;
-    db
-        .load_security_password_state()
+    db.load_security_password_state()
         .map_err(|_| SecurityError::OperationNotAllowed)?
         .ok_or(SecurityError::NoPassword)
 }
 
-pub(crate) fn ensure_local_password_boundary_ready(state: &AppSecurity) -> Result<(), SecurityError> {
+pub(crate) fn ensure_local_password_boundary_ready(
+    state: &AppSecurity,
+) -> Result<(), SecurityError> {
     if !security_has_password_inner()? {
         return Err(SecurityError::NoPassword);
     }
@@ -94,15 +94,19 @@ fn security_is_unlocked_inner(state: &AppSecurity) -> Result<bool, SecurityError
     Ok(state.session_manager().is_unlocked())
 }
 
-fn security_get_backend_state_inner(state: &AppSecurity) -> Result<SecurityBackendState, SecurityError> {
+fn security_get_backend_state_inner(
+    state: &AppSecurity,
+) -> Result<SecurityBackendState, SecurityError> {
     let startup_state = state
         .startup_state()
         .lock()
         .map_err(|_| SecurityError::OperationNotAllowed)?
         .clone();
     let backend_status = state.secret_backend().current_status();
-    let degraded = matches!(backend_status, super::types::SecretBackendStatus::Unavailable { .. })
-        || startup_state.has_legacy_plaintext_secrets
+    let degraded = matches!(
+        backend_status,
+        super::types::SecretBackendStatus::Unavailable { .. }
+    ) || startup_state.has_legacy_plaintext_secrets
         || startup_state.migration.failed_rows > 0;
 
     Ok(SecurityBackendState {
@@ -113,7 +117,9 @@ fn security_get_backend_state_inner(state: &AppSecurity) -> Result<SecurityBacke
     })
 }
 
-fn security_probe_backend_inner(state: &AppSecurity) -> Result<SecurityBackendState, SecurityError> {
+fn security_probe_backend_inner(
+    state: &AppSecurity,
+) -> Result<SecurityBackendState, SecurityError> {
     state.secret_backend().refresh_status();
     security_get_backend_state_inner(state)
 }
@@ -135,7 +141,9 @@ fn security_authorize_operation_inner(
     }
 
     state.secret_backend().ensure_ready_for_command()?;
-    state.session_manager().authorize_verified_operation(operation)
+    state
+        .session_manager()
+        .authorize_verified_operation(operation)
 }
 
 fn security_reset_local_wallet_data_inner(state: &AppSecurity) -> Result<(), SecurityError> {
@@ -171,9 +179,7 @@ pub async fn security_unlock(
 }
 
 #[tauri::command]
-pub async fn security_lock(
-    state: tauri::State<'_, AppSecurity>,
-) -> Result<(), SecurityError> {
+pub async fn security_lock(state: tauri::State<'_, AppSecurity>) -> Result<(), SecurityError> {
     security_lock_inner(&state)
 }
 
@@ -222,20 +228,20 @@ pub async fn security_reset_local_wallet_data(
 #[cfg(test)]
 mod tests {
     use super::{
-        ensure_local_password_boundary_ready, security_authorize_operation_inner, security_get_backend_state_inner,
-        security_get_local_password_policy_inner, security_is_unlocked_inner, security_lock_inner,
-        security_probe_backend_inner, security_reset_local_wallet_data_inner,
-        security_setup_password_inner, security_unlock_inner, AppSecurity, StartupSecurityState,
+        ensure_local_password_boundary_ready, security_authorize_operation_inner,
+        security_get_backend_state_inner, security_get_local_password_policy_inner,
+        security_is_unlocked_inner, security_lock_inner, security_probe_backend_inner,
+        security_reset_local_wallet_data_inner, security_setup_password_inner,
+        security_unlock_inner, AppSecurity, StartupSecurityState,
     };
-    use crate::DB;
     use crate::wallet::security::backend::{SecretBackend, SecretBackendAdapter};
     use crate::wallet::security::keystore::Keystore;
     use crate::wallet::security::secret_envelope::{SecretEnvelopeError, StoredSecret};
     use crate::wallet::security::session::SessionManager;
     use crate::wallet::security::types::{
-        ForgotPasswordMode, LocalPasswordScope, SecretBackendStatus, SecurityError,
-        SignerOperation,
+        ForgotPasswordMode, LocalPasswordScope, SecretBackendStatus, SecurityError, SignerOperation,
     };
+    use crate::DB;
     use once_cell::sync::Lazy;
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -266,7 +272,11 @@ mod tests {
             Err(SecretEnvelopeError::Keyring("offline".to_string()))
         }
 
-        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             Err(SecretEnvelopeError::Keyring("offline".to_string()))
         }
     }
@@ -283,7 +293,10 @@ mod tests {
         reset_security_auth_state();
 
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
@@ -306,7 +319,9 @@ mod tests {
             Ok(())
         );
         assert_eq!(
-            state.session_manager().authorize(SignerOperation::ExportMnemonic),
+            state
+                .session_manager()
+                .authorize(SignerOperation::ExportMnemonic),
             Err(SecurityError::ReauthRequired)
         );
         assert_eq!(security_lock_inner(&state), Ok(()));
@@ -321,7 +336,10 @@ mod tests {
         reset_security_auth_state();
 
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
@@ -329,7 +347,10 @@ mod tests {
 
         let _ = security_setup_password_inner("password");
 
-        assert_eq!(security_unlock_inner("wrong", &state), Err(SecurityError::WrongPassword));
+        assert_eq!(
+            security_unlock_inner("wrong", &state),
+            Err(SecurityError::WrongPassword)
+        );
         assert_eq!(security_is_unlocked_inner(&state), Ok(false));
 
         reset_security_auth_state();
@@ -338,7 +359,10 @@ mod tests {
     #[test]
     fn backend_state_uses_startup_snapshot_and_current_backend_status() {
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState {
@@ -362,7 +386,10 @@ mod tests {
     #[test]
     fn unknown_backend_without_legacy_rows_is_not_degraded() {
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
@@ -380,7 +407,10 @@ mod tests {
         reset_security_auth_state();
 
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
@@ -397,7 +427,10 @@ mod tests {
     fn local_password_policy_matches_wallet_contract() {
         let policy = security_get_local_password_policy_inner();
 
-        assert_eq!(policy.installation_scope, LocalPasswordScope::PerInstallation);
+        assert_eq!(
+            policy.installation_scope,
+            LocalPasswordScope::PerInstallation
+        );
         assert!(policy.device_only);
         assert!(!policy.cloud_sync);
         assert!(!policy.replaces_recovery_phrase);
@@ -413,7 +446,10 @@ mod tests {
     #[test]
     fn probe_backend_promotes_unknown_to_ready_when_available() {
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
@@ -430,7 +466,10 @@ mod tests {
         reset_security_auth_state();
 
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
@@ -450,13 +489,19 @@ mod tests {
         reset_security_auth_state();
 
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
             secret_backend: Arc::new(SecretBackend::new()),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
         };
 
-        assert_eq!(ensure_local_password_boundary_ready(&state), Err(SecurityError::NoPassword));
+        assert_eq!(
+            ensure_local_password_boundary_ready(&state),
+            Err(SecurityError::NoPassword)
+        );
     }
 
     #[test]
@@ -465,9 +510,14 @@ mod tests {
         reset_security_auth_state();
 
         let state = AppSecurity {
-            session_manager: Arc::new(SessionManager::new(Duration::from_secs(30), Duration::from_secs(90))),
+            session_manager: Arc::new(SessionManager::new(
+                Duration::from_secs(30),
+                Duration::from_secs(90),
+            )),
             keystore: Arc::new(DummyKeystore),
-            secret_backend: Arc::new(SecretBackend::with_adapter(Arc::new(UnavailableSecretBackendAdapter))),
+            secret_backend: Arc::new(SecretBackend::with_adapter(Arc::new(
+                UnavailableSecretBackendAdapter,
+            ))),
             startup_state: Arc::new(Mutex::new(StartupSecurityState::default())),
         };
 

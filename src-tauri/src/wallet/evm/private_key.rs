@@ -1,7 +1,7 @@
 use crate::wallet::security::backend::SecretBackend;
-use crate::wallet::security::keystore::Keystore;
-use crate::wallet::security::commands::AppSecurity;
 use crate::wallet::security::commands::ensure_local_password_boundary_ready;
+use crate::wallet::security::commands::AppSecurity;
+use crate::wallet::security::keystore::Keystore;
 use crate::wallet::security::session::SessionManager;
 use crate::wallet::security::types::{SecurityError, SignerOperation};
 use crate::wallet::types::CreateWalletResponse;
@@ -252,7 +252,11 @@ mod tests {
             unreachable!()
         }
 
-        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             unreachable!()
         }
     }
@@ -266,7 +270,11 @@ mod tests {
             unreachable!()
         }
 
-        fn decrypt(&self, _secret_data: &str, _secret_format: &str) -> Result<String, SecretEnvelopeError> {
+        fn decrypt(
+            &self,
+            _secret_data: &str,
+            _secret_format: &str,
+        ) -> Result<String, SecretEnvelopeError> {
             unreachable!()
         }
     }

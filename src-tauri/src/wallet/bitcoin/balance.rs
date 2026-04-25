@@ -1,6 +1,4 @@
-use crate::wallet::chain::traits::{
-    ChainAdapter, ChainAssetBalanceSnapshot, ChainBalanceSnapshot,
-};
+use crate::wallet::chain::traits::{ChainAdapter, ChainAssetBalanceSnapshot, ChainBalanceSnapshot};
 use crate::wallet::security::sanitize;
 use serde::Deserialize;
 use std::future::Future;

@@ -72,7 +72,10 @@ impl LifecycleStatus {
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Confirmed | Self::Failed | Self::Replaced | Self::Dropped)
+        matches!(
+            self,
+            Self::Confirmed | Self::Failed | Self::Replaced | Self::Dropped
+        )
     }
 }
 
@@ -128,13 +131,19 @@ mod tests {
 
         for (status, wire) in statuses {
             assert_eq!(serde_json::to_string(&status).unwrap(), wire);
-            assert_eq!(serde_json::from_str::<LifecycleStatus>(wire).unwrap(), status);
+            assert_eq!(
+                serde_json::from_str::<LifecycleStatus>(wire).unwrap(),
+                status
+            );
         }
     }
 
     #[test]
     fn transaction_status_transition_helpers_follow_phase3_rules() {
-        assert_eq!(LifecycleStatus::after_broadcast(), LifecycleStatus::Broadcasted);
+        assert_eq!(
+            LifecycleStatus::after_broadcast(),
+            LifecycleStatus::Broadcasted
+        );
         assert_eq!(
             LifecycleStatus::from_bitcoin_confirmations(0, BITCOIN_MIN_CONFIRMATIONS),
             LifecycleStatus::Pending
