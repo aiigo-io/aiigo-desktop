@@ -1,4 +1,8 @@
+use crate::wallet::chain::traits::{ChainAdapter, ChainAssetBalanceSnapshot, ChainBalanceSnapshot};
+use crate::wallet::security::sanitize;
 use serde::Deserialize;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 const RETRY_ATTEMPTS: u32 = 3;
@@ -34,6 +38,59 @@ struct MempoolStats {
     spent_txo_sum: u64,
 }
 
+pub struct BitcoinChainAdapter {
+    wallet_address: String,
+}
+
+impl BitcoinChainAdapter {
+    pub fn new(wallet_address: impl Into<String>) -> Self {
+        Self {
+            wallet_address: wallet_address.into(),
+        }
+    }
+}
+
+impl ChainAdapter for BitcoinChainAdapter {
+    fn chain_family(&self) -> &'static str {
+        "bitcoin"
+    }
+
+    fn chain_name(&self) -> &str {
+        "bitcoin"
+    }
+
+    fn chain_id(&self) -> Option<String> {
+        None
+    }
+
+    fn wallet_address(&self) -> &str {
+        &self.wallet_address
+    }
+
+    fn fetch_balances<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<ChainBalanceSnapshot, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let balance = query_btc_balance(&self.wallet_address).await?;
+
+            Ok(ChainBalanceSnapshot {
+                chain_family: self.chain_family(),
+                chain_name: self.chain_name().to_string(),
+                chain_id: None,
+                wallet_address: self.wallet_address.clone(),
+                assets: vec![ChainAssetBalanceSnapshot {
+                    symbol: "BTC".to_string(),
+                    name: "Bitcoin".to_string(),
+                    contract_address: None,
+                    raw_amount: format!("{:.0}", (balance * 100_000_000.0).floor()),
+                    display_amount: balance,
+                    decimals: 8,
+                }],
+            })
+        })
+    }
+}
+
 /// Query BTC balance for an address using blockchain APIs
 pub async fn query_btc_balance(address: &str) -> Result<f64, String> {
     // Try multiple blockchain explorer APIs
@@ -52,16 +109,29 @@ pub async fn query_btc_balance(address: &str) -> Result<f64, String> {
         for attempt in 1..=RETRY_ATTEMPTS {
             match try_query_from_api(api_name, url).await {
                 Ok(balance) => {
-                    tracing::info!(api=%api_name, balance=%balance, "Retrieved BTC balance");
+                    tracing::info!(
+                        api = %sanitize(&format!("{}", api_name)),
+                        balance = %sanitize(&format!("{}", balance)),
+                        "Retrieved BTC balance"
+                    );
                     return Ok(balance);
                 }
                 Err(e) => {
                     if attempt < RETRY_ATTEMPTS {
                         let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                        tracing::warn!(attempt=%attempt, api=%api_name, delay_ms=%delay_ms, error=%e.to_string(), "Retrying BTC balance query");
+                        tracing::warn!(
+                            attempt = %sanitize(&format!("{}", attempt)),
+                            api = %sanitize(&format!("{}", api_name)),
+                            delay_ms = %sanitize(&format!("{}", delay_ms)),
+                            error = %sanitize(&format!("{}", e)),
+                            "Retrying BTC balance query"
+                        );
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     } else {
-                        tracing::warn!(api=%api_name, "All attempts failed; trying next API");
+                        tracing::warn!(
+                            api = %sanitize(&format!("{}", api_name)),
+                            "All attempts failed; trying next API"
+                        );
                     }
                 }
             }
@@ -117,5 +187,21 @@ async fn try_query_from_api(api_name: &str, url: &str) -> Result<f64, String> {
             Ok(btc_balance)
         }
         _ => Err(format!("Unknown API: {}", api_name)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BitcoinChainAdapter;
+    use crate::wallet::chain::traits::ChainAdapter;
+
+    #[test]
+    fn bitcoin_chain_adapter_reports_expected_identity() {
+        let adapter = BitcoinChainAdapter::new("bc1qtest");
+
+        assert_eq!(adapter.chain_family(), "bitcoin");
+        assert_eq!(adapter.chain_name(), "bitcoin");
+        assert_eq!(adapter.chain_id(), None);
+        assert_eq!(adapter.wallet_address(), "bc1qtest");
     }
 }

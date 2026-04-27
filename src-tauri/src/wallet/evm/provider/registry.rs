@@ -1,5 +1,6 @@
 use super::{HybridProvider, ProviderError};
 use crate::wallet::evm::config::EvmChainConfig;
+use crate::wallet::security::sanitize;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,9 +20,17 @@ impl ProviderRegistry {
 
         let config = chain.provider_config();
         if config.wss_enabled() {
-            tracing::info!(chain=%chain.name(), pool_size=%config.pool_size, timeout_secs=%config.connect_timeout_secs, "Bootstrapping provider with WSS");
+            tracing::info!(
+                chain = %sanitize(&format!("{}", chain.name())),
+                pool_size = %sanitize(&format!("{}", config.pool_size)),
+                timeout_secs = %sanitize(&format!("{}", config.connect_timeout_secs)),
+                "Bootstrapping provider with WSS"
+            );
         } else {
-            tracing::info!(chain=%chain.name(), "Bootstrapping provider (HTTP only)");
+            tracing::info!(
+                chain = %sanitize(&format!("{}", chain.name())),
+                "Bootstrapping provider (HTTP only)"
+            );
         }
 
         let provider = Arc::new(HybridProvider::new(config, chain.name()).await?);

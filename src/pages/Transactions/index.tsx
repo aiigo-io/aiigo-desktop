@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable } from '@/lib/tauri';
+import { TRANSACTION_STATE_EVENT } from '@/lib/transactions';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { ArrowUpRight, ArrowDownLeft, RefreshCw, Send, ExternalLink, ShieldCheck, Code } from 'lucide-react';
 import { cn, shortAddress, getEvmExplorerUrl, getBitcoinExplorerUrl, openExternalLink } from '@/lib/utils';
+import { SupportedEvmHistoryChain } from '@/lib/evm-wallet';
 
 interface BitcoinTransaction {
   id: string;
@@ -16,7 +18,7 @@ interface BitcoinTransaction {
   to_address: string;
   amount: number;
   fee: number;
-  status: 'pending' | 'confirmed' | 'failed';
+  status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
   confirmations: number;
   block_height: number | null;
   timestamp: string;
@@ -40,7 +42,7 @@ interface EvmTransaction {
   gas_used: string;
   gas_price: string;
   fee: number;
-  status: 'pending' | 'confirmed' | 'failed';
+  status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
   block_number: number | null;
   timestamp: string;
   created_at: string;
@@ -52,30 +54,70 @@ const Transactions: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [activeTab, setActiveTab] = useState('all');
+  const [syncSummary, setSyncSummary] = useState<{ kind: 'success' | 'partial' | 'error'; message: string } | null>(null);
+  const [supportedEvmHistoryChains, setSupportedEvmHistoryChains] = useState<SupportedEvmHistoryChain[]>([]);
 
   useEffect(() => {
     fetchTransactions();
   }, []);
 
+  useEffect(() => {
+    const handleTransactionStateChange = () => {
+      void fetchTransactions();
+    };
+
+    window.addEventListener(TRANSACTION_STATE_EVENT, handleTransactionStateChange);
+    return () => {
+      window.removeEventListener(TRANSACTION_STATE_EVENT, handleTransactionStateChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriRuntimeAvailable()) {
+      setSupportedEvmHistoryChains([]);
+      return;
+    }
+
+    invoke<SupportedEvmHistoryChain[]>('get_supported_evm_history_chains')
+      .then(setSupportedEvmHistoryChains)
+      .catch((error) => {
+        console.error('Failed to load supported EVM history chains:', error);
+        setSupportedEvmHistoryChains([]);
+      });
+  }, []);
+
   const fetchTransactions = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setBitcoinTransactions([]);
+      setEvmTransactions([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
     try {
       const [btcTxs, evmTxs] = await Promise.all([
         invoke<BitcoinTransaction[]>('get_all_bitcoin_transactions'),
         invoke<EvmTransaction[]>('get_all_evm_transactions'),
       ]);
-      // Filter out failed transactions
-      setBitcoinTransactions(btcTxs.filter(tx => tx.status !== 'failed'));
-      setEvmTransactions(evmTxs.filter(tx => tx.status !== 'failed'));
+      setBitcoinTransactions(btcTxs);
+      setEvmTransactions(evmTxs);
+      setSyncSummary(null);
     } catch (error) {
       console.error('Failed to fetch transactions:', error);
+      setSyncSummary({ kind: 'error', message: 'Transaction history could not be loaded from local state.' });
     } finally {
       setLoading(false);
     }
   };
 
   const syncTransactionsFromBlockchain = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      return;
+    }
+
     setSyncing(true);
+  const failedSources: string[] = [];
     try {
       // Get all wallets
       const [btcWallets, evmWallets] = await Promise.all([
@@ -90,30 +132,22 @@ const Transactions: React.FC = () => {
           address: wallet.address,
         }).catch(err => {
           console.error(`Failed to sync Bitcoin wallet ${wallet.id}:`, err);
+          failedSources.push(`bitcoin:${wallet.label ?? wallet.address}`);
           return [];
         })
       );
 
-      // Supported EVM chains
-      const evmChains = [
-        { name: 'Ethereum', chainId: 1 },
-        { name: 'BSC', chainId: 56 },
-        { name: 'Polygon', chainId: 137 },
-        { name: 'Arbitrum', chainId: 42161 },
-        { name: 'Optimism', chainId: 10 },
-        { name: 'Sepolia', chainId: 11155111 }
-      ];
-
       // Sync EVM transactions for all chains
       const evmSyncPromises = evmWallets.flatMap(wallet =>
-        evmChains.map(chain =>
+        supportedEvmHistoryChains.map(chain =>
           invoke('fetch_evm_history', {
             walletId: wallet.id,
             address: wallet.address,
-            chain: chain.name,
-            chainId: chain.chainId,
+            chain: chain.chain,
+            chainId: chain.chain_id,
           }).catch(err => {
-            console.error(`Failed to sync ${chain.name} for wallet ${wallet.id}:`, err);
+            console.error(`Failed to sync ${chain.display_name} for wallet ${wallet.id}:`, err);
+            failedSources.push(`${chain.display_name}:${wallet.label ?? wallet.address}`);
             return [];
           })
         )
@@ -123,10 +157,32 @@ const Transactions: React.FC = () => {
 
       // Refresh transactions after sync
       await fetchTransactions();
+      if (failedSources.length > 0) {
+        setSyncSummary({
+          kind: 'partial',
+          message: `Sync completed with degraded sources: ${failedSources.join(', ')}`,
+        });
+      } else {
+        setSyncSummary({ kind: 'success', message: 'Transaction history synced from chain.' });
+      }
     } catch (error) {
       console.error('Failed to sync transactions:', error);
+      setSyncSummary({ kind: 'error', message: 'Transaction sync failed before state could be refreshed.' });
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const getSyncSummaryClass = () => {
+    switch (syncSummary?.kind) {
+      case 'success':
+        return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700';
+      case 'partial':
+        return 'border-amber-500/30 bg-amber-500/10 text-amber-700';
+      case 'error':
+        return 'border-red-500/30 bg-red-500/10 text-red-700';
+      default:
+        return '';
     }
   };
 
@@ -143,14 +199,37 @@ const Transactions: React.FC = () => {
 
   const getStatusColor = (status: string) => {
     switch (status) {
+      case 'broadcasted':
+        return 'bg-sky-500/10 text-sky-500 border-sky-500/20';
       case 'confirmed':
         return 'bg-green-500/10 text-green-500 border-green-500/20';
       case 'pending':
         return 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20';
       case 'failed':
         return 'bg-red-500/10 text-red-500 border-red-500/20';
+      case 'replaced':
+        return 'bg-orange-500/10 text-orange-500 border-orange-500/20';
+      case 'dropped':
+        return 'bg-slate-500/10 text-slate-500 border-slate-500/20';
       default:
         return 'bg-gray-500/10 text-gray-500 border-gray-500/20';
+    }
+  };
+
+  const formatStatusLabel = (status: BitcoinTransaction['status'] | EvmTransaction['status']) => {
+    switch (status) {
+      case 'broadcasted':
+        return 'Broadcasted';
+      case 'pending':
+        return 'Pending';
+      case 'confirmed':
+        return 'Confirmed';
+      case 'failed':
+        return 'Failed';
+      case 'replaced':
+        return 'Replaced';
+      case 'dropped':
+        return 'Dropped';
     }
   };
 
@@ -178,7 +257,7 @@ const Transactions: React.FC = () => {
                 {isSend ? 'Send Bitcoin' : 'Receive Bitcoin'}
               </span>
               <Badge variant="outline" className={cn("text-xs", getStatusColor(tx.status))}>
-                {tx.status}
+                {formatStatusLabel(tx.status)}
               </Badge>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
@@ -213,6 +292,10 @@ const Transactions: React.FC = () => {
   };
 
   const EvmTransactionRow: React.FC<{ tx: EvmTransaction }> = ({ tx }) => {
+        const feeLabel = tx.status === 'broadcasted' || tx.status === 'pending'
+          ? 'Estimated Fee'
+          : 'Fee';
+
     const isSend = tx.tx_type === 'send';
     const isReceive = tx.tx_type === 'receive';
     const isApprove = tx.tx_type === 'approve';
@@ -270,7 +353,7 @@ const Transactions: React.FC = () => {
                 {tx.chain}
               </Badge>
               <Badge variant="outline" className={cn("text-xs", getStatusColor(tx.status))}>
-                {tx.status}
+                {formatStatusLabel(tx.status)}
               </Badge>
             </div>
             <div className="text-xs text-muted-foreground space-y-1">
@@ -284,7 +367,7 @@ const Transactions: React.FC = () => {
               {getAmountPrefix()}{tx.amount_float.toFixed(6)} {tx.asset_symbol}
             </div>
             <div className="text-xs text-muted-foreground">
-              Fee: {tx.fee.toFixed(6)} {tx.chain === 'BSC' ? 'BNB' : (tx.chain === 'Polygon' ? 'POL' : 'ETH')}
+              {feeLabel}: {tx.fee.toFixed(6)} {tx.chain === 'BSC' ? 'BNB' : (tx.chain === 'Polygon' ? 'POL' : 'ETH')}
             </div>
           </div>
 
@@ -312,6 +395,11 @@ const Transactions: React.FC = () => {
         <div>
           <h1 className="text-3xl font-bold">Transactions</h1>
           <p className="text-muted-foreground mt-1">View and manage your transaction history</p>
+          {supportedEvmHistoryChains.length > 0 && (
+            <p className="text-xs text-muted-foreground mt-2">
+              Supported EVM history sync: {supportedEvmHistoryChains.map((chain) => chain.display_name).join(', ')}
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <Button onClick={syncTransactionsFromBlockchain} disabled={syncing} variant="outline" size="sm">
@@ -333,6 +421,11 @@ const Transactions: React.FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {syncSummary && (
+            <div className={cn('mb-4 rounded-lg border px-3 py-2 text-sm', getSyncSummaryClass())}>
+              {syncSummary.message}
+            </div>
+          )}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-3 mb-6">
               <TabsTrigger value="all">

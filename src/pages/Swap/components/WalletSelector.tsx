@@ -3,7 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Wallet, Plus } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable } from '@/lib/tauri';
 import { shortAddress } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
@@ -32,6 +32,15 @@ export const WalletSelector: React.FC<WalletSelectorProps> = ({ onWalletChange }
 
   const loadWallets = async () => {
     setIsLoading(true);
+
+    if (!isTauriRuntimeAvailable()) {
+      setWallets([]);
+      setSelectedWallet(null);
+      onWalletChange?.(null);
+      setIsLoading(false);
+      return;
+    }
+
     try {
       const result = await invoke<WalletInfo[]>('evm_get_wallets');
       setWallets(result);

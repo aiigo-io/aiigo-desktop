@@ -1,5 +1,6 @@
 use super::pool::WssConnectionPool;
 use super::types::{ProviderConfig, ProviderError};
+use crate::wallet::security::sanitize;
 use ethers::providers::Middleware;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -39,14 +40,22 @@ impl HealthMonitor {
             let needs_reconnect = match self.check_once().await {
                 Ok(_) => false,
                 Err(err) => {
-                    tracing::error!(chain=%self.chain_name, error=%err.to_string(), "Health check failed");
+                    tracing::error!(
+                        chain = %sanitize(&format!("{}", self.chain_name)),
+                        error = %sanitize(&format!("{}", err)),
+                        "Health check failed"
+                    );
                     true
                 }
             };
 
             if needs_reconnect {
                 if let Err(err) = self.reconnect().await {
-                    tracing::error!(chain=%self.chain_name, error=%err.to_string(), "Reconnect attempts exhausted");
+                    tracing::error!(
+                        chain = %sanitize(&format!("{}", self.chain_name)),
+                        error = %sanitize(&format!("{}", err)),
+                        "Reconnect attempts exhausted"
+                    );
                 }
             }
         }
@@ -81,7 +90,13 @@ impl HealthMonitor {
         for attempt in 1..=attempts {
             let exponent = (attempt - 1).min(10);
             let backoff_ms = 1_000 * 2_u64.pow(exponent);
-            tracing::info!(chain=%self.chain_name, attempt=%attempt, attempts=%attempts, backoff_ms=%backoff_ms, "Reconnect attempt");
+            tracing::info!(
+                chain = %sanitize(&format!("{}", self.chain_name)),
+                attempt = %sanitize(&format!("{}", attempt)),
+                attempts = %sanitize(&format!("{}", attempts)),
+                backoff_ms = %sanitize(&format!("{}", backoff_ms)),
+                "Reconnect attempt"
+            );
 
             sleep(Duration::from_millis(backoff_ms)).await;
 
@@ -89,11 +104,22 @@ impl HealthMonitor {
                 Ok(pool) => {
                     let mut guard = self.pool_handle.write().await;
                     *guard = Some(Arc::new(pool));
-                    tracing::info!(chain=%self.chain_name, attempt=%attempt, attempts=%attempts, "Reconnected WSS pool");
+                    tracing::info!(
+                        chain = %sanitize(&format!("{}", self.chain_name)),
+                        attempt = %sanitize(&format!("{}", attempt)),
+                        attempts = %sanitize(&format!("{}", attempts)),
+                        "Reconnected WSS pool"
+                    );
                     return Ok(());
                 }
                 Err(err) => {
-                    tracing::warn!(chain=%self.chain_name, attempt=%attempt, attempts=%attempts, error=%err.to_string(), "Reconnect attempt failed");
+                    tracing::warn!(
+                        chain = %sanitize(&format!("{}", self.chain_name)),
+                        attempt = %sanitize(&format!("{}", attempt)),
+                        attempts = %sanitize(&format!("{}", attempts)),
+                        error = %sanitize(&format!("{}", err)),
+                        "Reconnect attempt failed"
+                    );
                 }
             }
         }

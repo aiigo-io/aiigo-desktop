@@ -4,7 +4,7 @@ pub mod config;
 pub mod mnemonic;
 pub mod price;
 pub mod price_manager;
-pub mod transaction;
 pub mod private_key;
 pub mod provider;
+pub mod transaction;
 pub mod wallet;

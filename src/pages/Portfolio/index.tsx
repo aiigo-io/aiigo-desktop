@@ -1,4 +1,5 @@
 import React from 'react';
+import { SessionBadge } from '@/components/common/SecuritySession';
 import BitcoinAssets from './components/BitcoinAssets';
 import EvmAssets from './components/EvmAssets';
 
@@ -13,13 +14,18 @@ const Portfolio: React.FC = () => {
 
       <div className="relative z-10 max-w-[1400px] mx-auto space-y-6">
         {/* Page Header */}
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            Portfolio
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            Manage your crypto assets across Bitcoin and EVM chains
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+                Portfolio
+              </h1>
+              <SessionBadge />
+            </div>
+            <p className="text-muted-foreground text-sm">
+              Manage your crypto assets across Bitcoin and EVM chains
+            </p>
+          </div>
         </div>
 
         {/* Assets Grid */}

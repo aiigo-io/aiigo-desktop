@@ -1,13 +1,178 @@
-use crate::db::AssetBalanceData;
-use crate::wallet::evm::balance;
-use crate::wallet::evm::config::{chain_concurrency_limit, get_all_chains};
-use crate::wallet::evm::price;
-use crate::wallet::types::{EvmAssetBalance, EvmChainAssets, EvmWalletInfo, WalletInfo};
+use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
+use crate::wallet::sync::engine;
+use crate::wallet::sync::types::SyncReason;
+use crate::wallet::types::{
+    EvmAsset, EvmAssetBalance, EvmChainAssets, EvmWalletBalancesResponse, EvmWalletInfo,
+    ValuationStatus, WalletInfo,
+};
 use crate::DB;
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use tokio::sync::Semaphore;
-use tokio::task::JoinSet;
+
+const BALANCE_FRESH_WITHIN_SECS: i64 = 60;
+const BALANCE_STALE_AFTER_SECS: i64 = 300;
+
+fn load_wallet_level_freshness(wallet_id: &str) -> Result<FreshnessMetadata, String> {
+    let db = DB.lock().map_err(|e| e.to_string())?;
+    db.get_evm_wallet_balance_freshness(
+        wallet_id,
+        chrono::Utc::now().timestamp(),
+        BALANCE_FRESH_WITHIN_SECS,
+        BALANCE_STALE_AFTER_SECS,
+    )
+    .map_err(|e| format!("Failed to get EVM wallet freshness: {}", e))?
+    .ok_or_else(|| "EVM wallet freshness not found".to_string())
+}
+
+fn query_sync_outcome(
+    wallet_freshness: &FreshnessMetadata,
+) -> crate::wallet::sync::types::SyncOutcome {
+    crate::wallet::sync::types::SyncOutcome {
+        reason: SyncReason::Query,
+        target: crate::wallet::sync::types::SyncTarget::EvmWalletBalances,
+        updated_at: wallet_freshness.updated_at,
+        partial: !wallet_freshness.failed_sources.is_empty(),
+        failed_sources: wallet_freshness.failed_sources.clone(),
+    }
+}
+
+fn query_chain_freshness(
+    chain_name: &str,
+    assets: &[EvmAssetBalance],
+    wallet_freshness: &FreshnessMetadata,
+) -> FreshnessMetadata {
+    let has_failure = wallet_freshness
+        .failed_sources
+        .iter()
+        .any(|source| source == chain_name);
+
+    if has_failure {
+        return engine::failed_chain_freshness(
+            chain_name,
+            !assets.is_empty(),
+            wallet_freshness.updated_at,
+        );
+    }
+
+    if assets.is_empty() {
+        return FreshnessMetadata {
+            status: FreshnessStatus::Unavailable,
+            updated_at: None,
+            failed_sources: Vec::new(),
+        };
+    }
+
+    FreshnessMetadata {
+        status: wallet_freshness.status.clone(),
+        updated_at: wallet_freshness.updated_at,
+        failed_sources: Vec::new(),
+    }
+}
+
+fn query_evm_wallet_balances_inner(wallet_id: &str) -> Result<EvmWalletBalancesResponse, String> {
+    let wallet = {
+        let db = DB.lock().map_err(|e| e.to_string())?;
+        db.get_evm_wallet(wallet_id)
+            .map_err(|e| format!("Failed to get wallet: {}", e))?
+            .ok_or_else(|| "Wallet not found".to_string())?
+    };
+
+    let wallet_freshness = load_wallet_level_freshness(wallet_id)?;
+    let rows = {
+        let db = DB.lock().map_err(|e| e.to_string())?;
+        db.get_evm_asset_balances(wallet_id)
+            .map_err(|e| format!("Failed to get cached balances: {}", e))?
+    };
+
+    let mut chains = std::collections::BTreeMap::<(String, u64), Vec<EvmAssetBalance>>::new();
+    for (
+        chain,
+        symbol,
+        chain_id,
+        name,
+        contract_address,
+        decimals,
+        balance,
+        balance_float,
+        usd_price,
+        usd_value,
+        valuation_status,
+    ) in rows
+    {
+        chains
+            .entry((chain.clone(), chain_id))
+            .or_default()
+            .push(EvmAssetBalance {
+                chain,
+                asset: EvmAsset {
+                    symbol,
+                    name,
+                    decimals,
+                    contract_address,
+                },
+                balance,
+                balance_float,
+                usd_price,
+                usd_value,
+                valuation_status: if valuation_status == "unpriced" {
+                    ValuationStatus::Unpriced
+                } else {
+                    ValuationStatus::Valued
+                },
+            });
+    }
+
+    let supported_chains = crate::wallet::evm::config::get_all_chains();
+    let chain_views = supported_chains
+        .into_iter()
+        .map(|chain_config| {
+            let key = (chain_config.name().to_string(), chain_config.chain_id());
+            let assets = chains.remove(&key).unwrap_or_default();
+            let freshness = query_chain_freshness(chain_config.name(), &assets, &wallet_freshness);
+            let (total_balance_usd, unpriced_asset_count, valuation_status) =
+                engine::summarize_asset_valuations(&assets);
+
+            EvmChainAssets {
+                chain: chain_config.name().to_string(),
+                chain_id: chain_config.chain_id(),
+                total_balance_usd,
+                valuation_status,
+                unpriced_asset_count,
+                freshness,
+                assets,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let total_balance_usd = chain_views
+        .iter()
+        .filter(|chain| chain.chain_id != 11155111)
+        .map(|chain| chain.total_balance_usd)
+        .sum();
+    let unpriced_asset_count = chain_views
+        .iter()
+        .filter(|chain| chain.chain_id != 11155111)
+        .map(|chain| chain.unpriced_asset_count)
+        .sum();
+
+    Ok(EvmWalletBalancesResponse {
+        wallet: EvmWalletInfo {
+            id: wallet.id,
+            label: wallet.label,
+            wallet_type: wallet.wallet_type,
+            address: wallet.address,
+            total_balance_usd,
+            valuation_status: if unpriced_asset_count > 0 {
+                ValuationStatus::Unpriced
+            } else {
+                ValuationStatus::Valued
+            },
+            unpriced_asset_count,
+            chains: chain_views,
+            created_at: wallet.created_at,
+            updated_at: wallet.updated_at,
+        },
+        sync: query_sync_outcome(&wallet_freshness),
+    })
+}
 
 #[tauri::command]
 pub fn evm_get_wallets() -> Result<Vec<WalletInfo>, String> {
@@ -24,157 +189,85 @@ pub fn evm_get_wallet(wallet_id: String) -> Result<Option<WalletInfo>, String> {
 }
 
 #[tauri::command]
-pub async fn evm_get_wallet_with_balances(wallet_id: String) -> Result<EvmWalletInfo, String> {
-    // Get wallet info first, then release the database lock
-    let wallet = {
-        let db = DB.lock().unwrap();
-        db.get_evm_wallet(&wallet_id)
-            .map_err(|e| format!("Failed to get wallet: {}", e))?
-            .ok_or_else(|| "Wallet not found".to_string())?
+pub async fn evm_get_wallet_with_balances(
+    wallet_id: String,
+) -> Result<EvmWalletBalancesResponse, String> {
+    query_evm_wallet_balances_inner(&wallet_id)
+}
+
+#[tauri::command]
+pub fn query_evm_wallet_balances(wallet_id: String) -> Result<EvmWalletBalancesResponse, String> {
+    query_evm_wallet_balances_inner(&wallet_id)
+}
+
+#[tauri::command]
+pub async fn refresh_evm_wallet_balances(
+    wallet_id: String,
+) -> Result<EvmWalletBalancesResponse, String> {
+    engine::sync_evm_wallet_balances(&wallet_id, SyncReason::Manual)
+        .await
+        .map(|(wallet, sync)| EvmWalletBalancesResponse { wallet, sync })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{evm_get_wallet_with_balances, query_chain_freshness, query_sync_outcome};
+    use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
+    use crate::wallet::sync::types::SyncReason;
+    use crate::wallet::types::{
+        EvmAsset, EvmAssetBalance, EvmWalletBalancesResponse, ValuationStatus,
     };
+    use std::future::Future;
 
-    let chains_config = get_all_chains();
-
-    // Collect all unique asset symbols across all chains
-    let symbol_set: HashSet<String> = chains_config
-        .iter()
-        .flat_map(|chain| chain.assets())
-        .map(|asset| asset.symbol.clone())
-        .collect();
-
-    // Get all prices from cache (background task keeps them fresh)
-    let mut prices_map = std::collections::HashMap::new();
-    for symbol in symbol_set {
-        if let Some(price) = super::price_manager::get_cached_price(&symbol) {
-            prices_map.insert(symbol, price);
-        }
+    fn assert_command_shape<F, Fut>(_command: F)
+    where
+        F: Fn(String) -> Fut,
+        Fut: Future<Output = Result<EvmWalletBalancesResponse, String>>,
+    {
     }
-    let prices = Arc::new(prices_map);
 
-    let concurrency_limit = chain_concurrency_limit();
-    let semaphore = Arc::new(Semaphore::new(concurrency_limit));
-    let wallet_address = wallet.address.clone();
-    let mut set = JoinSet::new();
+    #[test]
+    fn evm_wallet_with_balances_command_uses_typed_partial_failure_response() {
+        assert_command_shape(evm_get_wallet_with_balances);
+    }
 
-    for (order, chain_config) in chains_config.into_iter().enumerate() {
-        let semaphore = semaphore.clone();
-        let prices = prices.clone();
-        let address = wallet_address.clone();
-        let wallet_id_cloned = wallet_id.clone();
-
-        set.spawn(async move {
-            let _permit = semaphore
-                .acquire_owned()
-                .await
-                .map_err(|e| format!("Semaphore closed: {}", e))?;
-
-            let chain_name = chain_config.name().to_string();
-            let chain_id = chain_config.chain_id();
-
-            let balances_result = balance::get_chain_balances(chain_config, &address).await;
-            let mut chain_assets_vec = Vec::new();
-            let mut chain_total_usd = 0.0;
-            let mut asset_data_for_db = Vec::new();
-
-            match balances_result {
-                Ok(balances) => {
-                    let balance_map: HashMap<String, (String, f64)> = balances
-                        .into_iter()
-                        .map(|(symbol, balance_str, balance_float)| {
-                            (symbol, (balance_str, balance_float))
-                        })
-                        .collect();
-
-                    for asset in chain_config.assets() {
-                        if let Some((balance_str, balance_float)) = balance_map.get(&asset.symbol) {
-                            let usd_price = prices.get(&asset.symbol).copied().unwrap_or(0.0);
-                            let usd_value = balance_float * usd_price;
-                            chain_total_usd += usd_value;
-
-                            asset_data_for_db.push(AssetBalanceData {
-                                wallet_id: wallet_id_cloned.clone(),
-                                chain: chain_name.clone(),
-                                chain_id,
-                                symbol: asset.symbol.clone(),
-                                name: asset.name.clone(),
-                                decimals: asset.decimals,
-                                contract_address: asset.contract_address.clone(),
-                                balance: balance_str.clone(),
-                                balance_float: *balance_float,
-                                usd_price,
-                                usd_value,
-                            });
-
-                            chain_assets_vec.push(EvmAssetBalance {
-                                chain: chain_name.clone(),
-                                asset: asset.clone(),
-                                balance: balance_str.clone(),
-                                balance_float: *balance_float,
-                                usd_price,
-                                usd_value,
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[WARNING] Failed to query balances for {}: {}",
-                        chain_name, e
-                    );
-                }
-            }
-
-            Ok::<_, String>((
-                order,
-                EvmChainAssets {
-                    chain: chain_name,
-                    chain_id,
-                    total_balance_usd: chain_total_usd,
-                    assets: chain_assets_vec,
-                },
-                asset_data_for_db,
-            ))
+    #[test]
+    fn query_sync_outcome_keeps_missing_timestamp_honest() {
+        let outcome = query_sync_outcome(&FreshnessMetadata {
+            status: FreshnessStatus::Unavailable,
+            updated_at: None,
+            failed_sources: Vec::new(),
         });
+
+        assert_eq!(outcome.reason, SyncReason::Query);
+        assert_eq!(outcome.updated_at, None);
+        assert!(!outcome.partial);
     }
 
-    let mut chains_with_order = Vec::new();
-    let mut all_asset_data = Vec::new();
-    let mut total_balance_usd = 0.0;
+    #[test]
+    fn query_chain_freshness_preserves_partial_for_failed_cached_chain() {
+        let freshness = query_chain_freshness(
+            "ethereum",
+            &[EvmAssetBalance {
+                chain: "ethereum".to_string(),
+                asset: EvmAsset::new("ETH", "Ethereum", 18, None),
+                balance: "1".to_string(),
+                balance_float: 1.0,
+                usd_price: Some(10.0),
+                usd_value: Some(10.0),
+                valuation_status: ValuationStatus::Valued,
+            }],
+            &FreshnessMetadata {
+                status: FreshnessStatus::Fresh,
+                updated_at: Some(1_713_499_200),
+                failed_sources: vec!["ethereum".to_string()],
+            },
+        );
 
-    while let Some(res) = set.join_next().await {
-        match res {
-            Ok(Ok((order, chain_assets, asset_data))) => {
-                total_balance_usd += chain_assets.total_balance_usd;
-                chains_with_order.push((order, chain_assets));
-                all_asset_data.extend(asset_data);
-            }
-            Ok(Err(e)) => eprintln!("[ERROR] Chain balance task failed: {}", e),
-            Err(join_err) => eprintln!("[ERROR] Chain task panicked: {:?}", join_err),
-        }
+        assert_eq!(freshness.status, FreshnessStatus::Partial);
+        assert_eq!(freshness.updated_at, Some(1_713_499_200));
+        assert_eq!(freshness.failed_sources, vec!["ethereum".to_string()]);
     }
-
-    chains_with_order.sort_by_key(|(order, _)| *order);
-    let chains: Vec<EvmChainAssets> = chains_with_order
-        .into_iter()
-        .map(|(_, chain)| chain)
-        .collect();
-
-    if !all_asset_data.is_empty() {
-        let db = DB.lock().unwrap();
-        db.batch_save_evm_asset_balances(&all_asset_data)
-            .map_err(|e| format!("Failed to save balances: {}", e))?;
-    }
-
-    Ok(EvmWalletInfo {
-        id: wallet.id,
-        label: wallet.label,
-        wallet_type: wallet.wallet_type,
-        address: wallet.address,
-        chains,
-        total_balance_usd,
-        created_at: wallet.created_at,
-        updated_at: wallet.updated_at,
-    })
 }
 
 #[tauri::command]

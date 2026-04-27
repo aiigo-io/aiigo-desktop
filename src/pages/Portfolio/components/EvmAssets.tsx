@@ -1,9 +1,37 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { MnemonicBackupDialog } from '@/components/common/MnemonicBackupDialog';
+import RecoveryPanel from '@/components/common/RecoveryPanel';
+import { useSecuritySession } from '@/components/common/SecuritySession';
+import { UnlockGate } from '@/components/common/UnlockGate';
 import { Card, Button, Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Tabs, TabsContent, TabsList, TabsTrigger, Label, Textarea, Input, Badge, Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui';
 import { Copy, Plus, AlertCircle, CheckCircle2, Trash2, Download, Send, ChevronRight, HelpCircle, ExternalLink } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE, isTauriUnavailableError } from '@/lib/tauri';
+import { parseSecurityError, securityGetBackendState } from '@/lib/security';
+import { notifyTransactionStateChanged } from '@/lib/transactions';
+import {
+  EvmAssetBalance,
+  EvmWalletBalancesResponse,
+  getChainFreshnessDescription,
+  getFreshnessBadgeClass,
+  getValuationStatusDescription,
+  getWalletMainnetBalance,
+  getWalletSyncBanner,
+  getWalletUpdatedLabel,
+  formatFreshnessLabel,
+} from '@/lib/evm-wallet';
+import { describeWalletRecovery, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 import { shortAddress, getEvmExplorerUrl, openExternalLink } from '@/lib/utils';
 import { toast } from 'sonner';
+import type { ToastT } from 'sonner';
+
+const EVM_RECEIPT_POLL_INTERVAL_MS = 5_000;
+const EVM_RECEIPT_POLL_MAX_ATTEMPTS = 24;
+
+interface EvmTransactionLifecycleUpdate {
+  status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
+  block_number: number | null;
+  should_refresh_balance: boolean;
+}
 
 interface WalletInfo {
   id: string;
@@ -15,58 +43,177 @@ interface WalletInfo {
   updated_at: string;
 }
 
-interface EvmAsset {
-  symbol: string;
-  name: string;
-  decimals: number;
-  contract_address: string | null;
+interface CreateWalletResponse {
+  revealed_secret: string | null;
+  revealed_secret_type: 'mnemonic' | 'private-key' | null;
+  wallet: WalletInfo;
 }
 
-interface EvmAssetBalance {
+interface PendingMnemonicBackup {
+  mnemonic: string;
+  walletLabel: string;
+}
+
+interface SelectedSendAsset {
   chain: string;
-  asset: EvmAsset;
-  balance: string;
-  balance_float: number;
-  usd_price: number;
-  usd_value: number;
+  chainId: number;
+  asset: EvmAssetBalance;
 }
 
-interface EvmChainAssets {
+interface SendEvmRequestPayload {
+  wallet_id: string;
+  to_address: string;
+  amount: string;
   chain: string;
   chain_id: number;
-  total_balance_usd: number;
-  assets: EvmAssetBalance[];
+  asset_symbol: string;
+  contract_address: string | null;
+  gas_limit: number | null;
+  gas_price: string | null;
 }
 
-interface EvmWalletInfo {
-  id: string;
-  label: string;
-  wallet_type: 'mnemonic' | 'private-key';
-  address: string;
-  chains: EvmChainAssets[];
-  total_balance_usd: number;
-  created_at: string;
-  updated_at: string;
-}
-
-interface CreateWalletResponse {
-  mnemonic: string;
-  wallet: WalletInfo;
+interface ReviewedEvmSendIntent {
+  sendKind: 'native' | 'token';
+  actionLabel: string;
+  realChainAction: string;
+  walletLabel: string;
+  fromAddress: string;
+  humanRecipient: string;
+  broadcastTarget: string;
+  amountDisplay: string;
+  gasLimitDisplay: string;
+  gasPriceDisplay: string;
+  riskPoint: string;
+  request: SendEvmRequestPayload;
+  payloadFingerprint: string;
 }
 
 const REFRESH_CACHE_TTL_MS = 60_000; // Align with backend price cache duration
 type RefreshScope = 'single' | 'all';
 
+const isValidEvmAddress = (value: string) => value.startsWith('0x') && value.length === 42;
+
+const buildSendPayloadFingerprint = (request: SendEvmRequestPayload) => [
+  request.wallet_id,
+  request.to_address,
+  request.amount,
+  request.chain,
+  request.chain_id.toString(),
+  request.asset_symbol,
+  request.contract_address ?? '',
+  request.gas_limit === null ? '' : request.gas_limit.toString(),
+  request.gas_price ?? '',
+].join('|');
+
+const buildBaseUnitAmount = (amount: string, decimals: number) => {
+  const normalizedAmount = amount.trim();
+  if (!normalizedAmount) {
+    throw new Error('Enter a valid amount');
+  }
+
+  if (!/^(?:\d+\.\d+|\d+|\.\d+)$/.test(normalizedAmount)) {
+    throw new Error('Enter a valid amount');
+  }
+
+  const [integerPartRaw, fractionalPartRaw = ''] = normalizedAmount.split('.');
+  const integerPart = integerPartRaw === '' ? '0' : integerPartRaw;
+  const significantFractionLength = fractionalPartRaw.replace(/0+$/, '').length;
+
+  if (significantFractionLength > decimals) {
+    throw new Error(`Amount supports up to ${decimals} decimal places`);
+  }
+
+  const fractionalPart = fractionalPartRaw.padEnd(decimals, '0').slice(0, decimals);
+  const baseUnitAmount = `${integerPart}${fractionalPart}`.replace(/^0+(?=\d)/, '');
+
+  if (!/^\d+$/.test(baseUnitAmount) || /^0+$/.test(baseUnitAmount)) {
+    throw new Error('Enter a valid amount');
+  }
+
+  return baseUnitAmount;
+};
+
+const formatGasPriceGwei = (gasPrice: string | null) => {
+  if (!gasPrice) {
+    return 'Auto';
+  }
+
+  const gasPriceWei = Number(gasPrice);
+  if (!Number.isFinite(gasPriceWei)) {
+    return gasPrice;
+  }
+
+  return `${(gasPriceWei / 1e9).toFixed(2)} gwei`;
+};
+
+const buildReviewedEvmSendIntent = ({
+  wallet,
+  selectedAsset,
+  recipient,
+  amount,
+  estimatedGasLimit,
+  estimatedGasPrice,
+}: {
+  wallet: WalletInfo;
+  selectedAsset: SelectedSendAsset;
+  recipient: string;
+  amount: string;
+  estimatedGasLimit: number | null;
+  estimatedGasPrice: string | null;
+}): ReviewedEvmSendIntent => {
+  if (!recipient.trim()) {
+    throw new Error('Enter a recipient address');
+  }
+
+  if (!isValidEvmAddress(recipient.trim())) {
+    throw new Error('Enter a valid EVM recipient address');
+  }
+
+  const amountInBaseUnits = buildBaseUnitAmount(amount, selectedAsset.asset.asset.decimals);
+  const contractAddress = selectedAsset.asset.asset.contract_address;
+  const sendKind = contractAddress === null ? 'native' : 'token';
+  const request: SendEvmRequestPayload = {
+    wallet_id: wallet.id,
+    to_address: recipient.trim(),
+    amount: amountInBaseUnits,
+    chain: selectedAsset.chain,
+    chain_id: selectedAsset.chainId,
+    asset_symbol: selectedAsset.asset.asset.symbol,
+    contract_address: contractAddress,
+    gas_limit: estimatedGasLimit,
+    gas_price: estimatedGasPrice,
+  };
+
+  return {
+    sendKind,
+    actionLabel: sendKind === 'native' ? `Send ${selectedAsset.asset.asset.symbol}` : 'Send Token',
+    realChainAction: sendKind === 'native' ? 'EVM native transfer' : 'ERC20 transfer(address,uint256) contract call',
+    walletLabel: wallet.label,
+    fromAddress: wallet.address,
+    humanRecipient: recipient.trim(),
+    broadcastTarget: contractAddress ?? recipient.trim(),
+    amountDisplay: `${amount} ${selectedAsset.asset.asset.symbol}`,
+    gasLimitDisplay: estimatedGasLimit === null ? 'Auto' : estimatedGasLimit.toString(),
+    gasPriceDisplay: formatGasPriceGwei(estimatedGasPrice),
+    riskPoint: sendKind === 'native'
+      ? 'Native send broadcasts directly to the recipient address shown below.'
+      : 'Token send broadcasts to the token contract, while the recipient is passed inside the ERC20 transfer call.',
+    request,
+    payloadFingerprint: buildSendPayloadFingerprint(request),
+  };
+};
+
 const EvmAssets: React.FC = () => {
+  const { requestUnlock } = useSecuritySession();
   const [wallets, setWallets] = useState<WalletInfo[]>([]);
-  const [walletsWithBalances, setWalletsWithBalances] = useState<Map<string, EvmWalletInfo>>(new Map());
+  const [walletsWithBalances, setWalletsWithBalances] = useState<Map<string, EvmWalletBalancesResponse>>(new Map());
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [showMnemonicDialog, setShowMnemonicDialog] = useState(false);
-  const [generatedMnemonic, setGeneratedMnemonic] = useState<CreateWalletResponse | null>(null);
+  const [pendingMnemonicBackup, setPendingMnemonicBackup] = useState<PendingMnemonicBackup | null>(null);
   const [mnemonicInput, setMnemonicInput] = useState('');
   const [privateKeyInput, setPrivateKeyInput] = useState('');
   const [walletLabel, setWalletLabel] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isPersistingMnemonic, setIsPersistingMnemonic] = useState(false);
   const [mnemonicCopied, setMnemonicCopied] = useState(false);
   const [exportedSecret, setExportedSecret] = useState<string | null>(null);
   const [showExportDialog, setShowExportDialog] = useState(false);
@@ -77,20 +224,25 @@ const EvmAssets: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshingWalletId, setRefreshingWalletId] = useState<string | null>(null);
   const [lastRefreshTime, setLastRefreshTime] = useState<Map<string, Date>>(new Map());
+  const receiptPollTimeoutsRef = useRef<number[]>([]);
+  const transactionToastIdsRef = useRef<Map<string, ToastT['id']>>(new Map());
 
   // Send EVM State
   const [isSendDialogOpen, setIsSendDialogOpen] = useState(false);
   const [selectedWalletForSend, setSelectedWalletForSend] = useState<WalletInfo | null>(null);
-  const [selectedAssetForSend, setSelectedAssetForSend] = useState<{ chain: string, chainId: number, asset: EvmAssetBalance } | null>(null);
+  const [selectedAssetForSend, setSelectedAssetForSend] = useState<SelectedSendAsset | null>(null);
   const [sendToAddress, setSendToAddress] = useState('');
   const [sendAmount, setSendAmount] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [pendingSendReview, setPendingSendReview] = useState<ReviewedEvmSendIntent | null>(null);
 
   // Gas Estimation State
   const [isEstimatingGas, setIsEstimatingGas] = useState(false);
   const [estimatedGasLimit, setEstimatedGasLimit] = useState<number | null>(null);
   const [estimatedGasPrice, setEstimatedGasPrice] = useState<string | null>(null); // wei as string
   const [gasEstimationError, setGasEstimationError] = useState<string | null>(null);
+  const [walletFlowRecovery, setWalletFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
+  const [sendFlowRecovery, setSendFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
 
   // Load wallets on mount
   useEffect(() => {
@@ -107,8 +259,7 @@ const EvmAssets: React.FC = () => {
         return;
       }
 
-      // Basic address validation
-      if (!sendToAddress.startsWith('0x') || sendToAddress.length !== 42) {
+      if (!isValidEvmAddress(sendToAddress)) {
         setGasEstimationError('Invalid address');
         return;
       }
@@ -117,9 +268,7 @@ const EvmAssets: React.FC = () => {
       setGasEstimationError(null);
 
       try {
-        const decimals = selectedAssetForSend.asset.asset.decimals;
-        const amountFloat = parseFloat(sendAmount);
-        const amountInBaseUnits = BigInt(Math.floor(amountFloat * Math.pow(10, decimals))).toString();
+        const amountInBaseUnits = buildBaseUnitAmount(sendAmount, selectedAssetForSend.asset.asset.decimals);
 
         const estimation = await invoke<{ gas_limit: number; gas_price: string }>('evm_estimate_gas', {
           request: {
@@ -188,11 +337,15 @@ const EvmAssets: React.FC = () => {
   const fetchWalletWithMetrics = async (
     walletId: string,
     scope: RefreshScope
-  ): Promise<EvmWalletInfo> => {
+  ): Promise<EvmWalletBalancesResponse> => {
+    if (!isTauriRuntimeAvailable()) {
+      throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+    }
+
     const cacheHit = isCacheHit(walletId);
     const start = performance.now();
     try {
-      const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', { walletId });
+      const walletWithBalances = await invoke<EvmWalletBalancesResponse>('refresh_evm_wallet_balances', { walletId });
       logRefreshMetrics({
         walletId,
         scope,
@@ -212,81 +365,293 @@ const EvmAssets: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    return () => {
+      for (const timeoutId of receiptPollTimeoutsRef.current) {
+        window.clearTimeout(timeoutId);
+      }
+      receiptPollTimeoutsRef.current = [];
+    };
+  }, []);
+
+  const removeReceiptPollTimeout = (timeoutId: number) => {
+    receiptPollTimeoutsRef.current = receiptPollTimeoutsRef.current.filter((currentId) => currentId !== timeoutId);
+  };
+
+  const buildEvmLifecycleToastContent = (
+    title: string,
+    txHash: string,
+    chainId: number,
+    subtitle?: string,
+  ) => (
+    <div className="flex flex-col gap-1">
+      <div className="font-semibold">{title}</div>
+      <div className="text-xs font-mono text-muted-foreground break-all">{txHash}</div>
+      {subtitle ? <div className="text-xs text-muted-foreground">{subtitle}</div> : null}
+      <Button
+        variant="link"
+        size="sm"
+        className="p-0 h-auto text-indigo-400 hover:text-indigo-300 justify-start"
+        onClick={() => openExternalLink(getEvmExplorerUrl(txHash, chainId))}
+      >
+        <ExternalLink className="w-3 h-3 mr-1" />
+        View on Explorer
+      </Button>
+    </div>
+  );
+
+  const showEvmLifecycleToast = (
+    status: EvmTransactionLifecycleUpdate['status'],
+    txHash: string,
+    chainId: number,
+    toastId?: ToastT['id'],
+  ) => {
+    const content = buildEvmLifecycleToastContent(
+      status === 'confirmed'
+        ? 'Transaction Confirmed'
+        : status === 'failed'
+          ? 'Transaction Failed'
+          : status === 'replaced'
+            ? 'Transaction Replaced'
+            : status === 'dropped'
+              ? 'Transaction Dropped'
+              : 'Transaction Pending',
+      txHash,
+      chainId,
+      status === 'confirmed'
+        ? 'Finalized on chain.'
+        : status === 'failed'
+          ? 'Execution failed on chain.'
+          : status === 'replaced'
+            ? 'A newer transaction replaced this submission.'
+            : status === 'dropped'
+              ? 'The network no longer tracks this submission.'
+              : 'Still waiting for chain confirmation.',
+    );
+
+    if (status === 'confirmed') {
+      return toast.success(content, { duration: 10000, id: toastId });
+    }
+
+    if (status === 'failed') {
+      return toast.error(content, { duration: 10000, id: toastId });
+    }
+
+    return toast.warning(content, { duration: 10000, id: toastId });
+  };
+
+  const pollEvmTransactionLifecycle = (
+    txHash: string,
+    chainId: number,
+    walletId: string,
+    attempt = 0,
+  ) => {
+    const timeoutId = window.setTimeout(async () => {
+      removeReceiptPollTimeout(timeoutId);
+
+      if (!isTauriRuntimeAvailable()) {
+        return;
+      }
+
+      try {
+        const lifecycle = await invoke<EvmTransactionLifecycleUpdate>('refresh_evm_transaction_lifecycle', {
+          txHash,
+          chainId,
+        });
+
+        const existingToastId = transactionToastIdsRef.current.get(txHash);
+
+        if (lifecycle.status === 'broadcasted' || lifecycle.status === 'pending') {
+          const nextToastId = toast.loading(
+            buildEvmLifecycleToastContent(
+              lifecycle.status === 'pending' ? 'Transaction Pending' : 'Transaction Broadcasted',
+              txHash,
+              chainId,
+              'Waiting for chain confirmation. You can keep using the app.',
+            ),
+            {
+              duration: Infinity,
+              id: existingToastId,
+            }
+          );
+          transactionToastIdsRef.current.set(txHash, nextToastId);
+
+          if (attempt + 1 < EVM_RECEIPT_POLL_MAX_ATTEMPTS) {
+            pollEvmTransactionLifecycle(txHash, chainId, walletId, attempt + 1);
+          }
+          return;
+        }
+
+        notifyTransactionStateChanged();
+        const nextToastId = showEvmLifecycleToast(lifecycle.status, txHash, chainId, existingToastId);
+        transactionToastIdsRef.current.set(txHash, nextToastId);
+
+        if (lifecycle.should_refresh_balance) {
+          await handleRefreshBalance(walletId);
+        }
+      } catch (error) {
+        console.error(`Error polling lifecycle for EVM transaction ${txHash}:`, error);
+        if (attempt + 1 < EVM_RECEIPT_POLL_MAX_ATTEMPTS) {
+          pollEvmTransactionLifecycle(txHash, chainId, walletId, attempt + 1);
+        }
+      }
+    }, attempt === 0 ? 0 : EVM_RECEIPT_POLL_INTERVAL_MS);
+
+    receiptPollTimeoutsRef.current.push(timeoutId);
+  };
+
   const loadWallets = async () => {
+    if (!isTauriRuntimeAvailable()) {
+      setWallets([]);
+      setWalletsWithBalances(new Map());
+      return;
+    }
+
     try {
       const result = await invoke<WalletInfo[]>('evm_get_wallets');
       setWallets(result);
 
       // Load balance data for each wallet
-      const balances = new Map<string, EvmWalletInfo>();
+      const balances = new Map<string, EvmWalletBalancesResponse>();
       for (const wallet of result) {
         try {
-          const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', { walletId: wallet.id });
+          const walletWithBalances = await invoke<EvmWalletBalancesResponse>('query_evm_wallet_balances', { walletId: wallet.id });
           balances.set(wallet.id, walletWithBalances);
-          setLastRefreshTime(prev => new Map(prev).set(wallet.id, new Date()));
         } catch (error) {
           console.error(`Error loading balances for wallet ${wallet.id}:`, error);
         }
       }
       setWalletsWithBalances(balances);
+
+      if (result.length > 0) {
+        void handleRefreshBalance(undefined, {
+          walletsToRefresh: result,
+          silent: true,
+          background: true,
+        });
+      }
     } catch (error) {
-      console.error('Error loading wallets:', error);
+      if (!isTauriUnavailableError(error)) {
+        console.error('Error loading wallets:', error);
+      }
     }
   };
 
-  const handleRefreshBalance = async (walletId?: string) => {
-    setIsRefreshing(true);
+  const handleRefreshBalance = async (
+    walletId?: string,
+    options?: {
+      walletsToRefresh?: WalletInfo[];
+      silent?: boolean;
+      background?: boolean;
+    }
+  ) => {
+    if (!options?.background) {
+      setIsRefreshing(true);
+    }
+
     try {
       if (walletId) {
         // Refresh specific wallet
-        setRefreshingWalletId(walletId);
+        if (!options?.background) {
+          setRefreshingWalletId(walletId);
+        }
         const walletWithBalances = await fetchWalletWithMetrics(walletId, 'single');
         setWalletsWithBalances(prev => new Map(prev).set(walletId, walletWithBalances));
         setLastRefreshTime(prev => new Map(prev).set(walletId, new Date()));
       } else {
         // Refresh all wallets
-        const balances = new Map<string, EvmWalletInfo>();
-        const refreshTimes = new Map<string, Date>();
-        for (const wallet of wallets) {
+        const walletsToRefresh = options?.walletsToRefresh ?? wallets;
+        const nextBalances = new Map(walletsWithBalances);
+        const nextRefreshTimes = new Map(lastRefreshTime);
+
+        for (const wallet of walletsToRefresh) {
           try {
             const walletWithBalances = await fetchWalletWithMetrics(wallet.id, 'all');
-            balances.set(wallet.id, walletWithBalances);
-            refreshTimes.set(wallet.id, new Date());
+            nextBalances.set(wallet.id, walletWithBalances);
+            nextRefreshTimes.set(wallet.id, new Date());
           } catch (error) {
             console.error(`Error refreshing balances for wallet ${wallet.id}:`, error);
           }
         }
-        setWalletsWithBalances(balances);
-        setLastRefreshTime(refreshTimes);
+
+        setWalletsWithBalances(nextBalances);
+        setLastRefreshTime(nextRefreshTimes);
       }
     } catch (error) {
-      console.error('Error refreshing balance:', error);
-      alert(`Error refreshing balance: ${error}`);
+      if (isTauriUnavailableError(error)) {
+        if (!options?.silent) {
+          toast.error(TAURI_UNAVAILABLE_MESSAGE);
+        }
+      } else {
+        console.error('Error refreshing balance:', error);
+        if (!options?.silent) {
+          alert(`Error refreshing balance: ${error}`);
+        }
+      }
     } finally {
-      setIsRefreshing(false);
-      setRefreshingWalletId(null);
+      if (!options?.background) {
+        setIsRefreshing(false);
+        setRefreshingWalletId(null);
+      }
+    }
+  };
+
+  const ensureWalletProtectionReady = async (prompt: string) => {
+    const passwordReady = await requestUnlock({
+      mode: 'setup',
+      reason: 'setup_required',
+      prompt,
+    });
+
+    if (!passwordReady) {
+      return false;
+    }
+
+    const backendState = await securityGetBackendState();
+    const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
+
+    if (backendUnavailable) {
+      throw 'secret_backend_unavailable';
+    }
+
+    return true;
+  };
+
+  const syncImportedWallet = async (wallet: WalletInfo) => {
+    setWallets((current) => {
+      const withoutWallet = current.filter((existing) => existing.id !== wallet.id);
+      return [...withoutWallet, wallet];
+    });
+
+    try {
+      const walletWithBalances = await fetchWalletWithMetrics(wallet.id, 'single');
+      setWalletsWithBalances((current) => new Map(current).set(wallet.id, walletWithBalances));
+      setLastRefreshTime((current) => new Map(current).set(wallet.id, new Date()));
+    } catch (error) {
+      console.error(`Error refreshing imported wallet ${wallet.id}:`, error);
+      toast.warning('Wallet imported, but the first balance refresh did not complete. You can retry with Refresh.');
     }
   };
 
   const handleCreateMnemonic = async () => {
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
+      const ready = await ensureWalletProtectionReady('Set a local password before creating an EVM wallet on this device.');
+      if (!ready) {
+        return;
+      }
+
       const mnemonic = await invoke<string>('evm_create_mnemonic');
 
-      const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_mnemonic', {
-        mnemonicPhrase: mnemonic,
-        walletLabel: walletLabel || undefined,
+      setPendingMnemonicBackup({
+        mnemonic,
+        walletLabel: walletLabel || 'EVM Wallet',
       });
-
-      setGeneratedMnemonic(response);
-      setShowMnemonicDialog(true);
       setMnemonicInput('');
-      setWalletLabel('');
-
-      loadWallets();
     } catch (error) {
       console.error('Error creating wallet:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'evm' }));
     } finally {
       setIsLoading(false);
     }
@@ -296,20 +661,25 @@ const EvmAssets: React.FC = () => {
     if (!mnemonicInput.trim()) return;
 
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
+      const ready = await ensureWalletProtectionReady('Set a local password before importing an EVM wallet on this device.');
+      if (!ready) {
+        return;
+      }
+
       const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_mnemonic', {
         mnemonicPhrase: mnemonicInput,
         walletLabel: walletLabel || undefined,
       });
 
-      setWallets([...wallets, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setMnemonicInput('');
       setWalletLabel('');
       setIsDialogOpen(false);
-      loadWallets();
     } catch (error) {
       console.error('Error importing mnemonic:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'evm' }));
     } finally {
       setIsLoading(false);
     }
@@ -319,20 +689,25 @@ const EvmAssets: React.FC = () => {
     if (!privateKeyInput.trim()) return;
 
     setIsLoading(true);
+    setWalletFlowRecovery(null);
     try {
+      const ready = await ensureWalletProtectionReady('Set a local password before importing an EVM private key on this device.');
+      if (!ready) {
+        return;
+      }
+
       const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_private_key', {
         privateKey: privateKeyInput,
         walletLabel: walletLabel || undefined,
       });
 
-      setWallets([...wallets, response.wallet]);
+      await syncImportedWallet(response.wallet);
       setPrivateKeyInput('');
       setWalletLabel('');
       setIsDialogOpen(false);
-      loadWallets();
     } catch (error) {
       console.error('Error importing private key:', error);
-      alert(`Error: ${error}`);
+      setWalletFlowRecovery(describeWalletRecovery('import-wallet', error, { chainFamily: 'evm' }));
     } finally {
       setIsLoading(false);
     }
@@ -357,9 +732,41 @@ const EvmAssets: React.FC = () => {
   };
 
   const handleCloseMnemonicDialog = () => {
-    setShowMnemonicDialog(false);
-    setGeneratedMnemonic(null);
-    setIsDialogOpen(false);
+    setPendingMnemonicBackup(null);
+    setMnemonicCopied(false);
+  };
+
+  const handlePersistCreatedWallet = async () => {
+    if (!pendingMnemonicBackup) {
+      return;
+    }
+
+    setIsPersistingMnemonic(true);
+    setWalletFlowRecovery(null);
+    try {
+      const backendState = await securityGetBackendState();
+      const backendUnavailable = backendState && typeof backendState.backend_status === 'object' && 'unavailable' in backendState.backend_status;
+      if (backendUnavailable) {
+        throw 'secret_backend_unavailable';
+      }
+
+      const response = await invoke<CreateWalletResponse>('evm_create_wallet_from_mnemonic', {
+        mnemonicPhrase: pendingMnemonicBackup.mnemonic,
+        walletLabel: pendingMnemonicBackup.walletLabel || undefined,
+      });
+
+      await syncImportedWallet(response.wallet);
+      setPendingMnemonicBackup(null);
+      setMnemonicCopied(false);
+      setWalletLabel('');
+      setIsDialogOpen(false);
+    } catch (error) {
+      console.error('Error saving created wallet:', error);
+      setWalletFlowRecovery(describeWalletRecovery('create-wallet', error, { chainFamily: 'evm' }));
+      toast.error('Wallet save stopped before local encryption completed.');
+    } finally {
+      setIsPersistingMnemonic(false);
+    }
   };
 
   const handleExportPrivateKey = async (walletId: string) => {
@@ -371,7 +778,7 @@ const EvmAssets: React.FC = () => {
       setShowExportDialog(true);
     } catch (error) {
       console.error('Error exporting private key:', error);
-      alert(`Error: ${error}`);
+      toast.error(describeWalletRecovery('send-asset', error, { chainFamily: 'evm' }).summary);
     } finally {
       setIsLoading(false);
     }
@@ -386,7 +793,7 @@ const EvmAssets: React.FC = () => {
       setShowExportDialog(true);
     } catch (error) {
       console.error('Error exporting mnemonic:', error);
-      alert(`Error: ${error}`);
+      toast.error(describeWalletRecovery('send-asset', error, { chainFamily: 'evm' }).summary);
     } finally {
       setIsLoading(false);
     }
@@ -403,6 +810,11 @@ const EvmAssets: React.FC = () => {
         newMap.delete(walletId);
         return newMap;
       });
+      setLastRefreshTime(prev => {
+        const next = new Map(prev);
+        next.delete(walletId);
+        return next;
+      });
     } catch (error) {
       console.error('Error deleting wallet:', error);
       alert(`Error: ${error}`);
@@ -411,80 +823,147 @@ const EvmAssets: React.FC = () => {
     }
   };
 
-  const handleSendEvm = async () => {
-    if (!selectedWalletForSend || !selectedAssetForSend || !sendToAddress || !sendAmount) return;
+  const resetSendFlow = () => {
+    setPendingSendReview(null);
+    setSendToAddress('');
+    setSendAmount('');
+    setEstimatedGasLimit(null);
+    setEstimatedGasPrice(null);
+    setGasEstimationError(null);
+    setSendFlowRecovery(null);
+    setSelectedWalletForSend(null);
+    setSelectedAssetForSend(null);
+    setIsSendDialogOpen(false);
+  };
+
+  const buildCurrentReviewedSendIntent = () => {
+    if (!selectedWalletForSend || !selectedAssetForSend || !sendToAddress || !sendAmount) {
+      throw new Error('Complete the send form before reviewing it');
+    }
+
+    return buildReviewedEvmSendIntent({
+      wallet: selectedWalletForSend,
+      selectedAsset: selectedAssetForSend,
+      recipient: sendToAddress,
+      amount: sendAmount,
+      estimatedGasLimit,
+      estimatedGasPrice,
+    });
+  };
+
+  const handlePrepareSendReview = () => {
+    try {
+      setSendFlowRecovery(null);
+      const reviewedIntent = buildCurrentReviewedSendIntent();
+      setPendingSendReview(reviewedIntent);
+    } catch (error) {
+      const message = typeof error === 'string' ? error : error instanceof Error ? error.message : 'Unable to review EVM send';
+      toast.error(message);
+    }
+  };
+
+  const submitReviewedSend = async () => {
+    if (!pendingSendReview) return;
+
+    if (!isTauriRuntimeAvailable()) {
+      toast.error(TAURI_UNAVAILABLE_MESSAGE);
+      return;
+    }
+
+    let currentReviewedIntent: ReviewedEvmSendIntent;
+    try {
+      currentReviewedIntent = buildCurrentReviewedSendIntent();
+    } catch (error) {
+      setPendingSendReview(null);
+      const message = typeof error === 'string' ? error : error instanceof Error ? error.message : 'Unable to validate the current send payload';
+      toast.error(message);
+      return;
+    }
+
+    if (currentReviewedIntent.payloadFingerprint !== pendingSendReview.payloadFingerprint) {
+      setPendingSendReview(null);
+      toast.error('EVM send payload changed. Review the send again.');
+      return;
+    }
 
     setIsSending(true);
+    setSendFlowRecovery(null);
     try {
-      // Amount in the backend is expected in "wei" for eth_sendTransaction but 
-      // let's check what SendEvmRequest expects.
-      // SendEvmRequest amount is "in token units (e.g., '1.5' for 1.5 ETH)"
-      // Actually it's stored as String. 
-      // But wait, look at send_evm_transaction implementation:
-      // let amount_wei = U256::from_dec_str(&request.amount)
-      // This means the backend EXPECTS WEI if it uses from_dec_str on the string.
-      // Wait, let me re-check transaction.rs line 317:
-      // let amount_wei = U256::from_dec_str(&request.amount)
-      // Yes, it expects the raw integer value (wei) as a decimal string.
-
-      const decimals = selectedAssetForSend.asset.asset.decimals;
-      const amountFloat = parseFloat(sendAmount);
-      // Simple conversion to wei-like string (might lose precision for very small amounts, but okay for basic UI)
-      const amountInBaseUnits = BigInt(Math.floor(amountFloat * Math.pow(10, decimals))).toString();
-
+      const submittedRequest = pendingSendReview.request;
       const response = await invoke<{ tx_hash: string; message: string }>('send_evm', {
-        request: {
-          wallet_id: selectedWalletForSend.id,
-          to_address: sendToAddress,
-          amount: amountInBaseUnits,
-          chain: selectedAssetForSend.chain,
-          chain_id: selectedAssetForSend.chainId,
-          asset_symbol: selectedAssetForSend.asset.asset.symbol,
-          contract_address: selectedAssetForSend.asset.asset.contract_address,
-          gas_limit: estimatedGasLimit,
-          gas_price: estimatedGasPrice,
-        }
+        request: submittedRequest
       });
 
-      toast.success(
-        <div className="flex flex-col gap-1">
-          <div className="font-semibold">Transaction Sent Successfully</div>
-          <div className="text-xs font-mono text-muted-foreground break-all">
-            {response.tx_hash}
-          </div>
-          <Button
-            variant="link"
-            size="sm"
-            className="p-0 h-auto text-indigo-400 hover:text-indigo-300 justify-start"
-            onClick={() => openExternalLink(getEvmExplorerUrl(response.tx_hash, selectedAssetForSend.chainId))}
-          >
-            <ExternalLink className="w-3 h-3 mr-1" />
-            View on Explorer
-          </Button>
-        </div>,
+      const broadcastToastId = toast.loading(
+        buildEvmLifecycleToastContent(
+          'Transaction Broadcasted',
+          response.tx_hash,
+          submittedRequest.chain_id,
+          'Waiting for chain confirmation. You can keep using the app.',
+        ),
         {
-          duration: 10000,
+          duration: Infinity,
         }
       );
+      transactionToastIdsRef.current.set(response.tx_hash, broadcastToastId);
 
+      setPendingSendReview(null);
       setIsSendDialogOpen(false);
-      setSendToAddress('');
-      setSendAmount('');
-
-      // Refresh balance after successful send
-      handleRefreshBalance(selectedWalletForSend.id);
+      notifyTransactionStateChanged();
+      pollEvmTransactionLifecycle(response.tx_hash, submittedRequest.chain_id, submittedRequest.wallet_id);
+      resetSendFlow();
     } catch (error) {
       console.error('Error sending EVM asset:', error);
-      alert(`Error: ${error}`);
+      if (isTauriUnavailableError(error)) {
+        toast.error(TAURI_UNAVAILABLE_MESSAGE);
+        return;
+      }
+
+      const securityError = parseSecurityError(error);
+      if (securityError === 'locked' || securityError === 'expired' || securityError === 'reauth_required') {
+        setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'evm' }));
+        void requestUnlock({
+          prompt: 'Re-enter your local password to send assets.',
+          reason: securityError === 'reauth_required' ? 'reauth_required' : securityError,
+          mode: 'reauth',
+          operation: 'send',
+          onUnlockSuccess: submitReviewedSend,
+        });
+      } else {
+        setSendFlowRecovery(describeWalletRecovery('send-asset', error, { chainFamily: 'evm' }));
+      }
     } finally {
       setIsSending(false);
     }
   };
 
-  const getWalletMainnetBalance = (wallet: EvmWalletInfo) => {
-    return wallet.chains
-      .filter(chain => chain.chain_id !== 11155111) // Exclude Sepolia
-      .reduce((sum, chain) => sum + chain.total_balance_usd, 0);
+  const handleConfirmReviewedSend = async () => {
+    if (!pendingSendReview) {
+      return;
+    }
+
+    await submitReviewedSend();
+  };
+
+  const openSendDialog = (
+    wallet: WalletInfo,
+    chain: string,
+    chainId: number,
+    asset: EvmAssetBalance
+  ) => {
+    setSelectedWalletForSend(wallet);
+    setSelectedAssetForSend({ chain, chainId, asset });
+    setPendingSendReview(null);
+    setSendToAddress('');
+    setSendAmount('');
+    setEstimatedGasLimit(null);
+    setEstimatedGasPrice(null);
+    setGasEstimationError(null);
+    setIsSendDialogOpen(true);
+  };
+
+  const handleReturnToSendEdit = () => {
+    setPendingSendReview(null);
   };
 
   const totalBalance = Array.from(walletsWithBalances.values()).reduce(
@@ -525,7 +1004,12 @@ const EvmAssets: React.FC = () => {
                 </>
               )}
             </Button>
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+            <Dialog open={isDialogOpen} onOpenChange={(open) => {
+              setIsDialogOpen(open);
+              if (!open) {
+                setWalletFlowRecovery(null);
+              }
+            }}>
               <DialogTrigger asChild>
                 <Button className="gap-2">
                   <Plus className="w-4 h-4" />
@@ -536,6 +1020,9 @@ const EvmAssets: React.FC = () => {
                 <DialogHeader>
                   <DialogTitle>EVM Wallet Management</DialogTitle>
                 </DialogHeader>
+                {walletFlowRecovery && (
+                  <RecoveryPanel guidance={walletFlowRecovery} />
+                )}
                 <Tabs defaultValue="create" className="w-full">
                   <TabsList className="grid w-full grid-cols-3">
                     <TabsTrigger value="create">Create New</TabsTrigger>
@@ -639,122 +1126,17 @@ const EvmAssets: React.FC = () => {
           </div>
         </div>
 
-        {/* Mnemonic Display Dialog */}
-        <Dialog open={showMnemonicDialog} onOpenChange={setShowMnemonicDialog}>
-          <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Save Your Mnemonic Phrase</DialogTitle>
-            </DialogHeader>
-
-            {generatedMnemonic && (
-              <div className="space-y-6">
-                {/* Warning Alert */}
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-2">
-                  <div className="flex items-start gap-3">
-                    <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                    <div className="space-y-2">
-                      <p className="font-semibold text-red-900">Important: This is your only chance to save this mnemonic phrase!</p>
-                      <p className="text-sm text-red-800">
-                        Your mnemonic phrase is not stored on this device. If you close this dialog without saving it, you will lose access to this wallet forever.
-                      </p>
-                      <p className="text-sm text-red-800">
-                        • Never share your mnemonic phrase with anyone<br />
-                        • Store it in a safe location<br />
-                        • Anyone with this phrase can access your funds
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Wallet Info */}
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                  <div className="space-y-2">
-                    <div>
-                      <p className="text-sm text-muted-foreground">Wallet Label</p>
-                      <p className="font-medium text-white">{generatedMnemonic.wallet.label}</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-muted-foreground">Wallet Address (Ethereum)</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <p className="font-mono text-sm text-white break-all">{generatedMnemonic.wallet.address}</p>
-                        <button
-                          onClick={() => handleCopyAddress(generatedMnemonic.wallet.address)}
-                          className="text-gray-400 hover:text-muted-foreground flex-shrink-0 transition-colors"
-                          title="Copy address"
-                        >
-                          {addressCopied === generatedMnemonic.wallet.address ? (
-                            <CheckCircle2 className="w-4 h-4 text-green-600" />
-                          ) : (
-                            <Copy className="w-4 h-4" />
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Mnemonic Phrase */}
-                <div className="space-y-2">
-                  <Label>Your Mnemonic Phrase</Label>
-                  <div className="bg-muted rounded-lg p-4 space-y-3">
-                    <div className="grid grid-cols-3 gap-2">
-                      {generatedMnemonic.mnemonic.split(' ').map((word, index) => (
-                        <div key={index} className="flex items-center gap-2">
-                          <span className="text-muted-foreground text-xs font-mono w-6">{index + 1}.</span>
-                          <span className="text-yellow-400 font-mono text-sm">{word}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <button
-                      onClick={() => handleCopyMnemonic(generatedMnemonic.mnemonic)}
-                      className="w-full mt-2 px-3 py-2 bg-muted/80 hover:bg-muted/70 text-gray-200 rounded text-sm transition-colors flex items-center justify-center gap-2"
-                    >
-                      {mnemonicCopied ? (
-                        <>
-                          <CheckCircle2 className="w-4 h-4" />
-                          Copied!
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-4 h-4" />
-                          Copy All
-                        </>
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Save Instructions */}
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-2">
-                  <p className="font-semibold text-yellow-900 text-sm">How to save your mnemonic:</p>
-                  <ul className="text-sm text-yellow-800 space-y-1 list-disc list-inside">
-                    <li>Write it down on paper and store it in a safe place</li>
-                    <li>Use a password manager to securely store it</li>
-                    <li>Do NOT store it in plain text files or screenshots</li>
-                    <li>Do NOT store it in cloud services or emails</li>
-                  </ul>
-                </div>
-
-                {/* Action Buttons */}
-                <div className="flex gap-3">
-                  <Button
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => handleCopyMnemonic(generatedMnemonic.mnemonic)}
-                  >
-                    Copy to Clipboard
-                  </Button>
-                  <Button
-                    className="flex-1 bg-green-600 hover:bg-green-700"
-                    onClick={handleCloseMnemonicDialog}
-                  >
-                    I've Saved My Mnemonic
-                  </Button>
-                </div>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
+        <MnemonicBackupDialog
+          open={pendingMnemonicBackup !== null}
+          chainLabel="EVM"
+          walletLabel={pendingMnemonicBackup?.walletLabel ?? ''}
+          mnemonic={pendingMnemonicBackup?.mnemonic ?? null}
+          copied={mnemonicCopied}
+          isSaving={isPersistingMnemonic}
+          onCopy={handleCopyMnemonic}
+          onCancel={handleCloseMnemonicDialog}
+          onConfirm={handlePersistCreatedWallet}
+        />
 
         {/* Export Secret Dialog */}
         <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
@@ -830,16 +1212,25 @@ const EvmAssets: React.FC = () => {
         </Dialog>
 
         {/* Send EVM Dialog */}
-        <Dialog open={isSendDialogOpen} onOpenChange={setIsSendDialogOpen}>
-          <DialogContent className="sm:max-w-[480px] p-0 border-none shadow-2xl bg-[#1A1B23]">
+        <Dialog open={isSendDialogOpen} onOpenChange={(open) => {
+          setIsSendDialogOpen(open);
+          if (!open) {
+            resetSendFlow();
+          }
+        }}>
+          <DialogContent className={pendingSendReview ? "sm:max-w-[520px] border-none shadow-2xl bg-[#161821] text-white" : "sm:max-w-[480px] p-0 border-none shadow-2xl bg-[#1A1B23]"}>
             <DialogHeader className="p-6 pb-2">
               <DialogTitle className="text-xl font-bold flex items-center justify-between">
-                <span>Send</span>
-                <span className="text-sm font-normal text-muted-foreground mr-8">Cancel</span>
+                <span>{pendingSendReview?.actionLabel ?? (selectedAssetForSend?.asset.asset.contract_address === null ? `Send ${selectedAssetForSend?.asset.asset.symbol ?? ''}` : 'Send Token')}</span>
+                {!pendingSendReview && <span className="text-sm font-normal text-muted-foreground mr-8">Cancel</span>}
               </DialogTitle>
             </DialogHeader>
 
+            {!pendingSendReview ? (
             <div className="px-6 pb-6 space-y-6">
+              {sendFlowRecovery && (
+                <RecoveryPanel guidance={sendFlowRecovery} className="text-left" />
+              )}
               {/* Asset Selector Display (MetaMask style) */}
               <div className="space-y-2">
                 <div className="flex justify-between items-end">
@@ -908,7 +1299,7 @@ const EvmAssets: React.FC = () => {
                     {selectedAssetForSend?.asset.asset.symbol}
                   </span>
                 </div>
-                {selectedAssetForSend?.asset.usd_price && sendAmount && (
+                {selectedAssetForSend && selectedAssetForSend.asset.usd_price !== null && sendAmount && (
                   <p className="text-xs text-muted-foreground text-right mt-1">
                     ≈ ${(parseFloat(sendAmount) * selectedAssetForSend.asset.usd_price).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                   </p>
@@ -936,9 +1327,9 @@ const EvmAssets: React.FC = () => {
                             return `${feeEth.toFixed(6)} ETH`;
                           })()}
                         </p>
-                        {selectedAssetForSend?.asset.usd_price && (
+                        {selectedAssetForSend && selectedAssetForSend.asset.usd_price !== null && (
                           <p className="text-[10px] text-muted-foreground">
-                            ≈ ${((Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18) * (walletsWithBalances.get(selectedWalletForSend?.id || '')?.chains.find(c => c.chain_id === selectedAssetForSend.chainId)?.assets.find(a => a.asset.contract_address === null)?.usd_price || 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            ≈ ${((Number(BigInt(estimatedGasLimit) * BigInt(estimatedGasPrice)) / 1e18) * (walletsWithBalances.get(selectedWalletForSend?.id || '')?.wallet.chains.find(c => c.chain_id === selectedAssetForSend.chainId)?.assets.find(a => a.asset.contract_address === null)?.usd_price ?? 0)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                           </p>
                         )}
                       </>
@@ -982,17 +1373,102 @@ const EvmAssets: React.FC = () => {
                 </Button>
                 <Button
                   className="flex-1 h-12 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-lg shadow-indigo-600/20"
-                  onClick={handleSendEvm}
+                  onClick={handlePrepareSendReview}
                   disabled={isSending || !sendToAddress || !sendAmount || parseFloat(sendAmount) <= 0}
                 >
                   {isSending ? (
                     <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   ) : (
-                    "Confirm"
+                    "Review Send"
                   )}
                 </Button>
               </div>
             </div>
+            ) : pendingSendReview && (
+              <div className="space-y-5">
+                {sendFlowRecovery && (
+                  <div className="px-6">
+                    <RecoveryPanel guidance={sendFlowRecovery} className="text-left" />
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-3 px-6">
+                  <Badge variant="secondary" className="bg-indigo-500/15 text-indigo-200 border border-indigo-400/20">
+                    {pendingSendReview.sendKind === 'native' ? 'Native Send' : 'Token Send'}
+                  </Badge>
+                </div>
+                <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/10 p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs uppercase tracking-[0.2em] text-indigo-200/80">Real Chain Action</span>
+                    <span className="text-sm font-semibold text-indigo-100">{pendingSendReview.realChainAction}</span>
+                  </div>
+                  <p className="text-sm text-slate-200">{pendingSendReview.riskPoint}</p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">From Wallet</p>
+                    <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.walletLabel}</p>
+                    <p className="mt-1 break-all font-mono text-xs text-slate-300">{pendingSendReview.fromAddress}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Chain</p>
+                    <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.request.chain}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-300">Chain ID {pendingSendReview.request.chain_id}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3 sm:col-span-2">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Human Recipient</p>
+                    <p className="mt-1 break-all font-mono text-sm text-white">{pendingSendReview.humanRecipient}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Asset And Amount</p>
+                    <p className="mt-1 text-sm font-semibold text-white">{pendingSendReview.amountDisplay}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-300">Base units {pendingSendReview.request.amount}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Broadcast Target</p>
+                    <p className="mt-1 break-all font-mono text-sm text-white">{pendingSendReview.broadcastTarget}</p>
+                    <p className="mt-1 text-xs text-slate-300">
+                      {pendingSendReview.sendKind === 'native'
+                        ? 'Native transfer broadcasts directly to the recipient address.'
+                        : 'ERC20 send broadcasts to the token contract and passes the recipient as a call argument.'}
+                    </p>
+                  </div>
+                  {pendingSendReview.request.contract_address && (
+                    <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 p-3 sm:col-span-2">
+                      <p className="text-[11px] uppercase tracking-[0.18em] text-amber-200/80">Token Contract Target</p>
+                      <p className="mt-1 break-all font-mono text-sm text-amber-50">{pendingSendReview.request.contract_address}</p>
+                    </div>
+                  )}
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Gas Limit</p>
+                    <p className="mt-1 font-mono text-sm text-white">{pendingSendReview.gasLimitDisplay}</p>
+                  </div>
+                  <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <p className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Gas Price</p>
+                    <p className="mt-1 font-mono text-sm text-white">{pendingSendReview.gasPriceDisplay}</p>
+                    <p className="mt-1 font-mono text-xs text-slate-300">{pendingSendReview.request.gas_price ?? 'auto'}</p>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 pt-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1 border-slate-600 text-slate-200 hover:bg-slate-800"
+                    onClick={handleReturnToSendEdit}
+                    disabled={isSending}
+                  >
+                    Back
+                  </Button>
+                  <Button
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white"
+                    onClick={handleConfirmReviewedSend}
+                    disabled={isSending}
+                  >
+                    {isSending ? 'Sending...' : 'Confirm Send'}
+                  </Button>
+                </div>
+              </div>
+            )}
           </DialogContent>
         </Dialog>
 
@@ -1024,8 +1500,9 @@ const EvmAssets: React.FC = () => {
             </div>
           ) : (
             wallets.map((wallet) => {
-              const walletWithBalances = walletsWithBalances.get(wallet.id);
-              const lastRefresh = lastRefreshTime.get(wallet.id);
+              const walletResponse = walletsWithBalances.get(wallet.id);
+              const walletWithBalances = walletResponse?.wallet;
+              const walletSyncBanner = walletResponse ? getWalletSyncBanner(walletResponse) : null;
               return (
                 <div
                   key={wallet.id}
@@ -1062,11 +1539,16 @@ const EvmAssets: React.FC = () => {
                     <div className="text-right ml-4 flex flex-col items-end gap-2">
                       <div>
                         <p className="font-semibold text-base text-foreground font-mono">
-                          ${(walletWithBalances ? getWalletMainnetBalance(walletWithBalances) : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          ${(walletResponse ? getWalletMainnetBalance(walletResponse) : 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </p>
                         <p className="text-xs text-muted-foreground mt-1">
-                          {lastRefresh ? `Updated: ${lastRefresh.toLocaleTimeString()}` : 'Loading...'}
+                          {getWalletUpdatedLabel(walletResponse)}
                         </p>
+                        {walletResponse && getValuationStatusDescription(walletResponse.wallet.valuation_status, walletResponse.wallet.unpriced_asset_count) && (
+                          <p className="text-xs text-sky-600 mt-1">
+                            {getValuationStatusDescription(walletResponse.wallet.valuation_status, walletResponse.wallet.unpriced_asset_count)}
+                          </p>
+                        )}
                       </div>
                       {/* Action Buttons */}
                       <div className="flex gap-1 flex-wrap justify-end">
@@ -1086,27 +1568,41 @@ const EvmAssets: React.FC = () => {
                         </button>
 
                         {/* Export Private Key Button */}
-                        <button
-                          onClick={() => handleExportPrivateKey(wallet.id)}
-                          className="px-2 py-1 text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 rounded transition-colors flex items-center gap-1"
-                          title="Export private key"
-                          disabled={isLoading}
+                        <UnlockGate
+                          mode="reauth"
+                          operation="export_private_key"
+                          prompt="Re-enter your local password to reveal the EVM private key."
+                          onUnlockSuccess={() => handleExportPrivateKey(wallet.id)}
                         >
-                          <Download className="w-3 h-3" />
-                          <span>Private Key</span>
-                        </button>
-
-                        {/* Export Mnemonic Button (only for mnemonic wallets) */}
-                        {wallet.wallet_type === 'mnemonic' && (
                           <button
-                            onClick={() => handleExportMnemonic(wallet.id)}
-                            className="px-2 py-1 text-xs bg-green-50 text-green-700 hover:bg-green-100 rounded transition-colors flex items-center gap-1"
-                            title="Export mnemonic phrase"
+                            onClick={() => handleExportPrivateKey(wallet.id)}
+                            className="px-2 py-1 text-xs bg-slate-100 text-slate-700 hover:bg-slate-200 rounded transition-colors flex items-center gap-1"
+                            title="Export private key"
                             disabled={isLoading}
                           >
                             <Download className="w-3 h-3" />
-                            <span>Mnemonic</span>
+                            <span>Export Private Key</span>
                           </button>
+                        </UnlockGate>
+
+                        {/* Export Mnemonic Button (only for mnemonic wallets) */}
+                        {wallet.wallet_type === 'mnemonic' && (
+                          <UnlockGate
+                            mode="reauth"
+                            operation="export_mnemonic"
+                            prompt="Re-enter your local password to reveal the EVM recovery phrase."
+                            onUnlockSuccess={() => handleExportMnemonic(wallet.id)}
+                          >
+                            <button
+                              onClick={() => handleExportMnemonic(wallet.id)}
+                              className="px-2 py-1 text-xs bg-slate-100 text-slate-700 hover:bg-slate-200 rounded transition-colors flex items-center gap-1"
+                              title="Export mnemonic"
+                              disabled={isLoading}
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Export Mnemonic</span>
+                            </button>
+                          </UnlockGate>
                         )}
 
                         {/* Delete Button */}
@@ -1141,6 +1637,13 @@ const EvmAssets: React.FC = () => {
                     </div>
                   </div>
 
+                  {walletSyncBanner && (
+                    <div className={`rounded-lg border px-3 py-2 text-xs ${walletSyncBanner.className}`}>
+                      <p className="font-semibold uppercase tracking-wide">{walletSyncBanner.label}</p>
+                      <p className="mt-1 leading-relaxed">{walletSyncBanner.description}</p>
+                    </div>
+                  )}
+
                   {/* Chain Assets */}
                   {walletWithBalances && walletWithBalances.chains.length > 0 && (
                     <div className="border-t border-border pt-4 space-y-2">
@@ -1156,11 +1659,33 @@ const EvmAssets: React.FC = () => {
                                 </div>
                                 <div className="text-right">
                                   <p className="font-semibold text-foreground text-sm font-mono">${chainAssets.total_balance_usd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                                  <Badge variant="outline" className={`mt-1 text-[10px] uppercase ${getFreshnessBadgeClass(chainAssets.freshness.status)}`}>
+                                    {formatFreshnessLabel(chainAssets.freshness.status)}
+                                  </Badge>
+                                  {getValuationStatusDescription(chainAssets.valuation_status, chainAssets.unpriced_asset_count) && (
+                                    <p className="mt-1 text-[10px] text-sky-600">
+                                      {getValuationStatusDescription(chainAssets.valuation_status, chainAssets.unpriced_asset_count)}
+                                    </p>
+                                  )}
                                 </div>
                               </div>
                             </AccordionTrigger>
                             <AccordionContent>
                               <div className="space-y-2 pt-2">
+                                {chainAssets.freshness.status !== 'fresh' && (
+                                  <div className={`rounded-lg border px-3 py-2 text-xs ${getFreshnessBadgeClass(chainAssets.freshness.status)}`}>
+                                    {getChainFreshnessDescription(chainAssets.freshness)}
+                                  </div>
+                                )}
+
+                                {chainAssets.assets.length === 0 && (
+                                  <div className="rounded-lg border border-dashed border-border px-3 py-4 text-xs text-muted-foreground">
+                                    {chainAssets.freshness.status === 'unavailable'
+                                      ? 'No cached assets are available for this chain right now.'
+                                      : 'No assets were found on this chain.'}
+                                  </div>
+                                )}
+
                                 {chainAssets.assets.map((assetBalance, assetIndex) => (
                                   <div key={assetIndex} className="flex items-center justify-between px-2 py-2 bg-muted/30 rounded group">
                                     <div className="flex items-center gap-3">
@@ -1175,23 +1700,26 @@ const EvmAssets: React.FC = () => {
                                     <div className="flex items-center gap-4">
                                       <div className="text-right">
                                         <p className="font-mono text-xs text-foreground">{assetBalance.balance_float.toFixed(6)} {assetBalance.asset.symbol}</p>
-                                        {assetBalance.usd_value > 0 && (
+                                        {assetBalance.valuation_status === 'unpriced' ? (
+                                          <p className="text-xs text-amber-600 mt-1 font-mono">
+                                            Unpriced
+                                          </p>
+                                        ) : assetBalance.usd_value !== null && assetBalance.usd_value > 0 ? (
                                           <p className="text-xs text-muted-foreground mt-1 font-mono">
                                             ${assetBalance.usd_value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                           </p>
-                                        )}
+                                        ) : null}
                                       </div>
                                       <button
-                                        onClick={() => {
-                                          setSelectedWalletForSend(wallet);
-                                          setSelectedAssetForSend({
-                                            chain: chainAssets.chain,
-                                            chainId: chainAssets.chain_id,
-                                            asset: assetBalance
-                                          });
-                                          setIsSendDialogOpen(true);
-                                        }}
-                                        className="p-2 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-full transition-all opacity-0 group-hover:opacity-100 shadow-sm"
+                                        onClick={() =>
+                                          openSendDialog(
+                                            wallet,
+                                            chainAssets.chain,
+                                            chainAssets.chain_id,
+                                            assetBalance
+                                          )
+                                        }
+                                        className="ml-auto p-2 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-full transition-all opacity-0 group-hover:opacity-100 shadow-sm"
                                         title="Send"
                                       >
                                         <Send className="w-4 h-4" />

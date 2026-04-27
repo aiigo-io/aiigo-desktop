@@ -1,12 +1,91 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { Chain, Token, SUPPORTED_CHAINS, SUPPORTED_TOKENS, DEFAULT_SLIPPAGE, CHAIN_ID_TO_NAME } from '../constants';
 import { openOceanService } from '../services/openocean.service';
-import { QuoteResponse, TransactionStatus } from '../types';
-import { invoke } from '@tauri-apps/api/core';
+import {
+    QuoteResponse,
+    RawEvmTransactionPayload,
+    SwapApproveActionIntent,
+    SwapExecuteActionIntent,
+    SwapExecutionPayloadSnapshot,
+    TransactionStatus,
+} from '../types';
+import { invoke, isTauriRuntimeAvailable, TAURI_UNAVAILABLE_MESSAGE } from '@/lib/tauri';
 
 interface WalletInfo {
     id: string;
     address: string;
+}
+
+const NATIVE_TOKEN_ADDRESS = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+const UNLIMITED_APPROVAL_AMOUNT = '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+
+const buildFingerprint = (parts: Array<string | number | undefined | null>): string => (
+    parts.map((part) => String(part ?? '')).join('|')
+);
+
+const buildPayloadFingerprint = (payload: RawEvmTransactionPayload): string => (
+    buildFingerprint([
+        payload.to,
+        payload.data,
+        payload.value,
+        payload.gasLimit,
+        payload.gasPrice,
+    ])
+);
+
+const buildCalldataPreview = (data: string): string => {
+    if (data.length <= 18) {
+        return data;
+    }
+
+    return `${data.slice(0, 10)}...${data.slice(-8)}`;
+};
+
+const buildPayloadSnapshot = (payload: RawEvmTransactionPayload): SwapExecutionPayloadSnapshot => ({
+    to: payload.to,
+    data: payload.data,
+    value: payload.value,
+    gasLimit: payload.gasLimit,
+    gasPrice: payload.gasPrice,
+    payloadFingerprint: buildPayloadFingerprint(payload),
+    calldataPreview: buildCalldataPreview(payload.data),
+    calldataLength: payload.data.length,
+});
+
+const payloadSnapshotMatches = (
+    left: SwapExecutionPayloadSnapshot,
+    right: SwapExecutionPayloadSnapshot,
+): boolean => (
+    left.to === right.to
+    && left.data === right.data
+    && left.value === right.value
+    && left.gasLimit === right.gasLimit
+    && left.gasPrice === right.gasPrice
+    && left.payloadFingerprint === right.payloadFingerprint
+);
+
+const isUnlimitedApproval = (amount: string): boolean => (
+    amount.trim().toLowerCase() === UNLIMITED_APPROVAL_AMOUNT
+);
+
+const formatTokenUnits = (rawAmount: string, decimals: number): string => {
+    const numericAmount = Number(rawAmount);
+    if (!Number.isFinite(numericAmount)) {
+        return rawAmount;
+    }
+
+    return (numericAmount / Math.pow(10, decimals)).toFixed(6);
+};
+
+interface PreparedSwapExecution {
+    rawTransaction: RawEvmTransactionPayload;
+    payloadSnapshot: SwapExecutionPayloadSnapshot;
+    swapData: {
+        to: string;
+        value: string;
+        outAmount: string;
+        outDecimals: number;
+    };
 }
 
 export const useSwap = (wallet?: WalletInfo | null) => {
@@ -130,7 +209,7 @@ export const useSwap = (wallet?: WalletInfo | null) => {
         }
 
         // Native tokens don't need approval
-        if (fromToken.address.toLowerCase() === '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') {
+        if (fromToken.address.toLowerCase() === NATIVE_TOKEN_ADDRESS) {
             setNeedsApproval(false);
             setSpenderAddress(null);
             return;
@@ -176,8 +255,30 @@ export const useSwap = (wallet?: WalletInfo | null) => {
         }
     }, [wallet, isValid, amount, gasPrice, fromChain.id, fromToken.address, fromToken.decimals, toToken.address, slippage]);
 
-    // Approve token
-    const approveToken = useCallback(async () => {
+    const currentApprovalFingerprint = useCallback(() => buildFingerprint([
+        'swap-approve',
+        wallet?.id,
+        fromChain.id,
+        fromToken.address.toLowerCase(),
+        spenderAddress?.toLowerCase(),
+        UNLIMITED_APPROVAL_AMOUNT,
+    ]), [wallet?.id, fromChain.id, fromToken.address, spenderAddress]);
+
+    const currentSwapExecutionFingerprint = useCallback(() => buildFingerprint([
+        'swap-execute',
+        wallet?.id,
+        fromChain.id,
+        fromToken.address.toLowerCase(),
+        toToken.address.toLowerCase(),
+        amount,
+        slippage,
+    ]), [wallet?.id, fromChain.id, fromToken.address, toToken.address, amount, slippage]);
+
+    const prepareApproveAction = useCallback(async (): Promise<SwapApproveActionIntent> => {
+        if (!isTauriRuntimeAvailable()) {
+            throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+        }
+
         if (!wallet) {
             throw new Error('No wallet connected');
         }
@@ -186,38 +287,56 @@ export const useSwap = (wallet?: WalletInfo | null) => {
             throw new Error('Spender address not found. Please wait for approval check to complete.');
         }
 
+        const approvalMode = isUnlimitedApproval(UNLIMITED_APPROVAL_AMOUNT) ? 'unlimited' : 'bounded';
+
+        return {
+            kind: 'swap-approve',
+            uiActionLabel: 'Approve For Swap',
+            chainActionType: 'ERC20 approve(spender, amount)',
+            highestRiskPoint: approvalMode === 'unlimited'
+                ? 'Unlimited approval lets the spender move this token until you revoke the allowance.'
+                : 'Approval grants the spender limited token access for the requested swap path.',
+            chainId: fromChain.id,
+            chainName: fromChain.name,
+            confirmationFields: [
+                { label: 'From', value: wallet.address, payloadField: 'walletId' },
+                { label: 'Chain', value: fromChain.name, payloadField: 'chainId' },
+                { label: 'Token', value: `${fromToken.symbol} (${fromToken.address})`, payloadField: 'tokenAddress' },
+                { label: 'Spender', value: spenderAddress, payloadField: 'spenderAddress' },
+                { label: 'Approval Amount', value: approvalMode === 'unlimited' ? 'Unlimited' : amount, payloadField: 'amount' },
+                { label: 'Approval Scope', value: approvalMode, payloadField: 'amount' },
+            ],
+            approvalMode,
+            fingerprint: currentApprovalFingerprint(),
+            execution: {
+                command: 'evm_approve_token',
+                args: {
+                    walletId: wallet.id,
+                    chainId: fromChain.id,
+                    tokenAddress: fromToken.address,
+                    spenderAddress,
+                    amount: UNLIMITED_APPROVAL_AMOUNT,
+                },
+            },
+        };
+    }, [wallet, spenderAddress, fromChain.id, fromChain.name, fromToken.address, fromToken.symbol, amount, currentApprovalFingerprint]);
+
+    const submitApproveAction = useCallback(async (intent: SwapApproveActionIntent) => {
+        if (intent.fingerprint !== currentApprovalFingerprint()) {
+            const error = new Error('Approval parameters changed. Review the approval again.');
+            setTxStatus({ status: 'error', error: error.message });
+            throw error;
+        }
+
         setTxStatus({ status: 'approving' });
 
         try {
-            console.log('Approving token:', {
-                token: fromToken.symbol,
-                tokenAddress: fromToken.address,
-                spender: spenderAddress,
-                chain: fromChain.name,
-            });
-
-            // Call Tauri backend to approve token with the correct spender
-            const txHash = await invoke<string>('evm_approve_token', {
-                walletId: wallet.id,
-                chainId: fromChain.id,
-                tokenAddress: fromToken.address,
-                spenderAddress: spenderAddress,
-                // Approve max amount (2^256 - 1)
-                amount: '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
-            });
-
-            console.log('Approval transaction sent:', txHash);
+            const txHash = await invoke<string>(intent.execution.command, intent.execution.args);
             setTxStatus({ status: 'success', hash: txHash });
 
-            // Wait for the approval transaction to be mined
-            // On Layer 2s like Arbitrum, this is usually very fast (1-2 seconds)
-            // On mainnet, it might take longer
-            const waitTime = [42161, 10].includes(fromChain.id) ? 3000 : 10000;
+            const waitTime = [42161, 10].includes(intent.chainId) ? 3000 : 10000;
             
             await new Promise(resolve => setTimeout(resolve, waitTime));
-
-            // Re-check approval status
-            console.log('Re-checking approval status after transaction...');
             await checkApproval();
             
             setTxStatus({ status: 'idle' });
@@ -229,17 +348,18 @@ export const useSwap = (wallet?: WalletInfo | null) => {
             setTxStatus({ status: 'error', error: errorMessage });
             throw error;
         }
-    }, [wallet, fromChain.id, fromChain.name, fromToken.address, fromToken.symbol, spenderAddress, checkApproval]);
+    }, [checkApproval, currentApprovalFingerprint]);
 
-    // Execute swap
-    const executeSwap = useCallback(async () => {
+    const prepareCurrentSwapExecution = useCallback(async (): Promise<PreparedSwapExecution> => {
+        if (!isTauriRuntimeAvailable()) {
+            throw new Error(TAURI_UNAVAILABLE_MESSAGE);
+        }
+
         if (!wallet || !isValid) {
             throw new Error('Invalid swap parameters');
         }
 
-        // Re-check approval status before executing swap (for non-native tokens)
-        if (fromToken.address.toLowerCase() !== '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee') {
-            console.log('Verifying approval before swap...');
+        if (fromToken.address.toLowerCase() !== NATIVE_TOKEN_ADDRESS) {
             const approvalStatus = await openOceanService.needsApproval(
                 fromChain.id,
                 wallet.address,
@@ -254,80 +374,104 @@ export const useSwap = (wallet?: WalletInfo | null) => {
                     `Required: ${amount}. Please approve the token first.`
                 );
             }
-            console.log('Approval verified, proceeding with swap...');
+        }
+
+        const currentGasPrice = await fetchGasPrice();
+        const chainName = CHAIN_ID_TO_NAME[fromChain.id];
+        const swapQuoteResponse = await openOceanService.getSwapQuote({
+            chain: chainName,
+            inTokenAddress: fromToken.address,
+            outTokenAddress: toToken.address,
+            amount,
+            gasPrice: currentGasPrice,
+            slippage,
+            account: wallet.address,
+        });
+
+        const swapData = swapQuoteResponse.data;
+        if (swapData.chainId !== fromChain.id) {
+            throw new Error(
+                `Chain mismatch: wallet is on chain ${fromChain.id} but transaction is for chain ${swapData.chainId}`
+            );
+        }
+
+        const estimatedGas = Math.floor(swapData.estimatedGas * 1.25);
+        const gasPriceInWei = openOceanService.convertGweiToWei(currentGasPrice);
+        const rawTransaction = {
+            to: swapData.to,
+            data: swapData.data,
+            value: swapData.value,
+            gasLimit: estimatedGas.toString(),
+            gasPrice: gasPriceInWei,
+        };
+
+        return {
+            rawTransaction,
+            payloadSnapshot: buildPayloadSnapshot(rawTransaction),
+            swapData: {
+                to: swapData.to,
+                value: swapData.value,
+                outAmount: swapData.outAmount,
+                outDecimals: swapData.outToken.decimals,
+            },
+        };
+    }, [wallet, isValid, fromToken.address, fromToken.decimals, amount, slippage, fetchGasPrice, fromChain.id, toToken.address]);
+
+    const prepareSwapExecutionAction = useCallback(async (): Promise<SwapExecuteActionIntent> => {
+        if (!wallet) {
+            throw new Error('No wallet connected');
+        }
+
+        const preparedExecution = await prepareCurrentSwapExecution();
+
+        return {
+            kind: 'swap-execute',
+            uiActionLabel: 'Execute Swap',
+            chainActionType: 'Routed EVM contract call',
+            highestRiskPoint: 'This is a contract call to the router target, not a normal send.',
+            chainId: fromChain.id,
+            chainName: fromChain.name,
+            confirmationFields: [
+                { label: 'From', value: wallet.address, payloadField: 'walletId' },
+                { label: 'Chain', value: fromChain.name, payloadField: 'chainId' },
+                { label: 'Router Target', value: preparedExecution.swapData.to, payloadField: 'transaction.to' },
+                { label: 'Input Token', value: `${fromToken.symbol} (${fromToken.address})`, payloadField: 'transaction.data' },
+                { label: 'Input Amount', value: amount, payloadField: 'transaction.data' },
+                { label: 'Output Token', value: `${toToken.symbol} (${toToken.address})`, payloadField: 'transaction.data' },
+                { label: 'Quoted Output', value: formatTokenUnits(preparedExecution.swapData.outAmount, preparedExecution.swapData.outDecimals), payloadField: 'transaction.data' },
+                { label: 'Slippage', value: `${slippage}%`, payloadField: 'transaction.data' },
+                { label: 'Value', value: preparedExecution.swapData.value, payloadField: 'transaction.value' },
+                { label: 'Gas Limit', value: preparedExecution.rawTransaction.gasLimit, payloadField: 'transaction.gasLimit' },
+                { label: 'Gas Price (wei)', value: preparedExecution.rawTransaction.gasPrice, payloadField: 'transaction.gasPrice' },
+                { label: 'Calldata Preview', value: preparedExecution.payloadSnapshot.calldataPreview, payloadField: 'transaction.data' },
+            ],
+            fingerprint: currentSwapExecutionFingerprint(),
+            preparedTransactionSnapshot: preparedExecution.payloadSnapshot,
+            execution: {
+                command: 'evm_send_transaction',
+                args: {
+                    walletId: wallet.id,
+                    chainId: fromChain.id,
+                    transaction: preparedExecution.rawTransaction,
+                },
+            },
+        };
+    }, [wallet, fromChain.id, fromChain.name, fromToken.address, fromToken.symbol, toToken.address, toToken.symbol, amount, slippage, currentSwapExecutionFingerprint, prepareCurrentSwapExecution]);
+
+    const submitSwapExecutionAction = useCallback(async (intent: SwapExecuteActionIntent) => {
+        const currentExecution = await prepareCurrentSwapExecution();
+        if (!payloadSnapshotMatches(intent.preparedTransactionSnapshot, currentExecution.payloadSnapshot)) {
+            const error = new Error('Swap execution payload changed. Review the swap again.');
+            setTxStatus({ status: 'error', error: error.message });
+            throw error;
         }
 
         setTxStatus({ status: 'swapping' });
 
         try {
-            // Fetch fresh gas price
-            const currentGasPrice = await fetchGasPrice();
-
-            // Get swap quote with transaction data
-            const chainName = CHAIN_ID_TO_NAME[fromChain.id];
-            const swapQuoteResponse = await openOceanService.getSwapQuote({
-                chain: chainName,
-                inTokenAddress: fromToken.address,
-                outTokenAddress: toToken.address,
-                amount: amount,
-                gasPrice: currentGasPrice,
-                slippage: slippage,
-                account: wallet.address,
-            });
-
-            const swapData = swapQuoteResponse.data;
-
-            // Validate chainId matches
-            if (swapData.chainId !== fromChain.id) {
-                throw new Error(
-                    `Chain mismatch: wallet is on chain ${fromChain.id} but transaction is for chain ${swapData.chainId}`
-                );
-            }
-
-            // Estimate gas with 1.25x multiplier as recommended
-            const estimatedGas = Math.floor(swapData.estimatedGas * 1.25);
-
-            // Convert gas price from GWEI to wei
-            // OpenOcean returns gasPrice in the response, but we need to ensure it's in wei
-            // The gasPrice from swap_quote API is already in wei format as a string
-            // However, we should use the current gas price we fetched earlier
-            const gasPriceInWei = openOceanService.convertGweiToWei(currentGasPrice);
-
-            console.log('=== Gas Price Conversion ===');
-            console.log('Current gas price (GWEI):', currentGasPrice);
-            console.log('Converted to wei:', gasPriceInWei);
-            console.log('Gas limit:', estimatedGas);
-            console.log('Estimated gas cost (wei):', BigInt(gasPriceInWei) * BigInt(estimatedGas));
-            console.log('Estimated gas cost (ETH):', Number(BigInt(gasPriceInWei) * BigInt(estimatedGas)) / 1e18);
-
-            console.log({
-                walletId: wallet.id,
-                chainId: fromChain.id,
-                transaction: {
-                    to: swapData.to,
-                    data: swapData.data,
-                    value: swapData.value,
-                    gasLimit: estimatedGas.toString(),
-                    gasPrice: gasPriceInWei, // Use converted gas price in wei
-                },
-            })
-
-            // Send transaction via Tauri backend
-            const txHash = await invoke<string>('evm_send_transaction', {
-                walletId: wallet.id,
-                chainId: fromChain.id,
-                transaction: {
-                    to: swapData.to,
-                    data: swapData.data,
-                    value: swapData.value,
-                    gasLimit: estimatedGas.toString(),
-                    gasPrice: gasPriceInWei, // Use converted gas price in wei
-                },
-            });
-
+            const txHash = await invoke<string>(intent.execution.command, intent.execution.args);
             setTxStatus({ status: 'success', hash: txHash });
 
-            // Reset form after successful swap
             setTimeout(() => {
                 setAmount('');
                 setQuote(null);
@@ -340,7 +484,7 @@ export const useSwap = (wallet?: WalletInfo | null) => {
             setTxStatus({ status: 'error', error: errorMessage });
             throw error;
         }
-    }, [wallet, isValid, fetchGasPrice, fromChain.id, fromToken.address, toToken.address, amount, slippage]);
+    }, [prepareCurrentSwapExecution]);
 
     // Debounced quote fetching
     useEffect(() => {
@@ -404,11 +548,13 @@ export const useSwap = (wallet?: WalletInfo | null) => {
         // Approval state
         needsApproval,
         isCheckingApproval,
-        approveToken,
+        prepareApproveAction,
+        submitApproveAction,
 
         // Transaction state
         txStatus,
-        executeSwap,
+        prepareSwapExecutionAction,
+        submitSwapExecutionAction,
 
         // Validation
         isValid,

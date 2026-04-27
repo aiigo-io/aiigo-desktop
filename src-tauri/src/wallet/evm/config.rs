@@ -93,6 +93,10 @@ impl EvmChainConfig {
         }
     }
 
+    pub fn supports_history_sync(&self) -> bool {
+        !matches!(self, Self::EthereumSepolia)
+    }
+
     #[allow(dead_code)]
     pub fn rpc_url(&self) -> String {
         match self {
@@ -255,6 +259,13 @@ pub fn get_all_chains() -> Vec<EvmChainConfig> {
     ]
 }
 
+pub fn get_history_sync_supported_chains() -> Vec<EvmChainConfig> {
+    get_all_chains()
+        .into_iter()
+        .filter(|chain| chain.supports_history_sync())
+        .collect()
+}
+
 /// Max number of chains queried concurrently. Defaults to 3.
 pub fn chain_concurrency_limit() -> usize {
     env_usize("EVM_CHAIN_CONCURRENCY", 3)
@@ -388,7 +399,10 @@ mod tests {
         assert_eq!(get_chain_by_id(10), Some(EvmChainConfig::Optimism));
         assert_eq!(get_chain_by_id(137), Some(EvmChainConfig::Polygon));
         assert_eq!(get_chain_by_id(56), Some(EvmChainConfig::BinanceSmartChain));
-        assert_eq!(get_chain_by_id(11155111), Some(EvmChainConfig::EthereumSepolia));
+        assert_eq!(
+            get_chain_by_id(11155111),
+            Some(EvmChainConfig::EthereumSepolia)
+        );
         assert_eq!(get_chain_by_id(999999), None);
     }
 }

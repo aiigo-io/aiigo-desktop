@@ -1,5 +1,15 @@
+use crate::dashboard::valuation::build_portfolio_valuation_snapshot;
+use crate::wallet::state::freshness::classify_age;
+use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
+use crate::wallet::sync::engine;
+use crate::wallet::sync::types::SyncOutcome;
+use crate::wallet::sync::types::SyncReason;
+use crate::wallet::types::ValuationStatus;
 use crate::DB;
 use serde::{Deserialize, Serialize};
+
+const DASHBOARD_FRESH_WITHIN_SECS: i64 = 60;
+const DASHBOARD_STALE_AFTER_SECS: i64 = 300;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DashboardStats {
@@ -7,6 +17,9 @@ pub struct DashboardStats {
     pub total_balance_btc: String,
     pub change_24h_amount: String,
     pub change_24h_percentage: String,
+    pub freshness: FreshnessMetadata,
+    pub valuation_status: ValuationStatus,
+    pub unpriced_asset_count: usize,
 }
 
 // Helper function to format numbers with thousand separators
@@ -16,7 +29,7 @@ fn format_currency(value: f64) -> String {
     let parts: Vec<&str> = formatted.split('.').collect();
     let integer_part = parts[0];
     let decimal_part = if parts.len() > 1 { parts[1] } else { "00" };
-    
+
     // Add thousand separators
     let mut result = String::new();
     for (i, c) in integer_part.chars().rev().enumerate() {
@@ -25,164 +38,213 @@ fn format_currency(value: f64) -> String {
         }
         result.push(c);
     }
-    
+
     let formatted_integer: String = result.chars().rev().collect();
     format!("{}.{}", formatted_integer, decimal_part)
+}
+
+fn dashboard_freshness_from_row_with_failures(
+    updated_at: &str,
+    failed_sources_json: &str,
+) -> FreshnessMetadata {
+    let updated_at_unix = chrono::DateTime::parse_from_rfc3339(updated_at)
+        .map(|dt| dt.timestamp())
+        .ok();
+    let failed_sources =
+        serde_json::from_str::<Vec<String>>(failed_sources_json).unwrap_or_default();
+
+    let now = chrono::Utc::now().timestamp();
+    let age_status = match updated_at_unix {
+        Some(updated_at) => classify_age(
+            Some(updated_at),
+            now,
+            DASHBOARD_FRESH_WITHIN_SECS,
+            DASHBOARD_STALE_AFTER_SECS,
+        ),
+        None => FreshnessStatus::Cached,
+    };
+
+    let status = if !failed_sources.is_empty()
+        && matches!(age_status, FreshnessStatus::Fresh | FreshnessStatus::Cached)
+    {
+        FreshnessStatus::Partial
+    } else {
+        age_status
+    };
+
+    FreshnessMetadata {
+        status,
+        updated_at: updated_at_unix,
+        failed_sources,
+    }
+}
+
+fn format_dashboard_stats(
+    total_balance_usd: f64,
+    total_balance_btc: f64,
+    change_24h_amount: f64,
+    change_24h_percentage: f64,
+    freshness: FreshnessMetadata,
+    valuation_status: ValuationStatus,
+    unpriced_asset_count: usize,
+) -> DashboardStats {
+    let price_unavailable = freshness
+        .failed_sources
+        .iter()
+        .any(|source| source == "price:btc_unavailable");
+    let has_priced_subtotal = total_balance_usd > 0.0;
+    let hide_totals_for_unpriced =
+        matches!(valuation_status, ValuationStatus::Unpriced) && !has_priced_subtotal;
+
+    DashboardStats {
+        total_balance_usd: if price_unavailable || hide_totals_for_unpriced {
+            "$--".to_string()
+        } else {
+            format!("${}", format_currency(total_balance_usd))
+        },
+        total_balance_btc: if price_unavailable || hide_totals_for_unpriced {
+            "≈ -- BTC".to_string()
+        } else {
+            format!("≈ {:.4} BTC", total_balance_btc)
+        },
+        change_24h_amount: if price_unavailable || hide_totals_for_unpriced {
+            "--".to_string()
+        } else {
+            format!(
+                "{}${}",
+                if change_24h_amount >= 0.0 { "+" } else { "" },
+                format_currency(change_24h_amount)
+            )
+        },
+        change_24h_percentage: if price_unavailable || hide_totals_for_unpriced {
+            "--".to_string()
+        } else {
+            format!(
+                "{}{:.2}%",
+                if change_24h_percentage >= 0.0 {
+                    "+"
+                } else {
+                    ""
+                },
+                change_24h_percentage
+            )
+        },
+        freshness,
+        valuation_status,
+        unpriced_asset_count,
+    }
+}
+
+fn dashboard_freshness_from_sync(sync: &SyncOutcome) -> FreshnessMetadata {
+    FreshnessMetadata {
+        status: if sync.failed_sources.is_empty() {
+            classify_age(
+                sync.updated_at,
+                chrono::Utc::now().timestamp(),
+                DASHBOARD_FRESH_WITHIN_SECS,
+                DASHBOARD_STALE_AFTER_SECS,
+            )
+        } else {
+            FreshnessStatus::Partial
+        },
+        updated_at: sync.updated_at,
+        failed_sources: sync.failed_sources.clone(),
+    }
+}
+
+fn format_dashboard_stats_without_snapshot(
+    db: &crate::db::Database,
+    valuation_snapshot: &crate::dashboard::valuation::PortfolioValuationSnapshot,
+) -> Result<DashboardStats, String> {
+    let valuation_status = valuation_snapshot.valuation_status();
+    let total_balance_usd = valuation_snapshot.priced_total_usd;
+    let total_btc_balance: f64 = db
+        .get_bitcoin_wallets()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|wallet| wallet.balance)
+        .sum();
+    let btc_price_state = crate::wallet::evm::price_manager::get_cached_price_state("BTC");
+    let btc_price_unavailable = total_btc_balance > 0.0 && btc_price_state.price_usd.is_none();
+    let has_priced_subtotal = total_balance_usd > 0.0;
+    let hide_totals_for_unpriced =
+        matches!(valuation_status, ValuationStatus::Unpriced) && !has_priced_subtotal;
+    let hide_totals = btc_price_unavailable || hide_totals_for_unpriced;
+
+    Ok(DashboardStats {
+        total_balance_usd: if hide_totals {
+            "$--".to_string()
+        } else {
+            format!("${}", format_currency(total_balance_usd))
+        },
+        total_balance_btc: if hide_totals {
+            "≈ -- BTC".to_string()
+        } else if let Some(btc_price) = btc_price_state.price_usd {
+            if btc_price > 0.0 {
+                format!("≈ {:.4} BTC", total_balance_usd / btc_price)
+            } else {
+                "≈ 0.0000 BTC".to_string()
+            }
+        } else {
+            "≈ -- BTC".to_string()
+        },
+        change_24h_amount: "--".to_string(),
+        change_24h_percentage: "--".to_string(),
+        freshness: FreshnessMetadata {
+            status: FreshnessStatus::Unavailable,
+            updated_at: None,
+            failed_sources: if btc_price_unavailable {
+                vec!["price:btc_unavailable".to_string()]
+            } else {
+                Vec::new()
+            },
+        },
+        valuation_status,
+        unpriced_asset_count: valuation_snapshot.unpriced_asset_count,
+    })
 }
 
 #[tauri::command]
 pub fn get_dashboard_stats() -> Result<DashboardStats, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
     let stats = db.get_dashboard_stats().map_err(|e| e.to_string())?;
+    let valuation_snapshot = build_portfolio_valuation_snapshot(&db)?;
 
-    if let Some((usd, btc, change_amt, change_pct, _)) = stats {
-        Ok(DashboardStats {
-            total_balance_usd: format!("${}", format_currency(usd)),
-            total_balance_btc: format!("≈ {:.4} BTC", btc),
-            change_24h_amount: format!("{}${}", if change_amt >= 0.0 { "+" } else { "" }, format_currency(change_amt)),
-            change_24h_percentage: format!("{}{:.2}%", if change_pct >= 0.0 { "+" } else { "" }, change_pct),
-        })
+    if let Some((usd, btc, change_amt, change_pct, updated_at, failed_sources_json)) = stats {
+        let freshness =
+            dashboard_freshness_from_row_with_failures(&updated_at, &failed_sources_json);
+        Ok(format_dashboard_stats(
+            usd,
+            btc,
+            change_amt,
+            change_pct,
+            freshness,
+            valuation_snapshot.valuation_status(),
+            valuation_snapshot.unpriced_asset_count,
+        ))
     } else {
-        Ok(DashboardStats {
-            total_balance_usd: "$0.00".to_string(),
-            total_balance_btc: "≈ 0.0000 BTC".to_string(),
-            change_24h_amount: "+$0.00".to_string(),
-            change_24h_percentage: "+0.00%".to_string(),
-        })
+        format_dashboard_stats_without_snapshot(&db, &valuation_snapshot)
     }
 }
 
 #[tauri::command]
 pub async fn refresh_dashboard_stats() -> Result<DashboardStats, String> {
-    // 1. Get BTC price from cache (background task keeps it fresh)
-    let btc_price = crate::wallet::evm::price_manager::get_cached_price("BTC")
-        .unwrap_or(95000.0); // Fallback if cache not ready yet
-    
-    // Use a scope to drop the lock before fetching fresh EVM prices
-    let (total_btc_balance, wallet_assets_map, symbols_to_price) = {
-        let db = DB.lock().map_err(|e| e.to_string())?;
-        
-        // 2. Refresh BTC Balance
-        let btc_wallets = db.get_bitcoin_wallets().map_err(|e| e.to_string())?;
-        let total_btc_balance: f64 = btc_wallets.iter().map(|w| w.balance).sum();
-
-        // 3. Prepare EVM Balances and Prices
-        let evm_wallets = db.get_evm_wallets().map_err(|e| e.to_string())?;
-        let mut wallet_assets_map = Vec::new(); // (wallet_id, assets)
-        let mut symbols_to_price = std::collections::HashSet::new();
-
-        for wallet in &evm_wallets {
-            let assets = db.get_evm_asset_balances(&wallet.id).map_err(|e| e.to_string())?;
-            for asset in &assets {
-                symbols_to_price.insert(asset.1.clone()); // symbol
-            }
-            wallet_assets_map.push((wallet.id.clone(), assets));
-        }
-        (total_btc_balance, wallet_assets_map, symbols_to_price)
-    };
-
-    let btc_value_usd = total_btc_balance * btc_price;
-
-    // Fetch fresh prices for all EVM symbols from cache (Lock is dropped here)
-    let mut fresh_prices = std::collections::HashMap::new();
-    for symbol in symbols_to_price {
-        if let Some(price) = crate::wallet::evm::price_manager::get_cached_price(&symbol) {
-            fresh_prices.insert(symbol, price);
-        }
-    }
-
-    let mut total_evm_usd = 0.0;
-    let mut all_assets_to_update = Vec::new();
-    
-    // Update EVM assets with fresh prices and sum them up
-    for (wallet_id, assets) in wallet_assets_map {
-        for asset in assets {
-            let chain_id = asset.2;
-            let symbol = &asset.1;
-            
-            let mut usd_price = asset.8;
-            let mut usd_value = asset.9;
-
-            if let Some(&fresh_price) = fresh_prices.get(symbol) {
-                usd_price = fresh_price;
-                usd_value = asset.7 * fresh_price; // balance_float * fresh_price
-            }
-
-            if chain_id != 11155111 {
-                total_evm_usd += usd_value;
-            }
-
-            // Prepare for DB update
-            all_assets_to_update.push(crate::db::AssetBalanceData {
-                wallet_id: wallet_id.clone(),
-                chain: asset.0,
-                chain_id,
-                symbol: symbol.clone(),
-                name: asset.3,
-                decimals: asset.5,
-                contract_address: asset.4,
-                balance: asset.6,
-                balance_float: asset.7,
-                usd_price,
-                usd_value,
-            });
-        }
-    }
-
-    let total_portfolio_usd = btc_value_usd + total_evm_usd;
-    let total_portfolio_btc = if btc_price > 0.0 { total_portfolio_usd / btc_price } else { 0.0 };
-
-    // 4. Calculate 24h Change (Include both BTC and EVM)
-    // BTC contribution
-    let btc_24h_change = crate::wallet::evm::price_manager::get_cached_24h_change("BTC")
-        .unwrap_or(0.0);
-    let btc_change_amount = btc_value_usd * (btc_24h_change / 100.0);
-    
-    // EVM contribution
-    let mut evm_change_amount = 0.0;
-    for asset in &all_assets_to_update {
-        // Exclude testnet/untracked assets (though price_manager should handle them)
-        if let Some(change) = crate::wallet::evm::price_manager::get_cached_24h_change(&asset.symbol) {
-            evm_change_amount += asset.usd_value * (change / 100.0);
-        }
-    }
-
-    let total_change_amount = btc_change_amount + evm_change_amount; 
-    
-    let total_change_percentage = if total_portfolio_usd > 0.0 {
-        (total_change_amount / total_portfolio_usd) * 100.0
+    let (result, sync) = engine::refresh_dashboard(SyncReason::Manual).await?;
+    if sync.failed_sources.is_empty() {
+        get_dashboard_stats()
     } else {
-        0.0
-    };
-
-    // 5. Update DB (Re-acquire lock)
-    {
         let db = DB.lock().map_err(|e| e.to_string())?;
-        
-        // Update DB with fresh prices
-        if !all_assets_to_update.is_empty() {
-            db.batch_save_evm_asset_balances(&all_assets_to_update)
-                .map_err(|e| format!("Failed to update fresh prices in DB: {}", e))?;
-        }
-
-        db.update_dashboard_stats(
-            total_portfolio_usd,
-            total_portfolio_btc,
-            total_change_amount,
-            total_change_percentage
-        ).map_err(|e| e.to_string())?;
-
-        // 6. Save daily snapshot for historical chart
-        db.save_portfolio_snapshot(total_portfolio_usd).map_err(|e| e.to_string())?;
+        let valuation_snapshot = build_portfolio_valuation_snapshot(&db)?;
+        Ok(format_dashboard_stats(
+            result.total_balance_usd,
+            result.total_balance_btc,
+            result.change_24h_amount,
+            result.change_24h_percentage,
+            dashboard_freshness_from_sync(&sync),
+            valuation_snapshot.valuation_status(),
+            valuation_snapshot.unpriced_asset_count,
+        ))
     }
-
-    // 7. Return Stats
-    Ok(DashboardStats {
-        total_balance_usd: format!("${}", format_currency(total_portfolio_usd)),
-        total_balance_btc: format!("≈ {:.4} BTC", total_portfolio_btc),
-        change_24h_amount: format!("{}${}", if total_change_amount >= 0.0 { "+" } else { "" }, format_currency(total_change_amount)),
-        change_24h_percentage: format!("{}{:.2}%", if total_change_percentage >= 0.0 { "+" } else { "" }, total_change_percentage),
-    })
 }
 
 #[derive(Debug, Serialize)]
@@ -195,11 +257,12 @@ pub struct PortfolioHistoryPoint {
 pub fn get_portfolio_history() -> Result<Vec<PortfolioHistoryPoint>, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
     let history = db.get_portfolio_history(7).map_err(|e| e.to_string())?;
-    
-    let result = history.into_iter().map(|(date, value)| {
-        PortfolioHistoryPoint { date, value }
-    }).collect();
-    
+
+    let result = history
+        .into_iter()
+        .map(|(date, value)| PortfolioHistoryPoint { date, value })
+        .collect();
+
     Ok(result)
 }
 
@@ -210,106 +273,41 @@ pub struct AssetAllocation {
     pub percentage: f64,
     pub value_usd: f64,
     pub color: String,
+    pub valuation_status: ValuationStatus,
 }
 
 #[tauri::command]
 pub async fn get_asset_allocation() -> Result<Vec<AssetAllocation>, String> {
-    // Get BTC price from cache (background task keeps it fresh)
-    let btc_usd_price = crate::wallet::evm::price_manager::get_cached_price("BTC")
-        .unwrap_or(95000.0); // Fallback if cache not ready yet
-
     let db = DB.lock().map_err(|e| e.to_string())?;
-    
-    let mut allocations: Vec<AssetAllocation> = Vec::new();
-    let mut total_value: f64 = 0.0;
-    
-    // Get BTC wallets and their values
-    let btc_wallets = db.get_bitcoin_wallets().map_err(|e| e.to_string())?;
-    let total_btc: f64 = btc_wallets.iter().map(|w| w.balance).sum();
-    
-    let btc_value_usd = total_btc * btc_usd_price;
-    if btc_value_usd > 0.0 {
-        allocations.push(AssetAllocation {
-            name: "Bitcoin".to_string(),
-            symbol: "BTC".to_string(),
-            percentage: 0.0, // Will be calculated after getting total
-            value_usd: btc_value_usd,
-            color: "bg-orange-500".to_string(),
-        });
-        total_value += btc_value_usd;
-    }
-    
-    // Get EVM assets
-    let evm_wallets = db.get_evm_wallets().map_err(|e| e.to_string())?;
-    let mut evm_assets_map: std::collections::HashMap<String, (String, f64)> = std::collections::HashMap::new();
-    
-    for wallet in evm_wallets {
-        let assets = db.get_evm_asset_balances(&wallet.id).map_err(|e| e.to_string())?;
-        // Tuple: (chain, asset_symbol, chain_id, asset_name, contract_address, asset_decimals, balance, balance_float, usd_price, usd_value)
-        for (_chain, symbol, chain_id, name, _contract_address, _decimals, _balance, _balance_float, _usd_price, usd_value) in assets {
-            // Exclude Sepolia
-            if chain_id != 11155111 {
-                let entry = evm_assets_map.entry(symbol.clone()).or_insert((name, 0.0));
-                entry.1 += usd_value;
-                total_value += usd_value;
-            }
-        }
-    }
-    
-    // Add EVM assets to allocations
-    let colors = ["bg-blue-500", "bg-purple-500", "bg-cyan-500", "bg-green-500", "bg-pink-500", "bg-indigo-500"];
-    let mut color_index = 0;
-    
-    for (symbol, (name, usd_value)) in evm_assets_map {
-        if usd_value > 0.0 {
-            allocations.push(AssetAllocation {
-                name,
-                symbol,
-                percentage: 0.0,
-                value_usd: usd_value,
-                color: colors[color_index % colors.len()].to_string(),
-            });
-            color_index += 1;
-        }
-    }
-    
-    // Calculate percentages
-    if total_value > 0.0 {
-        for allocation in &mut allocations {
-            allocation.percentage = (allocation.value_usd / total_value) * 100.0;
-        }
-    }
-    
-    // Sort by value (descending)
-    allocations.sort_by(|a, b| b.value_usd.partial_cmp(&a.value_usd).unwrap_or(std::cmp::Ordering::Equal));
-    
-    // Limit to top 5 and group the rest as "Other"
-    if allocations.len() > 5 {
-        let top_5: Vec<AssetAllocation> = allocations.drain(..5).collect();
-        let other_value: f64 = allocations.iter().map(|a| a.value_usd).sum();
-        let other_percentage = if total_value > 0.0 { (other_value / total_value) * 100.0 } else { 0.0 };
-        
-        allocations = top_5;
-        if other_value > 0.0 {
-            allocations.push(AssetAllocation {
-                name: "Other".to_string(),
-                symbol: "OTHER".to_string(),
-                percentage: other_percentage,
-                value_usd: other_value,
-                color: "bg-slate-400".to_string(),
-            });
-        }
-    }
-    
-    Ok(allocations)
-}
+    let snapshot = build_portfolio_valuation_snapshot(&db)?;
+    let priced_total_usd = snapshot.priced_total_usd;
 
+    Ok(snapshot
+        .allocations
+        .into_iter()
+        .map(|allocation| AssetAllocation {
+            percentage: if matches!(allocation.valuation_status, ValuationStatus::Valued)
+                && priced_total_usd > 0.0
+            {
+                (allocation.value_usd / priced_total_usd) * 100.0
+            } else {
+                0.0
+            },
+            name: allocation.name,
+            symbol: allocation.symbol,
+            value_usd: allocation.value_usd,
+            color: allocation.color,
+            valuation_status: allocation.valuation_status,
+        })
+        .collect())
+}
 
 #[derive(Debug, Serialize)]
 pub struct UnifiedTransaction {
     pub id: String,
-    pub r#type: String, // "bitcoin" or "evm"
+    pub r#type: String,  // "bitcoin" or "evm"
     pub tx_type: String, // "send", "receive", etc.
+    pub status: String,
     pub tx_hash: String,
     pub asset_symbol: String,
     pub amount: String,
@@ -321,14 +319,16 @@ pub fn get_unified_recent_transactions() -> Result<Vec<UnifiedTransaction>, Stri
     let db = DB.lock().map_err(|e| e.to_string())?;
 
     // 1. Get Bitcoin Transactions
-    let btc_txs = db.get_all_bitcoin_transactions().map_err(|e| e.to_string())?;
+    let btc_txs = db
+        .get_all_bitcoin_transactions()
+        .map_err(|e| e.to_string())?;
     let mut unified: Vec<UnifiedTransaction> = btc_txs
         .into_iter()
-        .filter(|tx| tx.status.as_str() != "failed")
         .map(|tx| UnifiedTransaction {
             id: tx.id,
             r#type: "bitcoin".to_string(),
             tx_type: tx.tx_type.as_str().to_string(),
+            status: tx.status.as_str().to_string(),
             tx_hash: tx.tx_hash,
             asset_symbol: "BTC".to_string(),
             amount: format!("{:.8}", tx.amount),
@@ -340,11 +340,12 @@ pub fn get_unified_recent_transactions() -> Result<Vec<UnifiedTransaction>, Stri
     let evm_txs = db.get_all_evm_transactions().map_err(|e| e.to_string())?;
     let evm_unified: Vec<UnifiedTransaction> = evm_txs
         .into_iter()
-        .filter(|tx| tx.status.as_str() != "failed" && tx.chain_id != 11155111) // Filter out Sepolia
+        .filter(|tx| tx.chain_id != 11155111) // Filter out Sepolia
         .map(|tx| UnifiedTransaction {
             id: tx.id,
             r#type: "evm".to_string(),
             tx_type: tx.tx_type.as_str().to_string(),
+            status: tx.status.as_str().to_string(),
             tx_hash: tx.tx_hash,
             asset_symbol: tx.asset_symbol,
             amount: format!("{:.6}", tx.amount_float),
@@ -378,23 +379,29 @@ pub struct UnifiedAsset {
 #[tauri::command]
 pub fn get_unified_assets() -> Result<Vec<UnifiedAsset>, String> {
     let db = DB.lock().map_err(|e| e.to_string())?;
-    
+
     let mut result = Vec::new();
 
     // 1. BTC Wallets
     let btc_wallets = db.get_bitcoin_wallets().map_err(|e| e.to_string())?;
     let total_btc_balance: f64 = btc_wallets.iter().map(|w| w.balance).sum();
-    
+
     if total_btc_balance > 0.0 {
-        // Get BTC price from cache (background task keeps it fresh)
-        let btc_price = crate::wallet::evm::price_manager::get_cached_price("BTC")
-            .unwrap_or(95000.0); // Fallback if cache not ready yet
+        let btc_price_state = crate::wallet::evm::price_manager::get_cached_price_state("BTC");
+        let btc_value = btc_price_state
+            .price_usd
+            .map(|price_usd| total_btc_balance * price_usd)
+            .unwrap_or(0.0);
 
         result.push(UnifiedAsset {
-            name: "Bitcoin".to_string(),
+            name: if btc_price_state.price_usd.is_none() {
+                "Bitcoin (Price unavailable)".to_string()
+            } else {
+                "Bitcoin".to_string()
+            },
             symbol: "BTC".to_string(),
             balance: total_btc_balance,
-            usd_value: total_btc_balance * btc_price,
+            usd_value: btc_value,
             chain: "Bitcoin".to_string(),
             is_testnet: false,
         });
@@ -403,13 +410,15 @@ pub fn get_unified_assets() -> Result<Vec<UnifiedAsset>, String> {
     // 2. EVM Assets
     let evm_wallets = db.get_evm_wallets().map_err(|e| e.to_string())?;
     for wallet in evm_wallets {
-        let assets = db.get_evm_asset_balances(&wallet.id).map_err(|e| e.to_string())?;
-        for (chain, symbol, chain_id, name, _, _, _, balance_float, _, usd_value) in assets {
+        let assets = db
+            .get_evm_asset_balances(&wallet.id)
+            .map_err(|e| e.to_string())?;
+        for (chain, symbol, chain_id, name, _, _, _, balance_float, _, usd_value, _) in assets {
             result.push(UnifiedAsset {
                 name,
                 symbol,
                 balance: balance_float,
-                usd_value,
+                usd_value: usd_value.unwrap_or(0.0),
                 chain,
                 is_testnet: chain_id == 11155111,
             });
@@ -417,4 +426,115 @@ pub fn get_unified_assets() -> Result<Vec<UnifiedAsset>, String> {
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        dashboard_freshness_from_row_with_failures, format_dashboard_stats,
+        format_dashboard_stats_without_snapshot,
+    };
+    use crate::dashboard::valuation::build_portfolio_valuation_snapshot;
+    use crate::db::Database;
+    use crate::wallet::security::secret_envelope::{StoredSecret, SECRET_FORMAT_PLAINTEXT_V0};
+    use crate::wallet::state::types::FreshnessStatus;
+    use crate::wallet::types::ValuationStatus;
+
+    #[test]
+    fn dashboard_stats_hide_totals_when_btc_price_is_unavailable() {
+        let stats = format_dashboard_stats(
+            12_345.67,
+            0.1289,
+            321.0,
+            2.6,
+            crate::wallet::state::types::FreshnessMetadata {
+                status: FreshnessStatus::Partial,
+                updated_at: Some(1_713_499_200),
+                failed_sources: vec!["price:btc_unavailable".to_string()],
+            },
+            ValuationStatus::Valued,
+            0,
+        );
+
+        assert_eq!(stats.total_balance_usd, "$--");
+        assert_eq!(stats.total_balance_btc, "≈ -- BTC");
+        assert_eq!(stats.change_24h_amount, "--");
+        assert_eq!(stats.change_24h_percentage, "--");
+        assert!(matches!(stats.freshness.status, FreshnessStatus::Partial));
+    }
+
+    #[test]
+    fn dashboard_stats_show_priced_subtotal_when_unpriced_assets_exist() {
+        let stats = format_dashboard_stats(
+            150.0,
+            0.005,
+            12.0,
+            8.0,
+            crate::wallet::state::types::FreshnessMetadata {
+                status: FreshnessStatus::Fresh,
+                updated_at: Some(1_713_499_200),
+                failed_sources: Vec::new(),
+            },
+            ValuationStatus::Unpriced,
+            2,
+        );
+
+        assert_eq!(stats.total_balance_usd, "$150.00");
+        assert_eq!(stats.valuation_status, ValuationStatus::Unpriced);
+        assert_eq!(stats.unpriced_asset_count, 2);
+    }
+
+    #[test]
+    fn dashboard_row_with_failed_sources_degrades_to_partial() {
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        let freshness =
+            dashboard_freshness_from_row_with_failures(&updated_at, "[\"price:btc_unavailable\"]");
+
+        assert!(matches!(freshness.status, FreshnessStatus::Partial));
+        assert_eq!(
+            freshness.failed_sources,
+            vec!["price:btc_unavailable".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_dashboard_snapshot_uses_priced_subtotal_instead_of_zero() {
+        let db = Database::new(":memory:").unwrap();
+        let wallet = db
+            .insert_evm_wallet_with_secret(
+                "Main".to_string(),
+                "mnemonic".to_string(),
+                "0xabc".to_string(),
+                StoredSecret {
+                    secret_data: "test-secret".to_string(),
+                    secret_format: SECRET_FORMAT_PLAINTEXT_V0.to_string(),
+                },
+                "mnemonic".to_string(),
+            )
+            .unwrap();
+
+        db.save_evm_asset_balance(
+            wallet.id,
+            "ethereum".to_string(),
+            1,
+            "ETH".to_string(),
+            "Ethereum".to_string(),
+            18,
+            None,
+            "1".to_string(),
+            1.0,
+            Some(150.0),
+            Some(150.0),
+            "valued".to_string(),
+        )
+        .unwrap();
+
+        let snapshot = build_portfolio_valuation_snapshot(&db).unwrap();
+        let stats = format_dashboard_stats_without_snapshot(&db, &snapshot).unwrap();
+
+        assert_eq!(stats.total_balance_usd, "$150.00");
+        assert_eq!(stats.change_24h_amount, "--");
+        assert_eq!(stats.change_24h_percentage, "--");
+        assert_eq!(stats.freshness.status, FreshnessStatus::Unavailable);
+    }
 }

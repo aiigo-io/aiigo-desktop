@@ -1,8 +1,17 @@
+export interface FreshnessMetadata {
+    status: 'fresh' | 'cached' | 'stale' | 'unavailable' | 'partial';
+    updated_at: number | null;
+    failed_sources: string[];
+}
+
 export interface DashboardStats {
     total_balance_usd: string;
     total_balance_btc: string;
     change_24h_amount: string;
     change_24h_percentage: string;
+    freshness: FreshnessMetadata;
+    valuation_status: 'valued' | 'unpriced';
+    unpriced_asset_count: number;
 }
 
 export interface PortfolioHistoryPoint {
@@ -16,6 +25,7 @@ export interface AssetAllocation {
     percentage: number;
     value_usd: number;
     color: string;
+    valuation_status: 'valued' | 'unpriced';
 }
 
 
@@ -28,7 +38,7 @@ export interface BitcoinTransaction {
     to_address: string;
     amount: number;
     fee: number;
-    status: 'pending' | 'confirmed' | 'failed';
+    status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
     confirmations: number;
     block_height: number | null;
     timestamp: string;
@@ -52,7 +62,7 @@ export interface EvmTransaction {
     gas_used: string;
     gas_price: string;
     fee: number;
-    status: 'pending' | 'confirmed' | 'failed';
+    status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
     block_number: number | null;
     timestamp: string;
     created_at: string;
@@ -62,6 +72,7 @@ export type UnifiedTransaction = {
     id: string;
     type: 'bitcoin' | 'evm';
     tx_type: 'send' | 'receive' | 'approve' | 'contract';
+    status: 'broadcasted' | 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';
     tx_hash: string;
     asset_symbol: string;
     amount: string;

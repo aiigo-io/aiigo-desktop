@@ -1,13 +1,88 @@
+use crate::wallet::chain::traits::{ChainAdapter, ChainAssetBalanceSnapshot, ChainBalanceSnapshot};
 use crate::wallet::evm::config::EvmChainConfig;
 use crate::wallet::evm::provider::{HybridProvider, ProviderError, ProviderRegistry};
+use crate::wallet::security::sanitize;
 use ethers::prelude::*;
 use ethers::types::transaction::eip2718::TypedTransaction;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
 
 const RETRY_ATTEMPTS: u32 = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
+
+pub struct EvmChainAdapter {
+    chain_config: EvmChainConfig,
+    wallet_address: String,
+}
+
+impl EvmChainAdapter {
+    pub fn new(chain_config: EvmChainConfig, wallet_address: impl Into<String>) -> Self {
+        Self {
+            chain_config,
+            wallet_address: wallet_address.into(),
+        }
+    }
+}
+
+impl ChainAdapter for EvmChainAdapter {
+    fn chain_family(&self) -> &'static str {
+        "evm"
+    }
+
+    fn chain_name(&self) -> &str {
+        self.chain_config.name()
+    }
+
+    fn chain_id(&self) -> Option<String> {
+        Some(self.chain_config.chain_id().to_string())
+    }
+
+    fn wallet_address(&self) -> &str {
+        &self.wallet_address
+    }
+
+    fn fetch_balances<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<ChainBalanceSnapshot, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let assets = self.chain_config.assets();
+            let balances = get_chain_balances(self.chain_config, &self.wallet_address).await?;
+
+            let normalized_assets = balances
+                .into_iter()
+                .map(|(symbol, raw_amount, display_amount)| {
+                    let configured_asset = assets
+                        .iter()
+                        .find(|asset| asset.symbol == symbol)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            crate::wallet::types::EvmAsset::new(&symbol, &symbol, 18, None)
+                        });
+
+                    ChainAssetBalanceSnapshot {
+                        symbol,
+                        name: configured_asset.name,
+                        contract_address: configured_asset.contract_address,
+                        raw_amount,
+                        display_amount,
+                        decimals: configured_asset.decimals,
+                    }
+                })
+                .collect();
+
+            Ok(ChainBalanceSnapshot {
+                chain_family: self.chain_family(),
+                chain_name: self.chain_name().to_string(),
+                chain_id: self.chain_id(),
+                wallet_address: self.wallet_address.clone(),
+                assets: normalized_assets,
+            })
+        })
+    }
+}
 
 /// Get all balances for a wallet on a specific chain.
 pub async fn get_chain_balances(
@@ -57,8 +132,16 @@ pub async fn get_chain_balances(
     while let Some(res) = set.join_next().await {
         match res {
             Ok(Ok(tuple)) => balances.push(tuple),
-            Ok(Err(err)) => tracing::warn!(chain=%chain_config.name(), error=%err, "Asset balance query failed"),
-            Err(join_err) => tracing::error!(chain=%chain_config.name(), join_err=?join_err, "Asset balance task panicked"),
+            Ok(Err(err)) => tracing::warn!(
+                chain = %sanitize(&format!("{}", chain_config.name())),
+                error = %sanitize(&format!("{}", err)),
+                "Asset balance query failed"
+            ),
+            Err(join_err) => tracing::error!(
+                chain = %sanitize(&format!("{}", chain_config.name())),
+                join_err = %sanitize(&format!("{:?}", join_err)),
+                "Asset balance task panicked"
+            ),
         }
     }
 
@@ -111,7 +194,13 @@ async fn handle_retry(label: &str, attempt: u32, err: ProviderError) -> Result<(
     }
 
     let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-    tracing::warn!(label=%label, attempt=%attempt, delay_ms=%delay_ms, error=%err.to_string(), "Retrying balance query");
+    tracing::warn!(
+        label = %sanitize(&format!("{}", label)),
+        attempt = %sanitize(&format!("{}", attempt)),
+        delay_ms = %sanitize(&format!("{}", delay_ms)),
+        error = %sanitize(&format!("{}", err)),
+        "Retrying balance query"
+    );
     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
     Ok(())
 }
@@ -149,4 +238,21 @@ fn convert_balance(balance: U256, decimals: u8) -> (String, f64) {
 
     let balance_float = whole.as_u64() as f64 + remainder_f64;
     (balance_str, balance_float)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EvmChainAdapter;
+    use crate::wallet::chain::traits::ChainAdapter;
+    use crate::wallet::evm::config::EvmChainConfig;
+
+    #[test]
+    fn evm_chain_adapter_reports_expected_identity() {
+        let adapter = EvmChainAdapter::new(EvmChainConfig::Ethereum, "0xabc");
+
+        assert_eq!(adapter.chain_family(), "evm");
+        assert_eq!(adapter.chain_name(), "ethereum");
+        assert_eq!(adapter.chain_id(), Some("1".to_string()));
+        assert_eq!(adapter.wallet_address(), "0xabc");
+    }
 }

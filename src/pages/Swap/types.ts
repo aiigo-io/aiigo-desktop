@@ -169,3 +169,71 @@ export interface TransactionStatus {
     hash?: string;
     error?: string;
 }
+
+export type ApprovalMode = 'bounded' | 'unlimited';
+
+export interface ActionConfirmationField {
+    label: string;
+    value: string;
+    payloadField?: string;
+}
+
+export interface RawEvmTransactionPayload {
+    to: string;
+    data: string;
+    value: string;
+    gasLimit: string;
+    gasPrice: string;
+}
+
+export interface SwapExecutionPayloadSnapshot {
+    to: string;
+    data: string;
+    value: string;
+    gasLimit: string;
+    gasPrice: string;
+    payloadFingerprint: string;
+    calldataPreview: string;
+    calldataLength: number;
+}
+
+interface BaseSwapActionIntent {
+    kind: 'swap-approve' | 'swap-execute';
+    uiActionLabel: string;
+    chainActionType: string;
+    highestRiskPoint: string;
+    chainId: number;
+    chainName: string;
+    confirmationFields: ActionConfirmationField[];
+    fingerprint: string;
+}
+
+export interface SwapApproveActionIntent extends BaseSwapActionIntent {
+    kind: 'swap-approve';
+    approvalMode: ApprovalMode;
+    execution: {
+        command: 'evm_approve_token';
+        args: {
+            walletId: string;
+            chainId: number;
+            tokenAddress: string;
+            spenderAddress: string;
+            amount: string;
+        };
+    };
+}
+
+export interface SwapExecuteActionIntent extends BaseSwapActionIntent {
+    preparedTransactionSnapshot: SwapExecutionPayloadSnapshot;
+    kind: 'swap-execute';
+    execution: {
+        command: 'evm_send_transaction';
+        args: {
+            walletId: string;
+            chainId: number;
+            transaction: RawEvmTransactionPayload;
+        };
+    };
+}
+
+export type SwapActionIntent = SwapApproveActionIntent | SwapExecuteActionIntent;

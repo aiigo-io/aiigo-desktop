@@ -1,3 +1,7 @@
+use crate::wallet::security::sanitize;
+use crate::wallet::state::price as state_price;
+use crate::wallet::state::types::PriceState;
+use chrono::Utc;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -8,6 +12,10 @@ const RETRY_ATTEMPTS: u32 = 2;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 const CACHE_DURATION_SECS: u64 = 60; // Cache prices for 60 seconds
+#[allow(dead_code)]
+const PRICE_FRESH_WITHIN_SECS: i64 = 60;
+#[allow(dead_code)]
+const PRICE_STALE_AFTER_SECS: i64 = 300;
 
 #[derive(Debug, Deserialize)]
 struct PriceData {
@@ -22,12 +30,14 @@ struct PriceCache {
     // coin_id -> (price, 24h_change)
     prices: HashMap<String, (f64, f64)>,
     last_update: Option<Instant>,
+    updated_at_unix: Option<i64>,
 }
 
 static PRICE_CACHE: Lazy<Mutex<PriceCache>> = Lazy::new(|| {
     Mutex::new(PriceCache {
         prices: HashMap::new(),
         last_update: None,
+        updated_at_unix: None,
     })
 });
 
@@ -61,9 +71,9 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
     // 1. Handle stablecoins and check cache
     {
         let cache = PRICE_CACHE.lock().unwrap();
-        let cache_valid = cache.last_update.map_or(false, |last| {
-            last.elapsed().as_secs() < CACHE_DURATION_SECS
-        });
+        let cache_valid = cache
+            .last_update
+            .map_or(false, |last| last.elapsed().as_secs() < CACHE_DURATION_SECS);
 
         for symbol in &symbols {
             if let Some(price) = get_stablecoin_price(symbol) {
@@ -115,13 +125,14 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
                     let mut cache = PRICE_CACHE.lock().unwrap();
                     cache.prices = response_map.clone();
                     cache.last_update = Some(Instant::now());
+                    cache.updated_at_unix = Some(Utc::now().timestamp());
                 }
 
                 // Map CoinGecko IDs back to symbols
                 let mut result = HashMap::new();
                 for symbol in &symbols {
                     if let Some(price) = get_stablecoin_price(symbol) {
-                         result.insert(symbol.clone(), (price, 0.0));
+                        result.insert(symbol.clone(), (price, 0.0));
                     } else if let Some(coingecko_id) = get_coingecko_id(symbol) {
                         if let Some(&data) = response_map.get(coingecko_id) {
                             result.insert(symbol.clone(), data);
@@ -129,23 +140,35 @@ pub async fn fetch_prices(symbols: Vec<String>) -> Result<HashMap<String, (f64, 
                     }
                 }
                 let duration_ms = attempt_start.elapsed().as_millis();
-                tracing::info!(count=%result.len(), duration_ms=%duration_ms, "Fetched fresh prices from CoinGecko");
+                tracing::info!(
+                    count = %sanitize(&format!("{}", result.len())),
+                    duration_ms = %sanitize(&format!("{}", duration_ms)),
+                    "Fetched fresh prices from CoinGecko"
+                );
                 return Ok(result);
             }
             Err(e) => {
                 if attempt < RETRY_ATTEMPTS {
                     let delay_ms = INITIAL_RETRY_DELAY_MS * (2_u64.pow(attempt - 1));
-                    tracing::warn!(attempt=%attempt, delay_ms=%delay_ms, error=%e.to_string(), "Price query attempt failed; retrying");
+                    tracing::warn!(
+                        attempt = %sanitize(&format!("{}", attempt)),
+                        delay_ms = %sanitize(&format!("{}", delay_ms)),
+                        error = %sanitize(&format!("{}", e)),
+                        "Price query attempt failed; retrying"
+                    );
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 } else {
-                    tracing::warn!(error=%e.to_string(), "Failed to fetch prices after all retries");
+                    tracing::warn!(
+                        error = %sanitize(&format!("{}", e)),
+                        "Failed to fetch prices after all retries"
+                    );
                     // Try to use stale cache as fallback
                     let cache = PRICE_CACHE.lock().unwrap();
                     if !cache.prices.is_empty() {
                         tracing::info!("Using stale cache as fallback");
                         let mut result = HashMap::new();
                         for symbol in &symbols {
-                             if let Some(price) = get_stablecoin_price(symbol) {
+                            if let Some(price) = get_stablecoin_price(symbol) {
                                 result.insert(symbol.clone(), (price, 0.0));
                             } else if let Some(coingecko_id) = get_coingecko_id(symbol) {
                                 if let Some(&data) = cache.prices.get(coingecko_id) {
@@ -204,7 +227,10 @@ async fn try_fetch_prices(ids: &str) -> Result<HashMap<String, (f64, f64)>, Stri
             let change = price_data.usd_24h_change.unwrap_or(0.0);
             result.insert(coin_id, (usd_price, change));
         } else {
-            tracing::warn!(coin_id=%coin_id, "Missing USD price data");
+            tracing::warn!(
+                coin_id = %sanitize(&format!("{}", coin_id)),
+                "Missing USD price data"
+            );
         }
     }
 
@@ -219,6 +245,41 @@ pub async fn fetch_price(symbol: &str) -> Result<f64, String> {
         .get(symbol)
         .map(|(price, _)| *price)
         .ok_or_else(|| format!("Price not found for {}", symbol))
+}
+
+#[allow(dead_code)]
+pub async fn fetch_price_state(symbol: &str) -> Result<PriceState, String> {
+    let now = Utc::now().timestamp();
+
+    if let Some(price_usd) = get_stablecoin_price(symbol) {
+        return Ok(state_price::synthetic(
+            price_usd,
+            "synthetic-stablecoin",
+            now,
+        ));
+    }
+
+    let prices = fetch_prices(vec![symbol.to_string()]).await?;
+    let Some((price_usd, _)) = prices.get(symbol).copied() else {
+        return Ok(state_price::unavailable());
+    };
+
+    let updated_at = {
+        let cache = PRICE_CACHE.lock().unwrap();
+        cache.updated_at_unix
+    };
+
+    match updated_at {
+        Some(updated_at) => Ok(state_price::from_fetch(
+            price_usd,
+            "coingecko",
+            updated_at,
+            now,
+            PRICE_FRESH_WITHIN_SECS,
+            PRICE_STALE_AFTER_SECS,
+        )),
+        None => Ok(state_price::unavailable()),
+    }
 }
 
 #[cfg(test)]
@@ -238,15 +299,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fetch_price() {
-        // This test requires internet connection
-        let result = fetch_price("ETH").await;
-        // Just check that it doesn't error - actual price will vary
-        assert!(result.is_ok() || result.is_err());
+    async fn test_fetch_price_state_uses_synthetic_stablecoin_path() {
+        let result = fetch_price_state("USDC").await.unwrap();
+
+        assert_eq!(result.price_usd, Some(1.0));
+        assert_eq!(
+            result.status,
+            crate::wallet::state::types::PriceStatus::Synthetic
+        );
     }
 }
 
 #[tauri::command]
-pub async fn get_bitcoin_price() -> Result<f64, String> {
-    fetch_price("BTC").await
+#[allow(dead_code)]
+pub async fn get_bitcoin_price() -> Result<PriceState, String> {
+    fetch_price_state("BTC").await
 }

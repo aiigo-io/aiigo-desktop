@@ -1,9 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowUpDown, Settings2, Info, RefreshCw, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
+import RecoveryPanel from '@/components/common/RecoveryPanel';
+import { useSecuritySession } from '@/components/common/SecuritySession';
+import { parseSecurityError } from '@/lib/security';
 import { useSwap } from '../hooks/useSwap';
+import { SwapActionIntent } from '../types';
 import { SUPPORTED_CHAINS, MAX_PRICE_IMPACT_WARNING, MAX_PRICE_IMPACT_BLOCK } from '../constants';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
 import {
     Select,
     SelectContent,
@@ -12,8 +24,18 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Card, CardContent } from '@/components/ui/card';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauriRuntimeAvailable, isTauriUnavailableError, TAURI_UNAVAILABLE_MESSAGE } from '@/lib/tauri';
 import { SlippageSettings } from './SlippageSettings';
+import {
+    EvmWalletBalancesResponse,
+    FreshnessMetadata,
+    formatFreshnessLabel,
+    getChainFreshnessDescription,
+    getEvmChainAssets,
+    getFreshnessBadgeClass,
+    getWalletSyncBanner,
+} from '@/lib/evm-wallet';
+import { describeWalletRecovery, type WalletRecoveryFlow, type WalletRecoveryGuidance } from '@/lib/wallet-recovery';
 
 interface WalletInfo {
     id: string;
@@ -25,45 +47,12 @@ interface WalletInfo {
     updated_at: string;
 }
 
-interface EvmAsset {
-    symbol: string;
-    name: string;
-    decimals: number;
-    contract_address: string | null;
-}
-
-interface EvmAssetBalance {
-    chain: string;
-    asset: EvmAsset;
-    balance: string;
-    balance_float: number;
-    usd_price: number;
-    usd_value: number;
-}
-
-interface EvmChainAssets {
-    chain: string;
-    chain_id: number;
-    total_balance_usd: number;
-    assets: EvmAssetBalance[];
-}
-
-interface EvmWalletInfo {
-    id: string;
-    label: string;
-    wallet_type: 'mnemonic' | 'private-key';
-    address: string;
-    chains: EvmChainAssets[];
-    total_balance_usd: number;
-    created_at: string;
-    updated_at: string;
-}
-
 interface SwapCardProps {
     wallet?: WalletInfo | null;
 }
 
 export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
+    const { requestUnlock } = useSecuritySession();
     const {
         fromChain,
         fromToken,
@@ -85,14 +74,23 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         setSlippage,
         needsApproval,
         isCheckingApproval,
-        approveToken,
+        prepareApproveAction,
+        submitApproveAction,
         txStatus,
-        executeSwap,
+        prepareSwapExecutionAction,
+        submitSwapExecutionAction,
     } = useSwap(wallet);
 
     const [balances, setBalances] = useState<Map<string, number>>(new Map());
     const [isLoadingBalances, setIsLoadingBalances] = useState(false);
     const [showSlippageSettings, setShowSlippageSettings] = useState(false);
+    const [chainFreshness, setChainFreshness] = useState<FreshnessMetadata | null>(null);
+    const [walletResponse, setWalletResponse] = useState<EvmWalletBalancesResponse | null>(null);
+    const [pendingAction, setPendingAction] = useState<SwapActionIntent | null>(null);
+    const [isPreparingAction, setIsPreparingAction] = useState(false);
+    const [isSubmittingAction, setIsSubmittingAction] = useState(false);
+    const [lastActionFlow, setLastActionFlow] = useState<WalletRecoveryFlow>('send-asset');
+    const [flowRecovery, setFlowRecovery] = useState<WalletRecoveryGuidance | null>(null);
 
     // Load balances when wallet or chain changes
     useEffect(() => {
@@ -100,6 +98,8 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
             loadBalances();
         } else {
             setBalances(new Map());
+            setChainFreshness(null);
+            setWalletResponse(null);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [wallet?.id, fromChain.id]);
@@ -107,16 +107,27 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const loadBalances = async () => {
         if (!wallet) return;
 
+        if (!isTauriRuntimeAvailable()) {
+            setBalances(new Map());
+            setChainFreshness({
+                status: 'unavailable',
+                updated_at: null,
+                failed_sources: ['tauri-runtime'],
+            });
+            setWalletResponse(null);
+            setIsLoadingBalances(false);
+            return;
+        }
+
         setIsLoadingBalances(true);
         try {
-            const walletWithBalances = await invoke<EvmWalletInfo>('evm_get_wallet_with_balances', {
+            const walletWithBalances = await invoke<EvmWalletBalancesResponse>('query_evm_wallet_balances', {
                 walletId: wallet.id
             });
+            setWalletResponse(walletWithBalances);
 
             // Find the current chain's assets
-            const chainAssets = walletWithBalances.chains.find(
-                c => c.chain_id === fromChain.id
-            );
+            const chainAssets = getEvmChainAssets(walletWithBalances, fromChain.id);
 
             if (chainAssets) {
                 const newBalances = new Map<string, number>();
@@ -124,18 +135,35 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     newBalances.set(asset.asset.symbol, asset.balance_float);
                 });
                 setBalances(newBalances);
+                setChainFreshness(chainAssets.freshness);
             } else {
                 setBalances(new Map());
+                setChainFreshness({
+                    status: 'unavailable',
+                    updated_at: null,
+                    failed_sources: [fromChain.name.toLowerCase()],
+                });
             }
         } catch (error) {
-            console.error('Error loading balances:', error);
+            if (!isTauriUnavailableError(error)) {
+                console.error('Error loading balances:', error);
+            }
             setBalances(new Map());
+            setChainFreshness({
+                status: 'unavailable',
+                updated_at: null,
+                failed_sources: [fromChain.name.toLowerCase()],
+            });
         } finally {
             setIsLoadingBalances(false);
         }
     };
 
     const getBalance = (tokenSymbol: string): string => {
+        if (chainFreshness?.status === 'unavailable') {
+            return 'Unavailable';
+        }
+
         const balance = balances.get(tokenSymbol);
         if (balance === undefined) {
             return wallet ? '0.00' : '--';
@@ -143,8 +171,21 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
         return balance.toFixed(6);
     };
 
+    const getNumericBalance = (tokenSymbol: string): number | undefined => balances.get(tokenSymbol);
+
+    const isChainUnavailable = chainFreshness?.status === 'unavailable';
+    const chainStatusBanner = chainFreshness
+        ? {
+            label: formatFreshnessLabel(chainFreshness.status),
+            description: getChainFreshnessDescription(chainFreshness),
+            className: getFreshnessBadgeClass(chainFreshness.status),
+        }
+        : null;
+    const walletSyncBanner = walletResponse ? getWalletSyncBanner(walletResponse) : null;
+
     const hasInsufficientBalance = (): boolean => {
         if (!wallet || !amount) return false;
+        if (isChainUnavailable) return true;
         const balance = balances.get(fromToken.symbol);
         if (balance === undefined) return false;
         return parseFloat(amount) > balance;
@@ -159,10 +200,13 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
     const getButtonText = (): string => {
         if (!wallet) return 'Connect Wallet';
+        if (isChainUnavailable) return 'Chain Unavailable';
         if (!amount) return 'Enter Amount';
         if (!isValid) return 'Invalid Pair';
         if (hasInsufficientBalance()) return 'Insufficient Balance';
         if (isCheckingApproval) return 'Checking Approval...';
+        if (isPreparingAction) return needsApproval ? 'Preparing Approval...' : 'Preparing Review...';
+        if (isSubmittingAction) return pendingAction?.uiActionLabel ?? 'Submitting...';
         if (needsApproval) return `Approve ${fromToken.symbol}`;
         if (txStatus.status === 'approving') return 'Approving...';
         if (txStatus.status === 'swapping') return 'Swapping...';
@@ -171,8 +215,10 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
     const isButtonDisabled = (): boolean => {
         if (!wallet || !isValid || !amount) return true;
+        if (isChainUnavailable) return true;
         if (hasInsufficientBalance()) return true;
         if (isCheckingApproval || isLoadingQuote) return true;
+        if (isPreparingAction || isSubmittingAction) return true;
         if (txStatus.status === 'approving' || txStatus.status === 'swapping') return true;
         if (priceImpact > MAX_PRICE_IMPACT_BLOCK) return true;
         return false;
@@ -181,16 +227,94 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
     const handleButtonClick = async () => {
         if (!wallet) return;
 
+        const currentFlow: WalletRecoveryFlow = needsApproval ? 'approve-allowance' : 'send-asset';
+
         try {
-            if (needsApproval) {
-                await approveToken();
-            } else {
-                await executeSwap();
-            }
+            setIsPreparingAction(true);
+            setFlowRecovery(null);
+            setLastActionFlow(currentFlow);
+            const intent = needsApproval
+                ? await prepareApproveAction()
+                : await prepareSwapExecutionAction();
+            setPendingAction(intent);
         } catch (error) {
             console.error('Transaction error:', error);
+            if (isTauriUnavailableError(error)) {
+                return;
+            }
+
+            const securityError = parseSecurityError(error);
+            if (securityError === 'locked' || securityError === 'expired') {
+                await requestUnlock({
+                    prompt: needsApproval ? `Unlock to approve ${fromToken.symbol}.` : 'Unlock to continue swap.',
+                    mode: 'unlock',
+                    reason: securityError,
+                    onUnlockSuccess: handleButtonClick,
+                });
+            } else {
+                setFlowRecovery(describeWalletRecovery(currentFlow, error, { chainFamily: 'evm' }));
+            }
+        } finally {
+            setIsPreparingAction(false);
         }
     };
+
+    const handleConfirmAction = async () => {
+        if (!pendingAction) return;
+
+        const currentFlow: WalletRecoveryFlow = pendingAction.kind === 'swap-approve' ? 'approve-allowance' : 'send-asset';
+        const operation = pendingAction.kind === 'swap-approve' ? 'approve' : 'send';
+
+        try {
+            setIsSubmittingAction(true);
+            setFlowRecovery(null);
+            setLastActionFlow(currentFlow);
+            const authorized = await requestUnlock({
+                mode: 'reauth',
+                operation,
+                reason: 'reauth_required',
+                prompt: pendingAction.kind === 'swap-approve'
+                    ? `Re-enter your local password to approve ${fromToken.symbol}.`
+                    : 'Re-enter your local password to execute the reviewed swap.',
+            });
+
+            if (!authorized) {
+                return;
+            }
+
+            if (pendingAction.kind === 'swap-approve') {
+                await submitApproveAction(pendingAction);
+            } else {
+                await submitSwapExecutionAction(pendingAction);
+            }
+            setPendingAction(null);
+        } catch (error) {
+            console.error('Confirmation error:', error);
+            if (isTauriUnavailableError(error)) {
+                setPendingAction(null);
+                return;
+            }
+
+            const securityError = parseSecurityError(error);
+            if (securityError === 'locked' || securityError === 'expired' || securityError === 'reauth_required') {
+                setFlowRecovery(describeWalletRecovery(lastActionFlow, error, { chainFamily: 'evm' }));
+                setPendingAction(null);
+                return;
+            }
+
+            setFlowRecovery(describeWalletRecovery(currentFlow, error, { chainFamily: 'evm' }));
+            setPendingAction(null);
+        } finally {
+            setIsSubmittingAction(false);
+        }
+    };
+
+    const quoteRecovery = quoteError
+        ? describeWalletRecovery('send-asset', quoteError, { chainFamily: 'evm' })
+        : null;
+    const txRecovery = txStatus.status === 'error' && txStatus.error
+        ? describeWalletRecovery(lastActionFlow, txStatus.error, { chainFamily: 'evm' })
+        : null;
 
     const formatOutputAmount = (): string => {
         if (isLoadingQuote) return '...';
@@ -242,15 +366,36 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                         </Button>
                     </div>
 
+                    {chainStatusBanner && chainFreshness?.status !== 'fresh' && (
+                        <div className={`rounded-xl border px-3 py-2 text-xs ${chainStatusBanner.className}`}>
+                            <div className="font-semibold uppercase tracking-wide">{chainStatusBanner.label}</div>
+                            <div className="mt-1 leading-relaxed">
+                                {isTauriRuntimeAvailable() ? chainStatusBanner.description : TAURI_UNAVAILABLE_MESSAGE}
+                            </div>
+                        </div>
+                    )}
+
+                    {walletSyncBanner && (
+                        <div className={`rounded-xl border px-3 py-2 text-xs ${walletSyncBanner.className}`}>
+                            <div className="font-semibold uppercase tracking-wide">{walletSyncBanner.label}</div>
+                            <div className="mt-1 leading-relaxed">{walletSyncBanner.description}</div>
+                        </div>
+                    )}
+
                     {/* From Section */}
                     <div className="space-y-2 p-4 rounded-2xl bg-muted/30 border border-transparent hover:border-border transition-all">
                         <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
                             <span>From</span>
                             <div className="flex items-center gap-2">
                                 <span>Balance: {isLoadingBalances ? '...' : getBalance(fromToken.symbol)}</span>
-                                {wallet && balances.get(fromToken.symbol) !== undefined && balances.get(fromToken.symbol)! > 0 && (
+                                {chainFreshness && (
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${getFreshnessBadgeClass(chainFreshness.status)}`}>
+                                        {formatFreshnessLabel(chainFreshness.status)}
+                                    </span>
+                                )}
+                                {wallet && getNumericBalance(fromToken.symbol) !== undefined && getNumericBalance(fromToken.symbol)! > 0 && !isChainUnavailable && (
                                     <button
-                                        onClick={() => setAmount(getBalance(fromToken.symbol))}
+                                        onClick={() => setAmount(getNumericBalance(fromToken.symbol)!.toFixed(6))}
                                         className="px-2 py-0.5 text-xs bg-primary/10 text-primary hover:bg-primary/20 rounded transition-colors font-semibold cursor-pointer"
                                         title="Use max balance"
                                     >
@@ -377,13 +522,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
 
                     {/* Quote Error */}
                     {quoteError && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20">
-                            <AlertTriangle className="size-4 mt-0.5 text-destructive" />
-                            <div className="flex-1 text-xs">
-                                <p className="font-semibold text-destructive">Quote Error</p>
-                                <p className="text-destructive/80">{quoteError}</p>
-                            </div>
-                        </div>
+                        <RecoveryPanel guidance={quoteRecovery ?? describeWalletRecovery('send-asset', quoteError, { chainFamily: 'evm' })} />
                     )}
 
                     {/* Transaction Status */}
@@ -397,14 +536,10 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                         </div>
                     )}
 
+                    {flowRecovery && <RecoveryPanel guidance={flowRecovery} />}
+
                     {txStatus.status === 'error' && txStatus.error && (
-                        <div className="flex items-start gap-2 p-3 rounded-xl bg-destructive/10 border border-destructive/20">
-                            <AlertTriangle className="size-4 mt-0.5 text-destructive" />
-                            <div className="flex-1 text-xs">
-                                <p className="font-semibold text-destructive">Transaction Failed</p>
-                                <p className="text-destructive/80">{txStatus.error}</p>
-                            </div>
-                        </div>
+                        <RecoveryPanel guidance={txRecovery ?? describeWalletRecovery(lastActionFlow, txStatus.error, { chainFamily: 'evm' })} />
                     )}
 
                     {/* Quote Details */}
@@ -441,7 +576,7 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                         disabled={isButtonDisabled()}
                         onClick={handleButtonClick}
                     >
-                        {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote) ? (
+                        {(txStatus.status === 'approving' || txStatus.status === 'swapping' || isLoadingQuote || isPreparingAction || isSubmittingAction) ? (
                             <div className="flex items-center gap-2">
                                 <Loader2 className="size-4 animate-spin" />
                                 {getButtonText()}
@@ -461,6 +596,54 @@ export const SwapCard: React.FC<SwapCardProps> = ({ wallet }) => {
                     onClose={() => setShowSlippageSettings(false)}
                 />
             )}
+
+            <Dialog open={Boolean(pendingAction)} onOpenChange={(open) => !open && setPendingAction(null)}>
+                <DialogContent className="sm:max-w-[560px]">
+                    <DialogHeader className="space-y-2">
+                        <DialogTitle>{pendingAction?.uiActionLabel}</DialogTitle>
+                        <DialogDescription>
+                            Real chain action: {pendingAction?.chainActionType}
+                        </DialogDescription>
+                    </DialogHeader>
+
+                    {pendingAction && (
+                        <div className="space-y-4">
+                            <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                                <div className="font-semibold text-amber-100">Highest Risk Point</div>
+                                <div className="mt-1 leading-relaxed">{pendingAction.highestRiskPoint}</div>
+                            </div>
+
+                            {pendingAction.kind === 'swap-execute' && (
+                                <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 px-4 py-3 text-sm">
+                                    <div className="font-semibold text-slate-100">Frozen Payload Snapshot</div>
+                                    <div className="mt-2 space-y-1 text-slate-300">
+                                        <div>Calldata preview: {pendingAction.preparedTransactionSnapshot.calldataPreview}</div>
+                                        <div>Calldata length: {pendingAction.preparedTransactionSnapshot.calldataLength}</div>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="space-y-2 rounded-xl border px-4 py-3">
+                                {pendingAction.confirmationFields.map((field) => (
+                                    <div key={`${pendingAction.kind}-${field.label}`} className="flex items-start justify-between gap-4 text-sm">
+                                        <span className="min-w-0 text-muted-foreground">{field.label}</span>
+                                        <span className="max-w-[60%] break-all text-right font-medium text-foreground">{field.value}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setPendingAction(null)} disabled={isSubmittingAction}>
+                            Cancel
+                        </Button>
+                        <Button onClick={handleConfirmAction} disabled={isSubmittingAction}>
+                            {isSubmittingAction ? 'Submitting...' : `Confirm ${pendingAction?.uiActionLabel ?? 'Action'}`}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </>
     );
 };

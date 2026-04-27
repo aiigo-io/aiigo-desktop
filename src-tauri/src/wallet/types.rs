@@ -1,4 +1,13 @@
+use crate::wallet::state::types::FreshnessMetadata;
+use crate::wallet::sync::types::SyncOutcome;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValuationStatus {
+    Valued,
+    Unpriced,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalletInfo {
@@ -13,8 +22,27 @@ pub struct WalletInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWalletResponse {
-    pub mnemonic: String,
+    pub revealed_secret: Option<String>,
+    pub revealed_secret_type: Option<String>,
     pub wallet: WalletInfo,
+}
+
+impl CreateWalletResponse {
+    pub fn with_revealed_secret(wallet: WalletInfo, secret: String, secret_type: &str) -> Self {
+        Self {
+            revealed_secret: Some(secret),
+            revealed_secret_type: Some(secret_type.to_string()),
+            wallet,
+        }
+    }
+
+    pub fn without_revealed_secret(wallet: WalletInfo) -> Self {
+        Self {
+            revealed_secret: None,
+            revealed_secret_type: None,
+            wallet,
+        }
+    }
 }
 
 // EVM Types
@@ -130,8 +158,9 @@ pub struct EvmAssetBalance {
     pub asset: EvmAsset,
     pub balance: String,    // Store as string to preserve precision
     pub balance_float: f64, // For UI display
-    pub usd_price: f64,     // Current USD price
-    pub usd_value: f64,     // Total value in USD (balance_float * usd_price)
+    pub usd_price: Option<f64>,
+    pub usd_value: Option<f64>,
+    pub valuation_status: ValuationStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +168,9 @@ pub struct EvmChainAssets {
     pub chain: String,
     pub chain_id: u64,
     pub total_balance_usd: f64,
+    pub valuation_status: ValuationStatus,
+    pub unpriced_asset_count: usize,
+    pub freshness: FreshnessMetadata,
     pub assets: Vec<EvmAssetBalance>,
 }
 
@@ -150,6 +182,116 @@ pub struct EvmWalletInfo {
     pub address: String,
     pub chains: Vec<EvmChainAssets>,
     pub total_balance_usd: f64,
+    pub valuation_status: ValuationStatus,
+    pub unpriced_asset_count: usize,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvmWalletBalancesResponse {
+    pub wallet: EvmWalletInfo,
+    pub sync: SyncOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinWalletBalanceResponse {
+    pub wallet: WalletInfo,
+    pub balance_state: FreshnessBackedBitcoinBalance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreshnessBackedBitcoinBalance {
+    pub raw_amount: String,
+    pub display_amount: f64,
+    pub chain_id: Option<String>,
+    pub freshness: FreshnessMetadata,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EvmAsset, EvmAssetBalance, EvmChainAssets, EvmWalletBalancesResponse, EvmWalletInfo,
+        ValuationStatus,
+    };
+    use crate::wallet::state::types::{FreshnessMetadata, FreshnessStatus};
+    use crate::wallet::sync::types::{SyncOutcome, SyncReason, SyncTarget};
+    use serde_json::Value;
+
+    fn top_level_keys(value: &Value) -> Vec<String> {
+        let mut keys = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn evm_wallet_balances_response_serializes_wallet_sync_and_chain_freshness() {
+        let response = EvmWalletBalancesResponse {
+            wallet: EvmWalletInfo {
+                id: "wallet-1".to_string(),
+                label: "Main".to_string(),
+                wallet_type: "mnemonic".to_string(),
+                address: "0xabc".to_string(),
+                chains: vec![EvmChainAssets {
+                    chain: "ethereum".to_string(),
+                    chain_id: 1,
+                    total_balance_usd: 12.5,
+                    valuation_status: ValuationStatus::Unpriced,
+                    unpriced_asset_count: 1,
+                    freshness: FreshnessMetadata {
+                        status: FreshnessStatus::Stale,
+                        updated_at: None,
+                        failed_sources: vec!["ethereum".to_string()],
+                    },
+                    assets: vec![EvmAssetBalance {
+                        chain: "ethereum".to_string(),
+                        asset: EvmAsset::new("ETH", "Ethereum", 18, None),
+                        balance: "1000000000000000000".to_string(),
+                        balance_float: 1.0,
+                        usd_price: None,
+                        usd_value: None,
+                        valuation_status: ValuationStatus::Unpriced,
+                    }],
+                }],
+                total_balance_usd: 12.5,
+                valuation_status: ValuationStatus::Unpriced,
+                unpriced_asset_count: 1,
+                created_at: "2026-04-20T00:00:00Z".to_string(),
+                updated_at: "2026-04-20T00:00:00Z".to_string(),
+            },
+            sync: SyncOutcome {
+                reason: SyncReason::Manual,
+                target: SyncTarget::EvmWalletBalances,
+                updated_at: Some(1_713_571_200),
+                partial: true,
+                failed_sources: vec!["ethereum".to_string()],
+            },
+        };
+
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(top_level_keys(&json), vec!["sync", "wallet"]);
+
+        let chain = &json["wallet"]["chains"][0];
+        assert_eq!(
+            top_level_keys(chain),
+            vec![
+                "assets",
+                "chain",
+                "chain_id",
+                "freshness",
+                "total_balance_usd",
+                "unpriced_asset_count",
+                "valuation_status"
+            ]
+        );
+        assert_eq!(chain["freshness"]["status"], "stale");
+        assert_eq!(chain["valuation_status"], "unpriced");
+        assert_eq!(json["sync"]["partial"], true);
+        assert_eq!(json["sync"]["failed_sources"][0], "ethereum");
+    }
 }

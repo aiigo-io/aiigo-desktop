@@ -25,3 +25,10 @@ dist-ssr
 
 aiigo_*
 .vscode
+.omx
+AGENTS.MD
+docs/superpowers/plans/
+.plan/
+.memory/
+CLAUDE.md
+.github/
