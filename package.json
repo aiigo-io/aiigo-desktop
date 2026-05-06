@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "compile:contracts": "npx solc@0.8.20 --base-path . --include-path node_modules --optimize --optimize-runs 200 --bin --output-dir out/solc-bin contracts/TaskMarketplace.sol contracts/ProofOfWorkVerifier.sol contracts/EscrowManager.sol contracts/NodeRegistry.sol",
+    "test:contracts:skeleton": "node scripts/test-contracts-skeleton.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -37,6 +39,7 @@
     "@radix-ui/react-toggle": "^1.1.10",
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@openzeppelin/contracts": "^5.6.1",
     "@tailwindcss/vite": "^4.1.15",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",

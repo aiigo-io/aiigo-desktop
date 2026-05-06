@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+out/solc-bin/
 *.local
 
 # Editor directories and files
