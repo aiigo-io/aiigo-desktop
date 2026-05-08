@@ -15,6 +15,21 @@ interface ITaskMarketplace {
     event TaskVerified(bytes32 indexed taskId, uint256 payoutAmount);
     event TaskDisputed(bytes32 indexed taskId, address disputedBy, string reason);
     event TaskCancelled(bytes32 indexed taskId, uint256 refundAmount);
+    event DisputeResolved(
+        bytes32 indexed taskId,
+        address indexed resolvedBy,
+        uint256 grossProviderAmount,
+        uint256 providerPayout,
+        uint256 buyerRefund,
+        uint256 platformFee
+    );
+    event ChallengeWindowUpdated(uint256 previousWindow, uint256 newWindow);
+    event TaskUndisputedSettled(
+        bytes32 indexed taskId,
+        address indexed provider,
+        uint256 providerPayout,
+        uint256 platformFee
+    );
 
     function createTask(
         MarketplaceTypes.ResourceType resourceType,
@@ -37,7 +52,13 @@ interface ITaskMarketplace {
 
     function submitResult(bytes32 taskId, bytes32 resultHash, string calldata resultURI) external;
 
+    function settleUndisputedTask(bytes32 taskId) external;
+
+    function resolveDispute(bytes32 taskId, uint256 grossProviderAmount) external;
+
     function getTask(bytes32 taskId) external view returns (MarketplaceTypes.Task memory);
+
+    function getTaskLifecycle(bytes32 taskId) external view returns (MarketplaceTypes.TaskLifecycle memory);
 
     function getOpenTasks(
         MarketplaceTypes.ResourceType resourceType

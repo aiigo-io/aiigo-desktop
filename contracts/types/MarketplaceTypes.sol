@@ -117,5 +117,14 @@ library MarketplaceTypes {
         uint256 timestamp;
         bool passed;
     }
+
+    struct TaskLifecycle {
+        uint256 challengeDeadline;
+        address disputedBy;
+        string disputeReason;
+        bool resolved;
+        address resolvedBy;
+        uint256 grossProviderAmount;
+    }
 }
 

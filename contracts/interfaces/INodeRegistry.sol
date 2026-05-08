@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {MarketplaceTypes} from "../types/MarketplaceTypes.sol";
 
 interface INodeRegistry {
+    event ContractReferenceUpdated(bytes32 indexed referenceName, address indexed previousReference, address indexed newReference);
     event AccountingBucketMoved(
         bytes32 indexed referenceId,
         address indexed recipient,
@@ -30,6 +31,7 @@ interface INodeRegistry {
     event ComputePowerUpdated(bytes32 indexed nodeId, uint256 oldComputePower, uint256 newComputePower);
     event TreasuryFeeQueued(bytes32 indexed referenceId, address indexed recipient, uint256 amount);
     event TreasuryFeeClaimed(address indexed recipient, uint256 amount);
+    event TreasuryUpdated(address indexed previousTreasury, address indexed newTreasury);
 
     function registerNode(
         MarketplaceTypes.ResourceType resourceType,
@@ -54,6 +56,12 @@ interface INodeRegistry {
 
     function setTreasury(address treasury_) external;
 
+    function setTaskMarketplace(address taskMarketplace_) external;
+
+    function lockNodeStake(bytes32 nodeId) external;
+
+    function unlockNodeStake(bytes32 nodeId) external;
+
     function getNode(bytes32 nodeId) external view returns (MarketplaceTypes.Node memory);
 
     function getNodesByOwner(address owner) external view returns (bytes32[] memory);
@@ -71,6 +79,8 @@ interface INodeRegistry {
     function getPendingTreasuryFees(address recipient) external view returns (uint256);
 
     function getTreasury() external view returns (address);
+
+    function getPendingTaskCount(bytes32 nodeId) external view returns (uint256);
 
     function totalAccountedObligations() external view returns (uint256);
 }

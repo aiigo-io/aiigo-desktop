@@ -11,26 +11,28 @@ import {MarketplaceTypes} from "./types/MarketplaceTypes.sol";
 contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausable, ReentrancyGuard {
     error AmountMustBeGreaterThanZero();
     error ClaimTransferFailed();
+    error SameContractReference(address currentReference, address candidate);
     error DirectETHNotAccepted();
     error EscrowAlreadyExists(bytes32 taskId);
     error EscrowAlreadySettled(bytes32 taskId);
     error EscrowNotFound(bytes32 taskId);
     error InvalidBuyer();
+    error InvalidContractInterface(bytes4 selector, address candidate);
     error InvalidProvider();
     error MissingClaimableBalance();
+    error NonContractAddress(address candidate);
     error RoleRenounceDisabled();
     error SolvencyInvariantViolated(uint256 balance, uint256 obligations);
-    error ContractReferenceSmokeCheckFailed(bytes4 selector, address candidate);
     error TaskMarketplaceNotConfigured();
     error UnauthorizedTaskMarketplace(address caller);
-    error InvalidContractReference(address candidate);
     error ZeroAddressNotAllowed();
     error ZeroTaskIdNotAllowed();
 
-    uint48 public constant DEFAULT_ADMIN_DELAY = 1 days;
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant RELEASER_ROLE = keccak256("RELEASER_ROLE");
     uint256 public constant BASIS_POINTS = 10_000;
     uint256 public constant PLATFORM_FEE_BPS = 800;
+    bytes32 private constant REFERENCE_TASK_MARKETPLACE = keccak256("TASK_MARKETPLACE");
 
     uint8 private constant BUCKET_UNTRACKED = 0;
     uint8 private constant BUCKET_LOCKED = 1;
@@ -40,6 +42,7 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
 
     address private _taskMarketplace;
     address private _treasury;
+    uint48 public immutable adminDelay;
 
     mapping(bytes32 => MarketplaceTypes.EscrowDeposit) private _escrows;
     mapping(address => uint256) private _pendingBuyerRefunds;
@@ -52,10 +55,14 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
     uint256 private _totalPendingTreasuryFees;
     uint256 private _totalAccountedObligations;
 
+    event ContractReferenceUpdated(bytes32 indexed referenceName, address indexed previousReference, address indexed newReference);
+    event TreasuryUpdated(address indexed previousTreasury, address indexed newTreasury);
+
     constructor(
         address initialDefaultAdmin,
-        address treasury_
-    ) AccessControlDefaultAdminRules(DEFAULT_ADMIN_DELAY, initialDefaultAdmin) {
+        address treasury_,
+        uint48 adminDelay_
+    ) AccessControlDefaultAdminRules(adminDelay_, initialDefaultAdmin) {
         if (initialDefaultAdmin == address(0)) {
             revert ZeroAddressNotAllowed();
         }
@@ -63,8 +70,10 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
             revert ZeroAddressNotAllowed();
         }
 
+        adminDelay = adminDelay_;
         _treasury = treasury_;
         _grantRole(RELEASER_ROLE, initialDefaultAdmin);
+        _grantRole(PAUSER_ROLE, initialDefaultAdmin);
     }
 
     modifier onlyTaskMarketplace() {
@@ -77,31 +86,43 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
         _;
     }
 
-    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
 
-    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
     }
 
-    function renounceRole(bytes32, address) public pure override {
-        revert RoleRenounceDisabled();
+    function renounceRole(bytes32 role, address callerConfirmation) public override {
+        if (role == DEFAULT_ADMIN_ROLE) {
+            revert RoleRenounceDisabled();
+        }
+
+        super.renounceRole(role, callerConfirmation);
     }
 
     function setTaskMarketplace(address taskMarketplace_) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _requireContractReference(taskMarketplace_);
+        if (taskMarketplace_ == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
+        if (taskMarketplace_.code.length == 0) {
+            revert NonContractAddress(taskMarketplace_);
+        }
 
         (bool ok, bytes memory returnData) = taskMarketplace_.staticcall(
             abi.encodeWithSelector(ITaskMarketplace.getTasksByBuyer.selector, address(this))
         );
         if (!ok || returnData.length < 64) {
-            revert ContractReferenceSmokeCheckFailed(ITaskMarketplace.getTasksByBuyer.selector, taskMarketplace_);
+            revert InvalidContractInterface(ITaskMarketplace.getTasksByBuyer.selector, taskMarketplace_);
         }
 
         abi.decode(returnData, (bytes32[]));
 
         address previousMarketplace = _taskMarketplace;
+        if (taskMarketplace_ == previousMarketplace) {
+            revert SameContractReference(previousMarketplace, taskMarketplace_);
+        }
         if (previousMarketplace != address(0) && hasRole(RELEASER_ROLE, previousMarketplace)) {
             _revokeRole(RELEASER_ROLE, previousMarketplace);
         }
@@ -111,14 +132,22 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
         if (!hasRole(RELEASER_ROLE, taskMarketplace_)) {
             _grantRole(RELEASER_ROLE, taskMarketplace_);
         }
+
+        emit ContractReferenceUpdated(REFERENCE_TASK_MARKETPLACE, previousMarketplace, taskMarketplace_);
     }
 
     function setTreasury(address treasury_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (treasury_ == address(0)) {
             revert ZeroAddressNotAllowed();
         }
+        if (treasury_ == _treasury) {
+            revert SameContractReference(_treasury, treasury_);
+        }
 
+        address previousTreasury = _treasury;
         _treasury = treasury_;
+
+        emit TreasuryUpdated(previousTreasury, treasury_);
     }
 
     function deposit(
@@ -239,22 +268,32 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
             revert AmountMustBeGreaterThanZero();
         }
 
-        uint256 platformFee = escrow.amount - providerShare;
+        // providerShare is the gross provider amount; fee is deducted from it
+        uint256 platformFee = (providerShare * PLATFORM_FEE_BPS) / BASIS_POINTS;
+        uint256 netProviderPayout = providerShare - platformFee;
+        uint256 buyerRefund = escrow.amount - providerShare;
 
         escrow.provider = provider;
         escrow.treasuryRecipient = _treasury;
         escrow.platformFee = platformFee;
-        escrow.providerPayout = providerShare;
-        escrow.buyerRefund = 0;
+        escrow.providerPayout = netProviderPayout;
+        escrow.buyerRefund = buyerRefund;
         escrow.settlement = MarketplaceTypes.EscrowSettlementKind.Split;
 
         _totalLockedEscrow -= escrow.amount;
         emit AccountingBucketMoved(taskId, escrow.buyer, BUCKET_LOCKED, BUCKET_UNTRACKED, escrow.amount);
 
-        _pendingProviderPayouts[provider] += providerShare;
-        _totalPendingProviderPayouts += providerShare;
-        emit ProviderPayoutQueued(taskId, provider, providerShare);
-        emit AccountingBucketMoved(taskId, provider, BUCKET_UNTRACKED, BUCKET_PROVIDER_PAYOUT, providerShare);
+        _pendingProviderPayouts[provider] += netProviderPayout;
+        _totalPendingProviderPayouts += netProviderPayout;
+        emit ProviderPayoutQueued(taskId, provider, netProviderPayout);
+        emit AccountingBucketMoved(taskId, provider, BUCKET_UNTRACKED, BUCKET_PROVIDER_PAYOUT, netProviderPayout);
+
+        if (buyerRefund > 0) {
+            _pendingBuyerRefunds[escrow.buyer] += buyerRefund;
+            _totalPendingBuyerRefunds += buyerRefund;
+            emit BuyerRefundQueued(taskId, escrow.buyer, buyerRefund);
+            emit AccountingBucketMoved(taskId, escrow.buyer, BUCKET_UNTRACKED, BUCKET_BUYER_REFUND, buyerRefund);
+        }
 
         if (platformFee > 0) {
             _pendingTreasuryFees[escrow.treasuryRecipient] += platformFee;
@@ -263,7 +302,7 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
             emit AccountingBucketMoved(taskId, escrow.treasuryRecipient, BUCKET_UNTRACKED, BUCKET_TREASURY_FEE, platformFee);
         }
 
-        emit EscrowReleased(taskId, provider, providerShare, platformFee);
+        emit EscrowReleased(taskId, provider, netProviderPayout, platformFee);
         _assertSolvent();
     }
 
@@ -385,12 +424,4 @@ contract EscrowManager is IEscrowManager, AccessControlDefaultAdminRules, Pausab
         }
     }
 
-    function _requireContractReference(address candidate) private view {
-        if (candidate == address(0)) {
-            revert ZeroAddressNotAllowed();
-        }
-        if (candidate.code.length == 0) {
-            revert InvalidContractReference(candidate);
-        }
-    }
 }

@@ -13,8 +13,9 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
     error ChallengeNotFound(bytes32 challengeId);
     error ChallengeAlreadyCompleted(bytes32 challengeId);
     error ContractReferenceNotSet(bytes32 referenceName);
-    error ContractReferenceSmokeCheckFailed(bytes4 selector, address candidate);
-    error InvalidContractReference(address candidate);
+    error SameContractReference(address currentReference, address candidate);
+    error InvalidContractInterface(bytes4 selector, address candidate);
+    error NonContractAddress(address candidate);
     error OwnerRenounceDisabled();
     error InvalidChallengeRecord();
     error InvalidVerificationResultNodeId();
@@ -24,6 +25,7 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
 
     uint256 public constant BASE_DIFFICULTY = 1e18;
     bytes32 private constant REFERENCE_NODE_REGISTRY = keccak256("NODE_REGISTRY");
+    event ContractReferenceUpdated(bytes32 indexed referenceName, address indexed previousReference, address indexed newReference);
 
     INodeRegistry private _nodeRegistry;
 
@@ -32,13 +34,18 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
     mapping(bytes32 => MarketplaceTypes.VerificationResult[]) private _verificationHistory;
 
     constructor(address owner_, address nodeRegistry_) Ownable(owner_) {
-        _requireContractReference(nodeRegistry_);
+        if (nodeRegistry_ == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
+        if (nodeRegistry_.code.length == 0) {
+            revert NonContractAddress(nodeRegistry_);
+        }
 
         (bool ok, bytes memory returnData) = nodeRegistry_.staticcall(
             abi.encodeWithSelector(INodeRegistry.getNodesByOwner.selector, address(this))
         );
         if (!ok || returnData.length < 64) {
-            revert ContractReferenceSmokeCheckFailed(INodeRegistry.getNodesByOwner.selector, nodeRegistry_);
+            revert InvalidContractInterface(INodeRegistry.getNodesByOwner.selector, nodeRegistry_);
         }
 
         abi.decode(returnData, (bytes32[]));
@@ -47,18 +54,30 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
     }
 
     function setNodeRegistry(address nodeRegistry_) external virtual onlyOwner {
-        _requireContractReference(nodeRegistry_);
+        if (nodeRegistry_ == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
+        if (nodeRegistry_.code.length == 0) {
+            revert NonContractAddress(nodeRegistry_);
+        }
 
         (bool ok, bytes memory returnData) = nodeRegistry_.staticcall(
             abi.encodeWithSelector(INodeRegistry.getNodesByOwner.selector, address(this))
         );
         if (!ok || returnData.length < 64) {
-            revert ContractReferenceSmokeCheckFailed(INodeRegistry.getNodesByOwner.selector, nodeRegistry_);
+            revert InvalidContractInterface(INodeRegistry.getNodesByOwner.selector, nodeRegistry_);
         }
 
         abi.decode(returnData, (bytes32[]));
 
+        address previousReference = address(_nodeRegistry);
+        if (nodeRegistry_ == previousReference) {
+            revert SameContractReference(previousReference, nodeRegistry_);
+        }
+
         _nodeRegistry = INodeRegistry(nodeRegistry_);
+
+        emit ContractReferenceUpdated(REFERENCE_NODE_REGISTRY, previousReference, nodeRegistry_);
     }
 
     function pause() external onlyOwner {
@@ -186,15 +205,6 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
     function _requireChallengeExists(bytes32 challengeId) internal view {
         if (!_challengeExists[challengeId]) {
             revert ChallengeNotFound(challengeId);
-        }
-    }
-
-    function _requireContractReference(address candidate) internal view {
-        if (candidate == address(0)) {
-            revert ZeroAddressNotAllowed();
-        }
-        if (candidate.code.length == 0) {
-            revert InvalidContractReference(candidate);
         }
     }
 

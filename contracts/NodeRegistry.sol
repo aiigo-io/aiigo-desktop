@@ -5,18 +5,24 @@ import {AccessControlDefaultAdminRules} from "@openzeppelin/contracts/access/ext
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {INodeRegistry} from "./interfaces/INodeRegistry.sol";
+import {ITaskMarketplace} from "./interfaces/ITaskMarketplace.sol";
 import {MarketplaceTypes} from "./types/MarketplaceTypes.sol";
 
 contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable, ReentrancyGuard {
     error AmountMustBeGreaterThanZero();
     error ClaimTransferFailed();
+    error SameContractReference(address currentReference, address candidate);
     error DirectETHNotAccepted();
     error InsufficientRegistrationValue(uint256 provided, uint256 requiredAmount);
+    error InvalidContractInterface(bytes4 selector, address candidate);
     error InvalidNode(bytes32 nodeId);
     error InvalidActionWhilePaused();
     error InvalidNodeStatusTransition(MarketplaceTypes.NodeStatus from, MarketplaceTypes.NodeStatus to);
     error InvalidStatusForWithdrawal(bytes32 nodeId);
     error MissingClaimableBalance();
+    error MissingPendingTaskLock(bytes32 nodeId);
+    error NodeHasPendingTasks(bytes32 nodeId, uint256 pendingTaskCount);
+    error NonContractAddress(address candidate);
     error NotNodeOwner(bytes32 nodeId, address caller);
     error RoleRenounceDisabled();
     error SolvencyInvariantViolated(uint256 balance, uint256 obligations);
@@ -24,8 +30,9 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
     error ZeroNodeIdNotAllowed();
     error ZeroAddressNotAllowed();
 
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 public constant TASK_MANAGER_ROLE = keccak256("TASK_MANAGER_ROLE");
     bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
-    uint48 public constant DEFAULT_ADMIN_DELAY = 1 days;
     uint256 public constant REGISTRATION_FEE = 0.1 ether;
     uint256 public constant MINIMUM_INITIAL_STAKE = 0.5 ether;
 
@@ -33,13 +40,16 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
     uint8 private constant BUCKET_LOCKED_STAKE = 1;
     uint8 private constant BUCKET_PENDING_WITHDRAWAL = 2;
     uint8 private constant BUCKET_TREASURY_FEE = 3;
+    bytes32 private constant REFERENCE_TASK_MARKETPLACE = keccak256("TASK_MARKETPLACE");
 
     address private _treasury;
+    address private _taskMarketplace;
     uint256 private _registrationNonce;
     uint256 private _totalLockedStake;
     uint256 private _totalPendingStakeWithdrawals;
     uint256 private _totalPendingTreasuryFees;
     uint256 private _totalAccountedObligations;
+    uint48 public immutable adminDelay;
 
     mapping(bytes32 => MarketplaceTypes.Node) private _nodes;
     mapping(bytes32 => bool) private _nodeExists;
@@ -47,11 +57,13 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
     mapping(MarketplaceTypes.ResourceType => bytes32[]) private _nodesByResourceType;
     mapping(address => uint256) private _pendingStakeWithdrawals;
     mapping(address => uint256) private _pendingTreasuryFees;
+    mapping(bytes32 => uint256) private _pendingTaskCounts;
 
     constructor(
         address initialDefaultAdmin,
-        address treasury_
-    ) AccessControlDefaultAdminRules(DEFAULT_ADMIN_DELAY, initialDefaultAdmin) {
+        address treasury_,
+        uint48 adminDelay_
+    ) AccessControlDefaultAdminRules(adminDelay_, initialDefaultAdmin) {
         if (initialDefaultAdmin == address(0)) {
             revert ZeroAddressNotAllowed();
         }
@@ -59,28 +71,93 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
             revert ZeroAddressNotAllowed();
         }
 
+        adminDelay = adminDelay_;
         _treasury = treasury_;
         _grantRole(UPDATER_ROLE, initialDefaultAdmin);
+        _grantRole(PAUSER_ROLE, initialDefaultAdmin);
     }
 
-    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
 
-    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
     }
 
-    function renounceRole(bytes32, address) public pure override {
-        revert RoleRenounceDisabled();
+    function renounceRole(bytes32 role, address callerConfirmation) public override {
+        if (role == DEFAULT_ADMIN_ROLE) {
+            revert RoleRenounceDisabled();
+        }
+
+        super.renounceRole(role, callerConfirmation);
     }
 
     function setTreasury(address treasury_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (treasury_ == address(0)) {
             revert ZeroAddressNotAllowed();
         }
+        if (treasury_ == _treasury) {
+            revert SameContractReference(_treasury, treasury_);
+        }
 
+        address previousTreasury = _treasury;
         _treasury = treasury_;
+
+        emit TreasuryUpdated(previousTreasury, treasury_);
+    }
+
+    function setTaskMarketplace(address taskMarketplace_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (taskMarketplace_ == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
+        if (taskMarketplace_.code.length == 0) {
+            revert NonContractAddress(taskMarketplace_);
+        }
+
+        (bool ok, bytes memory returnData) = taskMarketplace_.staticcall(
+            abi.encodeWithSelector(ITaskMarketplace.getTasksByBuyer.selector, address(this))
+        );
+        if (!ok || returnData.length < 64) {
+            revert InvalidContractInterface(ITaskMarketplace.getTasksByBuyer.selector, taskMarketplace_);
+        }
+
+        abi.decode(returnData, (bytes32[]));
+
+        address previousMarketplace = _taskMarketplace;
+        if (taskMarketplace_ == previousMarketplace) {
+            revert SameContractReference(previousMarketplace, taskMarketplace_);
+        }
+
+        if (previousMarketplace != address(0) && hasRole(TASK_MANAGER_ROLE, previousMarketplace)) {
+            _revokeRole(TASK_MANAGER_ROLE, previousMarketplace);
+        }
+
+        _taskMarketplace = taskMarketplace_;
+
+        if (!hasRole(TASK_MANAGER_ROLE, taskMarketplace_)) {
+            _grantRole(TASK_MANAGER_ROLE, taskMarketplace_);
+        }
+
+        emit ContractReferenceUpdated(REFERENCE_TASK_MARKETPLACE, previousMarketplace, taskMarketplace_);
+    }
+
+    function lockNodeStake(bytes32 nodeId) external onlyRole(TASK_MANAGER_ROLE) {
+        _requireNodeId(nodeId);
+        _getExistingNode(nodeId);
+        _pendingTaskCounts[nodeId] += 1;
+    }
+
+    function unlockNodeStake(bytes32 nodeId) external onlyRole(TASK_MANAGER_ROLE) {
+        _requireNodeId(nodeId);
+        _getExistingNode(nodeId);
+
+        uint256 pendingTaskCount = _pendingTaskCounts[nodeId];
+        if (pendingTaskCount == 0) {
+            revert MissingPendingTaskLock(nodeId);
+        }
+
+        _pendingTaskCounts[nodeId] = pendingTaskCount - 1;
     }
 
     function registerNode(
@@ -154,6 +231,9 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
         MarketplaceTypes.Node storage node = _getNodeOwnedByCaller(nodeId);
         if (amount == 0) {
             revert AmountMustBeGreaterThanZero();
+        }
+        if (_pendingTaskCounts[nodeId] != 0) {
+            revert NodeHasPendingTasks(nodeId, _pendingTaskCounts[nodeId]);
         }
         if (node.status == MarketplaceTypes.NodeStatus.Active) {
             revert InvalidStatusForWithdrawal(nodeId);
@@ -309,7 +389,7 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
         MarketplaceTypes.ResourceType resourceType
     ) external view returns (bytes32[] memory) {
         bytes32[] storage nodeIds = _nodesByResourceType[resourceType];
-        uint256 activeCount;
+        uint256 activeCount = 0;
 
         for (uint256 i = 0; i < nodeIds.length; ++i) {
             if (_nodes[nodeIds[i]].status == MarketplaceTypes.NodeStatus.Active) {
@@ -318,7 +398,7 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
         }
 
         bytes32[] memory activeNodes = new bytes32[](activeCount);
-        uint256 cursor;
+        uint256 cursor = 0;
 
         for (uint256 i = 0; i < nodeIds.length; ++i) {
             if (_nodes[nodeIds[i]].status == MarketplaceTypes.NodeStatus.Active) {
@@ -365,6 +445,12 @@ contract NodeRegistry is INodeRegistry, AccessControlDefaultAdminRules, Pausable
 
     function getTreasury() external view returns (address) {
         return _treasury;
+    }
+
+    function getPendingTaskCount(bytes32 nodeId) external view returns (uint256) {
+        _requireNodeId(nodeId);
+        _getExistingNode(nodeId);
+        return _pendingTaskCounts[nodeId];
     }
 
     function totalAccountedObligations() external view returns (uint256) {
