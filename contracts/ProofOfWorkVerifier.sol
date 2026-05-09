@@ -8,10 +8,12 @@ import {INodeRegistry} from "./interfaces/INodeRegistry.sol";
 import {IProofOfWorkVerifier} from "./interfaces/IProofOfWorkVerifier.sol";
 import {MarketplaceTypes} from "./types/MarketplaceTypes.sol";
 
-abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pausable {
+contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pausable {
     error ChallengeAlreadyExists(bytes32 challengeId);
     error ChallengeNotFound(bytes32 challengeId);
     error ChallengeAlreadyCompleted(bytes32 challengeId);
+    error ChallengeExpired(bytes32 challengeId);
+    error NotNodeOwner(bytes32 nodeId, address caller);
     error ContractReferenceNotSet(bytes32 referenceName);
     error SameContractReference(address currentReference, address candidate);
     error InvalidContractInterface(bytes4 selector, address candidate);
@@ -32,6 +34,8 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
     mapping(bytes32 => MarketplaceTypes.Challenge) private _challenges;
     mapping(bytes32 => bool) private _challengeExists;
     mapping(bytes32 => MarketplaceTypes.VerificationResult[]) private _verificationHistory;
+
+    uint256 private _challengeNonce;
 
     constructor(address owner_, address nodeRegistry_) Ownable(owner_) {
         if (nodeRegistry_ == address(0)) {
@@ -98,7 +102,11 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
         bytes32 challengeId,
         uint256 nonce
     ) external override whenNotPaused returns (bool passed) {
-        _requireChallengeId(challengeId);
+        // _readChallenge validates ID and existence
+        MarketplaceTypes.Challenge memory ch = _readChallenge(challengeId);
+        if (block.timestamp > ch.deadline) {
+            revert ChallengeExpired(challengeId);
+        }
         return _submitSolution(challengeId, nonce);
     }
 
@@ -121,7 +129,11 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
     function calculateComputePower(
         uint256 solutionTime,
         uint256 difficulty
-    ) external pure virtual override returns (uint256);
+    ) external pure virtual override returns (uint256) {
+        uint256 t = solutionTime > 0 ? solutionTime : 1;
+        uint256 d = difficulty > 0 ? difficulty : 1;
+        return (BASE_DIFFICULTY * d) / t;
+    }
 
     function _nodeRegistryRef() internal view returns (INodeRegistry) {
         if (address(_nodeRegistry) == address(0)) {
@@ -220,7 +232,89 @@ abstract contract ProofOfWorkVerifier is IProofOfWorkVerifier, Ownable2Step, Pau
         }
     }
 
-    function _issueChallenge(bytes32 nodeId) internal virtual returns (bytes32 challengeId);
+    function _issueChallenge(bytes32 nodeId) internal virtual returns (bytes32 challengeId) {
+        // Only the node owner may trigger a PoW challenge.
+        MarketplaceTypes.Node memory node = _nodeRegistryRef().getNode(nodeId);
+        if (node.owner != msg.sender) {
+            revert NotNodeOwner(nodeId, msg.sender);
+        }
 
-    function _submitSolution(bytes32 challengeId, uint256 nonce) internal virtual returns (bool passed);
+        _challengeNonce += 1;
+        challengeId = keccak256(abi.encode(block.chainid, address(this), nodeId, _challengeNonce));
+
+        // Seed mixes storage nonce + block hash so it is not predictable before the tx lands.
+        bytes32 seed = keccak256(abi.encodePacked(nodeId, blockhash(block.number - 1), _challengeNonce));
+
+        // MVP difficulty = 2^16 = 65536.
+        // Target = type(uint256).max / 65536  ≈ 2^240.
+        // Roughly 1-in-65536 nonces passes, so off-chain search terminates in < 1 s
+        // while a trivially bad nonce (e.g. 0 if hash is unlucky) can still fail,
+        // giving the ChallengeFailed branch reachability in tests.
+        uint256 mvpDifficulty = 1 << 16;
+
+        MarketplaceTypes.Challenge memory challenge = MarketplaceTypes.Challenge({
+            challengeId: challengeId,
+            nodeId: nodeId,
+            seed: seed,
+            difficulty: mvpDifficulty,
+            issuedAt: block.timestamp,
+            deadline: block.timestamp + 1 hours,
+            completed: false,
+            solutionTime: 0
+        });
+
+        _registerIssuedChallenge(challenge);
+        emit ChallengeIssued(challengeId, nodeId, challenge.difficulty, challenge.deadline);
+    }
+
+    function _submitSolution(bytes32 challengeId, uint256 nonce) internal virtual returns (bool passed) {
+        MarketplaceTypes.Challenge memory challenge = _readChallenge(challengeId);
+
+        // PoW check: hash(seed || nonce) must fit within the difficulty target.
+        // target = type(uint256).max / difficulty
+        // A bad nonce whose hash exceeds the target returns false + emits ChallengeFailed.
+        bytes32 hashResult = keccak256(abi.encodePacked(challenge.seed, nonce));
+        uint256 target = type(uint256).max / challenge.difficulty;
+
+        if (uint256(hashResult) > target) {
+            emit ChallengeFailed(challengeId, challenge.nodeId, "invalid nonce");
+            return false;
+        }
+
+        uint256 solutionTime = block.timestamp > challenge.issuedAt
+            ? block.timestamp - challenge.issuedAt
+            : 1;
+
+        uint256 t = solutionTime > 0 ? solutionTime : 1;
+        uint256 verifiedPower = (BASE_DIFFICULTY * challenge.difficulty) / t;
+
+        MarketplaceTypes.VerificationResult memory result = MarketplaceTypes.VerificationResult({
+            nodeId: challenge.nodeId,
+            verifiedPower: verifiedPower,
+            timestamp: block.timestamp,
+            passed: true
+        });
+
+        _resolveSolvedChallenge(challengeId, solutionTime, result);
+
+        // Always update compute power and reputation.
+        INodeRegistry registry = _nodeRegistryRef();
+        registry.updateComputePower(challenge.nodeId, verifiedPower);
+        registry.updateReputation(challenge.nodeId, int256(100));
+
+        // State-machine guard: only walk Pending → Verified → Active for new nodes.
+        // An already-Active node keeps running; we only refresh its metrics above.
+        MarketplaceTypes.Node memory node = registry.getNode(challenge.nodeId);
+        if (node.status == MarketplaceTypes.NodeStatus.Pending) {
+            registry.updateNodeStatus(challenge.nodeId, MarketplaceTypes.NodeStatus.Verified);
+            registry.updateNodeStatus(challenge.nodeId, MarketplaceTypes.NodeStatus.Active);
+        } else if (node.status == MarketplaceTypes.NodeStatus.Verified) {
+            // Already verified but not yet active — only need the final step.
+            registry.updateNodeStatus(challenge.nodeId, MarketplaceTypes.NodeStatus.Active);
+        }
+        // NodeStatus.Active, Inactive, Slashed: no status transition on re-verify.
+
+        emit ChallengeSolved(challengeId, challenge.nodeId, solutionTime, verifiedPower);
+        return true;
+    }
 }

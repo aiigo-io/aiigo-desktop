@@ -249,7 +249,6 @@ export const useComputingStore = create<ComputingStore>()(
                 if (!task || !task.assignedNode) return;
 
                 const payout = task.escrowAmount * 0.92;
-                const platformFee = task.escrowAmount * 0.08;
 
                 set((state) => {
                     const providerNode = state.nodes[task.assignedNode!];

@@ -11,7 +11,7 @@ import {IProofOfWorkVerifier} from "./interfaces/IProofOfWorkVerifier.sol";
 import {ITaskMarketplace} from "./interfaces/ITaskMarketplace.sol";
 import {MarketplaceTypes} from "./types/MarketplaceTypes.sol";
 
-abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, ReentrancyGuard {
+contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, ReentrancyGuard {
     error ContractReferenceNotSet(bytes32 referenceName);
     error SameContractReference(address currentReference, address candidate);
     error InvalidContractInterface(bytes4 selector, address candidate);
@@ -31,7 +31,8 @@ abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, R
     error TaskNotFound(bytes32 taskId);
     error TaskResultAlreadyExists(bytes32 taskId);
     error TaskResultNotFound(bytes32 taskId);
-    error TaskValueOutOfRange(uint256 provided, uint256 maxPrice);
+    error TaskValueOutOfRange(uint256 provided, uint256 min, uint256 max);
+    error UnderfundableTaskCreation(uint256 quoteMin, uint256 quoteCap);
     error ZeroBuyerAddressNotAllowed();
     error ZeroResultHashNotAllowed();
     error ZeroNodeIdNotAllowed();
@@ -60,14 +61,30 @@ abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, R
     uint256 private _taskNonce;
     uint256 public challengeWindow;
 
+    // ── Pricing config (owner-adjustable) ────────────────────────────────────
+    uint256 public startFee;
+    mapping(MarketplaceTypes.ResourceType => uint256) public envHourFee;
+    mapping(MarketplaceTypes.ResourceType => uint256) public computePowerHourFee;
+
+    // Quote snapshots frozen at task creation time
+    mapping(bytes32 => uint256) private _taskQuoteMin;
+    mapping(bytes32 => uint256) private _taskQuoteCap;
+
     bytes32 private constant REFERENCE_NODE_REGISTRY = keccak256("NODE_REGISTRY");
     bytes32 private constant REFERENCE_ESCROW_MANAGER = keccak256("ESCROW_MANAGER");
     bytes32 private constant REFERENCE_PROOF_OF_WORK_VERIFIER = keccak256("PROOF_OF_WORK_VERIFIER");
 
     event ContractReferenceUpdated(bytes32 indexed referenceName, address indexed previousReference, address indexed newReference);
+    event StartFeeUpdated(uint256 previousFee, uint256 newFee);
+    event PricingUpdated(
+        MarketplaceTypes.ResourceType indexed resourceType,
+        uint256 envHourFee,
+        uint256 computePowerHourFee
+    );
 
     constructor(address owner_) Ownable(owner_) {
         challengeWindow = 1 days;
+        _initDefaultPricing();
     }
 
     function setChallengeWindow(uint256 window) external onlyOwner {
@@ -75,6 +92,22 @@ abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, R
         uint256 previousWindow = challengeWindow;
         challengeWindow = window;
         emit ChallengeWindowUpdated(previousWindow, window);
+    }
+
+    function setStartFee(uint256 newStartFee) external onlyOwner {
+        uint256 previous = startFee;
+        startFee = newStartFee;
+        emit StartFeeUpdated(previous, newStartFee);
+    }
+
+    function setResourcePricing(
+        MarketplaceTypes.ResourceType resourceType,
+        uint256 envHourFee_,
+        uint256 computePowerHourFee_
+    ) external onlyOwner {
+        envHourFee[resourceType] = envHourFee_;
+        computePowerHourFee[resourceType] = computePowerHourFee_;
+        emit PricingUpdated(resourceType, envHourFee_, computePowerHourFee_);
     }
 
     function setNodeRegistry(address nodeRegistry_) external virtual onlyOwner {
@@ -183,6 +216,21 @@ abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, R
     ) external override whenNotPaused nonReentrant returns (bytes32 taskId) {
         taskId = _deriveTaskId(msg.sender, _taskNonce);
         _taskNonce += 1;
+
+        // Freeze quote snapshot at creation time so fundTaskEscrow uses
+        // consistent pricing regardless of future pricing updates.
+        // Ceil duration to the nearest whole hour so a 1h30m task bills as 2h.
+        uint256 durationHours = (duration + 1 hours - 1) / 1 hours;
+        if (durationHours == 0) durationHours = 1;
+        uint256 quoteMin = _estimateTaskCostInternal(resourceType, requiredPower, duration);
+        uint256 quoteCap = maxPrice * durationHours;
+        // Reject tasks whose price floor already exceeds the funding cap — they
+        // can never be funded, so fail fast rather than leaving open-but-locked tasks.
+        if (quoteMin > quoteCap) {
+            revert UnderfundableTaskCreation(quoteMin, quoteCap);
+        }
+        _taskQuoteMin[taskId] = quoteMin;
+        _taskQuoteCap[taskId] = quoteCap;
 
         MarketplaceTypes.Task memory task = MarketplaceTypes.Task({
             taskId: taskId,
@@ -506,7 +554,9 @@ abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, R
         MarketplaceTypes.ResourceType resourceType,
         uint256 requiredPower,
         uint256 duration
-    ) external view virtual override returns (uint256);
+    ) external view virtual override returns (uint256) {
+        return _estimateTaskCostInternal(resourceType, requiredPower, duration);
+    }
 
     function _nodeRegistryRef() internal view returns (INodeRegistry) {
         if (address(_nodeRegistry) == address(0)) {
@@ -722,8 +772,10 @@ abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, R
         if (task.escrowAmount != 0) {
             revert TaskEscrowAlreadyFunded(taskId);
         }
-        if (msg.value == 0 || msg.value > task.maxPrice) {
-            revert TaskValueOutOfRange(msg.value, task.maxPrice);
+        uint256 quoteMin = _taskQuoteMin[taskId];
+        uint256 quoteCap = _taskQuoteCap[taskId];
+        if (msg.value < quoteMin || msg.value > quoteCap) {
+            revert TaskValueOutOfRange(msg.value, quoteMin, quoteCap);
         }
     }
 
@@ -755,6 +807,37 @@ abstract contract TaskMarketplace is ITaskMarketplace, Ownable2Step, Pausable, R
 
     function _deriveTaskId(address buyer, uint256 taskNonce) private view returns (bytes32) {
         return keccak256(abi.encode(block.chainid, address(this), buyer, taskNonce));
+    }
+
+    // ── Pricing helpers ───────────────────────────────────────────────────────
+
+    /// @dev Private so quote snapshots always use on-chain pricing, not override.
+    function _estimateTaskCostInternal(
+        MarketplaceTypes.ResourceType resourceType,
+        uint256 requiredPower,
+        uint256 duration
+    ) private view returns (uint256) {
+        uint256 durationHours = (duration + 1 hours - 1) / 1 hours;
+        if (durationHours == 0) durationHours = 1;
+        return startFee
+            + envHourFee[resourceType] * durationHours
+            + computePowerHourFee[resourceType] * requiredPower * durationHours;
+    }
+
+    function _initDefaultPricing() private {
+        startFee = 0.0002 ether;
+
+        envHourFee[MarketplaceTypes.ResourceType.GPU]     = 0.0008 ether;
+        envHourFee[MarketplaceTypes.ResourceType.CPU]     = 0.0002 ether;
+        envHourFee[MarketplaceTypes.ResourceType.Network] = 0.0001 ether;
+        envHourFee[MarketplaceTypes.ResourceType.Mobile]  = 0.00005 ether;
+        envHourFee[MarketplaceTypes.ResourceType.IoT]     = 0.00002 ether;
+
+        computePowerHourFee[MarketplaceTypes.ResourceType.GPU]     = 0.00008 ether;
+        computePowerHourFee[MarketplaceTypes.ResourceType.CPU]     = 0.00002 ether;
+        computePowerHourFee[MarketplaceTypes.ResourceType.Network] = 0.00001 ether;
+        computePowerHourFee[MarketplaceTypes.ResourceType.Mobile]  = 0.000005 ether;
+        computePowerHourFee[MarketplaceTypes.ResourceType.IoT]     = 0.000002 ether;
     }
 
     function _assignedNodeOwner(bytes32 taskId) internal view returns (address owner) {
