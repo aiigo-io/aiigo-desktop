@@ -11,7 +11,7 @@ import { AlertTriangle, CheckCircle, Clock, DollarSign, FileText, Plus } from 'l
 import { toast } from 'sonner';
 
 import { cn } from '@/lib/utils';
-import type { ComputeMarketplaceModel, ResourceType } from './useComputeMarketplace';
+import type { ComputeMarketplaceModel, ComputeTask, ResourceType } from './useComputeMarketplace';
 
 const BuyerView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) => {
     const { requestUnlock } = useSecuritySession();
@@ -43,20 +43,20 @@ const BuyerView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) => {
                 specTitle,
             });
             setSpecTitle('');
-            toast.success('Task creation and escrow funding confirmed.');
+            toast.success('Task creation and escrow funding submitted. Awaiting on-chain confirmation — refresh chain state once mined.');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
     };
 
-    const handleApprove = async (taskId: string) => {
+    const handleApprove = async (task: ComputeTask) => {
         try {
             if (!(await authorizeSend('Authorize buyer approval and escrow release'))) {
                 return;
             }
 
-            await approveTask(taskId);
-            toast.success('Approval transaction confirmed.');
+            await approveTask(task.taskId);
+            toast.success('Approval transaction submitted (broadcasting). Refresh chain state to confirm finality.');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
@@ -70,7 +70,7 @@ const BuyerView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) => {
             }
 
             await disputeTask(taskId, reason);
-            toast.success('Dispute transaction confirmed.');
+            toast.success('Dispute transaction submitted (broadcasting). Refresh chain state to confirm finality.');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
@@ -188,7 +188,7 @@ const BuyerView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) => {
                                                 onChange={(event) => setDisputeReasons((current) => ({ ...current, [task.taskId]: event.target.value }))}
                                             />
                                             <div className="flex gap-2">
-                                                <Button size="sm" className="w-full bg-emerald-600 hover:bg-emerald-700" onClick={() => void handleApprove(task.taskId)}>
+                                                <Button size="sm" className="w-full bg-emerald-600 hover:bg-emerald-700" onClick={() => void handleApprove(task)}>
                                                     <CheckCircle className="w-4 h-4 mr-2" /> Approve & Release Payment
                                                 </Button>
                                                 <Button size="sm" variant="destructive" className="w-full" onClick={() => void handleDispute(task.taskId)}>

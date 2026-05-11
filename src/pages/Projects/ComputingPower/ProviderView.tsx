@@ -16,12 +16,13 @@ import type { ComputeMarketplaceModel, ResourceType } from './useComputeMarketpl
 
 const ProviderView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) => {
     const { requestUnlock } = useSecuritySession();
-    const { selectedWallet, config, snapshot, registerNode, acceptTask, submitResult } = model;
+    const { selectedWallet, config, snapshot, registerNode, verifyNode, acceptTask, submitResult } = model;
 
     const [showRegistration, setShowRegistration] = useState(false);
     const [regType, setRegType] = useState<ResourceType>('GPU');
     const [regModel, setRegModel] = useState('');
     const [regRegion, setRegRegion] = useState('US-East');
+    const [regComputePower, setRegComputePower] = useState(1000);
     const [stakeAmount, setStakeAmount] = useState(0.5);
     const [resultUris, setResultUris] = useState<Record<string, string>>({});
 
@@ -48,20 +49,32 @@ const ProviderView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) =
 
             await registerNode({
                 resourceType: regType,
+                computePower: String(regComputePower),
                 gpuModel: regModel,
                 region: regRegion,
                 stakeEth: stakeAmount.toFixed(1),
             });
             setShowRegistration(false);
             setRegModel('');
-            toast.success('Node registration transaction confirmed.');
+            toast.success('Node registration submitted (broadcasting). Activation requires on-chain confirmation — refresh chain state to verify.');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
     };
 
-    const handleAcceptTask = async (taskId: string) => {
+    const handleVerifyNode = async (nodeId: string) => {
         try {
+            if (!(await authorizeSend('Authorize PoW activation challenge'))) {
+                return;
+            }
+            await verifyNode(nodeId);
+            toast.success('Activation submitted. Refresh chain state to confirm Active status.');
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        }
+    };
+
+    const handleAcceptTask = async (taskId: string) => {        try {
             if (!primaryNode) {
                 throw new Error('Register and refresh a provider node before accepting tasks.');
             }
@@ -70,7 +83,7 @@ const ProviderView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) =
             }
 
             await acceptTask(taskId, primaryNode.nodeId);
-            toast.success('Task acceptance transaction confirmed.');
+            toast.success('Task acceptance submitted (broadcasting). Refresh chain state to confirm assignment.');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
@@ -87,7 +100,7 @@ const ProviderView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) =
             }
 
             await submitResult(taskId, resultUri);
-            toast.success('Result submission transaction confirmed.');
+            toast.success('Result submitted (broadcasting). Refresh chain state to confirm completion.');
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         }
@@ -146,6 +159,18 @@ const ProviderView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) =
                         <div className="space-y-2">
                             <Label>Hardware Model</Label>
                             <Input placeholder="e.g. RTX 4090, A100 80GB" value={regModel} onChange={(event) => setRegModel(event.target.value)} />
+                        </div>
+
+                        <div className="space-y-2">
+                            <Label>Compute Power (TFLOPS)</Label>
+                            <Input
+                                type="number"
+                                min={1}
+                                placeholder="e.g. 1000"
+                                value={regComputePower}
+                                onChange={(event) => setRegComputePower(Number(event.target.value))}
+                            />
+                            <p className="text-xs text-muted-foreground">Tasks require a minimum compute power to be matched to your node.</p>
                         </div>
 
                         <div className="space-y-4 pt-4 border-t border-white/5">
@@ -207,6 +232,36 @@ const ProviderView: React.FC<{ model: ComputeMarketplaceModel }> = ({ model }) =
                     </CardContent>
                 </Card>
             </div>
+
+            {/* Activation prompt — shown when node is Pending or Verified (not yet Active) */}
+            {primaryNode && (primaryNode.status === 'Pending' || primaryNode.status === 'Verified') && (
+                <Card className="border-yellow-500/30 bg-yellow-500/5 py-4">
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2 text-yellow-400">
+                            <Server className="w-5 h-5" />
+                            Node Activation Required
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                        <p className="text-sm text-muted-foreground">
+                            Your node is <span className="font-semibold text-yellow-400">{primaryNode.status}</span>.
+                            Complete the on-chain PoW challenge to become <span className="font-semibold text-emerald-400">Active</span> and start accepting tasks.
+                        </p>
+                        <Button
+                            variant="outline"
+                            className="border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10"
+                            onClick={() => void handleVerifyNode(primaryNode.nodeId)}
+                            disabled={!config.isConfigured || !selectedWallet}
+                        >
+                            <CheckCircle2 className="w-4 h-4 mr-2" />
+                            Activate Node (PoW Challenge)
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                            Requires <code>AIIGO_COMPUTE_POW_VERIFIER_ADDRESS</code> to be set. The challenge is solved locally and submitted on-chain.
+                        </p>
+                    </CardContent>
+                </Card>
+            )}
 
             {myActiveTasks.length > 0 && (
                 <Card className="border-primary/50 bg-primary/5 py-4">

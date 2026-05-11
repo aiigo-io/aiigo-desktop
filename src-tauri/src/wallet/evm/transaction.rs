@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 const ETHERSCAN_API_KEY: &str = "TKG5YYYPSX97W8HG7ZHA319UXKWMXFKKG6";
 
-enum EvmSigningSecret {
+pub(crate) enum EvmSigningSecret {
     Mnemonic(String),
     PrivateKey(String),
 }
@@ -897,7 +897,7 @@ async fn approve_erc20_token_with_wallet(
     })
 }
 
-fn load_signing_secret(
+pub(crate) fn load_signing_secret(
     wallet_info: &WalletInfo,
     secret_backend: &SecretBackend,
     keystore: &(dyn Keystore + Send + Sync),
@@ -925,7 +925,7 @@ fn load_signing_secret(
     }
 }
 
-fn wallet_from_signing_secret(
+pub(crate) fn wallet_from_signing_secret(
     signing_secret: EvmSigningSecret,
     chain_id: u64,
 ) -> Result<LocalWallet, String> {

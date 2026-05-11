@@ -1,3 +1,4 @@
+mod compute;
 mod dashboard;
 mod db;
 mod wallet;
@@ -303,6 +304,17 @@ pub fn run() {
             security_get_local_password_policy,
             security_authorize_operation,
             security_reset_local_wallet_data,
+            // Compute marketplace handlers
+            compute::commands::compute_get_config,
+            compute::commands::query_compute_marketplace_snapshot,
+            compute::commands::refresh_compute_marketplace_snapshot,
+            compute::commands::compute_register_node,
+            compute::commands::compute_verify_node,
+            compute::commands::compute_create_and_fund_task,
+            compute::commands::compute_accept_task,
+            compute::commands::compute_submit_result,
+            compute::commands::compute_approve_task,
+            compute::commands::compute_dispute_task,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

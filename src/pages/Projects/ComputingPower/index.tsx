@@ -23,6 +23,7 @@ const ComputingPower: React.FC = () => {
         setSelectedWalletId,
         config,
         snapshot,
+        syncOutcome,
         error,
         isLoadingWallets,
         isRefreshing,
@@ -100,6 +101,12 @@ const ComputingPower: React.FC = () => {
                         <div className="flex items-center gap-2 rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
                             <AlertCircle className="h-4 w-4" />
                             {error}
+                        </div>
+                    )}
+                    {syncOutcome?.partial && (
+                        <div className="flex items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+                            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                            <span>Partial sync — some chain data may be stale. Failed: {syncOutcome.failedSources.join(', ') || 'unknown'}. Retry with Refresh.</span>
                         </div>
                     )}
                     {pendingActionLabel && (

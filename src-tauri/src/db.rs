@@ -231,7 +231,19 @@ impl Database {
         Self::migrate_phase2_sync_metadata(&conn)?;
         Self::migrate_secret_storage_metadata(&conn)?;
 
+        crate::compute::db::init_compute_tables(&conn)?;
+
         Ok(())
+    }
+
+    /// Run a closure with a reference to the raw SQLite connection.
+    /// The lock is held only for the duration of the closure.
+    pub(crate) fn with_conn<F, T>(&self, f: F) -> SqliteResult<T>
+    where
+        F: FnOnce(&Connection) -> SqliteResult<T>,
+    {
+        let conn = self.conn.lock().unwrap();
+        f(&conn)
     }
 
     fn migrate_phase2_sync_metadata(conn: &Connection) -> SqliteResult<()> {

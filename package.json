@@ -14,7 +14,8 @@
     "deploy:compute:mvp": "forge script script/DeployComputeMvp.s.sol:DeployComputeMvp --rpc-url http://localhost:8545 --broadcast",
     "finalize:compute:eoa": "forge script script/FinalizeComputeMvpEoa.s.sol:FinalizeComputeMvpEoa --rpc-url $RPC_URL --broadcast --sender $MULTISIG --private-key $MULTISIG_PK",
     "finalize:compute:safe-calldata": "node scripts/compute-finalize-safe-calldata.cjs",
-    "test:safe-calldata": "node scripts/test-safe-calldata.cjs"
+    "test:safe-calldata": "node scripts/test-safe-calldata.cjs",
+    "test:compute-boundary": "node scripts/check-compute-boundary.cjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
