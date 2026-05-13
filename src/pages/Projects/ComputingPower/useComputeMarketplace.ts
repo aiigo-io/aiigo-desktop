@@ -515,6 +515,15 @@ export function useComputeMarketplace() {
     }
   }
 
+  // ── Mutation guard ──────────────────────────────────────────────────────────
+  // All mutation wrappers must call this before returning.  Any status other than
+  // 'confirmed' throws so callers cannot reach success UI (toast.success etc.).
+  function assertMutationConfirmed(result: ComputeMutationResponse): void {
+    if (result.status !== 'confirmed') {
+      throw new Error(result.error ?? `mutation_${result.status}`);
+    }
+  }
+
   async function registerNode(input: {
     resourceType: ResourceType;
     computePower: string;
@@ -543,8 +552,11 @@ export function useComputeMarketplace() {
         },
       });
 
-      // Best-effort snapshot refresh after mutation
-      void refreshSnapshot().catch(() => null);
+      if (result.status === 'confirmed') {
+        pendingRequestIds.current.delete('register_node');
+        await loadCachedSnapshot(selectedWallet.id).catch(() => null);
+      }
+      assertMutationConfirmed(result);
       return result;
     } finally {
       setPendingActionLabel(null);
@@ -571,7 +583,10 @@ export function useComputeMarketplace() {
         },
       });
 
-      void refreshSnapshot().catch(() => null);
+      if (result.status === 'confirmed') {
+        await loadCachedSnapshot(selectedWallet.id).catch(() => null);
+      }
+      assertMutationConfirmed(result);
       return result;
     } finally {
       setPendingActionLabel(null);
@@ -610,11 +625,13 @@ export function useComputeMarketplace() {
         },
       });
 
-      // Clear the request ID so the next task creation gets a fresh ID.
-      // On failure/crash the ID is retained for retry of the same intent.
-      pendingRequestIds.current.delete('create_and_fund_task');
-
-      void refreshSnapshot().catch(() => null);
+      // Clear the request ID only after confirmed, so a partial_requires_resume
+      // result can still retry with the same clientRequestId and resume the mutation.
+      if (result.status === 'confirmed') {
+        pendingRequestIds.current.delete('create_and_fund_task');
+        await loadCachedSnapshot(selectedWallet.id).catch(() => null);
+      }
+      assertMutationConfirmed(result);
       return result;
     } finally {
       setPendingActionLabel(null);
@@ -637,7 +654,10 @@ export function useComputeMarketplace() {
           nodeId,
         },
       });
-      void refreshSnapshot().catch(() => null);
+      if (result.status === 'confirmed') {
+        await loadCachedSnapshot(selectedWallet.id).catch(() => null);
+      }
+      assertMutationConfirmed(result);
       return result;
     } finally {
       setPendingActionLabel(null);
@@ -668,7 +688,10 @@ export function useComputeMarketplace() {
           resultUri,
         },
       });
-      void refreshSnapshot().catch(() => null);
+      if (result.status === 'confirmed') {
+        await loadCachedSnapshot(selectedWallet.id).catch(() => null);
+      }
+      assertMutationConfirmed(result);
       return result;
     } finally {
       setPendingActionLabel(null);
@@ -689,7 +712,10 @@ export function useComputeMarketplace() {
           taskId,
         },
       });
-      void refreshSnapshot().catch(() => null);
+      if (result.status === 'confirmed') {
+        await loadCachedSnapshot(selectedWallet.id).catch(() => null);
+      }
+      assertMutationConfirmed(result);
       return result;
     } finally {
       setPendingActionLabel(null);
@@ -712,7 +738,10 @@ export function useComputeMarketplace() {
           reason,
         },
       });
-      void refreshSnapshot().catch(() => null);
+      if (result.status === 'confirmed') {
+        await loadCachedSnapshot(selectedWallet.id).catch(() => null);
+      }
+      assertMutationConfirmed(result);
       return result;
     } finally {
       setPendingActionLabel(null);

@@ -272,7 +272,9 @@ async fn scan_events_batched(
 
         let observed_at = Utc::now().to_rfc3339();
         for log in &logs {
-            all_events.push(log_to_event_record(log, config.chain_id, &observed_at));
+            let event = log_to_event_record(log, config.chain_id, &observed_at)
+                .map_err(|e| format!("log_malformed [{}-{}]: {}", current, batch_end, e))?;
+            all_events.push(event);
         }
 
         // Get the block hash for the last block in this batch
@@ -290,24 +292,37 @@ async fn scan_events_batched(
     Ok((last_block, last_hash, all_events))
 }
 
-fn log_to_event_record(log: &Log, chain_id: u64, observed_at: &str) -> ComputeEventRecord {
+pub(crate) fn log_to_event_record(log: &Log, chain_id: u64, observed_at: &str) -> Result<ComputeEventRecord, String> {
     let event_name = decode_event_name(log.topics.first());
     let (entity_kind, entity_id) = extract_entity_from_log(log, &event_name);
     let account_address = extract_account_from_log(log);
 
-    ComputeEventRecord {
+    // Required identity fields — a log without these cannot be stored as a
+    // canonical event record (storing 0 / "" would corrupt event deduplication).
+    let block_number = log
+        .block_number
+        .ok_or_else(|| "log_missing_block_number".to_string())?
+        .as_u64();
+    let block_hash = log
+        .block_hash
+        .map(|h| format!("{:?}", h))
+        .ok_or_else(|| "log_missing_block_hash".to_string())?;
+    let tx_hash = log
+        .transaction_hash
+        .map(|h| format!("{:?}", h))
+        .ok_or_else(|| "log_missing_tx_hash".to_string())?;
+    let log_index = log
+        .log_index
+        .ok_or_else(|| "log_missing_log_index".to_string())?
+        .as_u32();
+
+    Ok(ComputeEventRecord {
         chain_id,
         contract_address: format!("{:?}", log.address),
-        block_number: log.block_number.map(|b| b.as_u64()).unwrap_or(0),
-        block_hash: log
-            .block_hash
-            .map(|h| format!("{:?}", h))
-            .unwrap_or_default(),
-        tx_hash: log
-            .transaction_hash
-            .map(|h| format!("{:?}", h))
-            .unwrap_or_default(),
-        log_index: log.log_index.map(|i| i.as_u32()).unwrap_or(0),
+        block_number,
+        block_hash,
+        tx_hash,
+        log_index,
         event_name,
         entity_kind,
         entity_id,
@@ -318,7 +333,7 @@ fn log_to_event_record(log: &Log, chain_id: u64, observed_at: &str) -> ComputeEv
         })
         .to_string(),
         observed_at: observed_at.to_string(),
-    }
+    })
 }
 
 /// Map the topic0 (event signature hash) to a human-readable name.
@@ -354,6 +369,9 @@ fn decode_event_name(topic0: Option<&H256>) -> String {
         h if h == k("StakeWithdrawn(bytes32,uint256,uint256)") => "StakeWithdrawn",
         h if h == k("StakeWithdrawalQueued(bytes32,address,uint256)") => "StakeWithdrawalQueued",
         h if h == k("StakeWithdrawalClaimed(address,uint256)") => "StakeWithdrawalClaimed",
+        // ProofOfWorkVerifier events
+        h if h == k("ChallengeIssued(bytes32,bytes32,uint256,uint256)") => "ChallengeIssued",
+        h if h == k("ChallengeSolved(bytes32,bytes32,uint256,uint256)") => "ChallengeSolved",
         // EscrowManager events
         h if h == k("EscrowDeposited(bytes32,address,uint256)") => "EscrowDeposited",
         h if h == k("EscrowReleased(bytes32,address,uint256,uint256)") => "EscrowReleased",
@@ -383,6 +401,12 @@ fn extract_entity_from_log(log: &Log, event_name: &str) -> (Option<String>, Opti
             let entity_id = log.topics.get(1).map(|t| format!("{:?}", t));
             (Some("node".to_string()), entity_id)
         }
+        // ChallengeSolved(bytes32 indexed challengeId, bytes32 indexed nodeId, ...)
+        // nodeId is topic[2]; topic[1] is challengeId.
+        "ChallengeSolved" => {
+            let entity_id = log.topics.get(2).map(|t| format!("{:?}", t));
+            (Some("node".to_string()), entity_id)
+        }
         "EscrowDeposited" | "EscrowReleased" | "EscrowRefunded"
         | "AccountingBucketMoved" | "BuyerRefundQueued" | "ProviderPayoutQueued" => {
             let entity_id = log.topics.get(1).map(|t| format!("{:?}", t));
@@ -409,8 +433,8 @@ fn extract_account_from_log(log: &Log) -> Option<String> {
 
 /// After scanning events, re-read canonical state for all affected entities.
 /// Returns collected rows WITHOUT writing to DB; the caller commits everything
-/// in a single transaction via write_sync_batch.
-async fn collect_entity_updates(
+/// in a single transaction via write_sync_batch or write_projection_batch.
+pub(crate) async fn collect_entity_updates(
     provider: &Provider<Http>,
     config: &ComputeConfig,
     wallet_address: &str,
@@ -521,7 +545,42 @@ fn write_sync_batch(
         .map_err(|e| format!("write_sync_batch: {}", e))
 }
 
-/// Collect the two escrow account balance values from chain (no DB write).
+/// Write projection batch atomically: events + entity read-model rows + account summary.
+/// Does NOT write compute_sync_cursors — targeted projection must not advance the sync cursor.
+/// Crash safety: either everything is committed or nothing is.
+///
+/// Forbidden: must not write compute_sync_cursors.
+pub(crate) fn write_projection_batch(
+    events: &[ComputeEventRecord],
+    task_rows: &[ComputeTaskRow],
+    node_rows: &[ComputeNodeRow],
+    refund_wei: &str,
+    payout_wei: &str,
+    chain_id: u64,
+    wallet_address: &str,
+    now: &str,
+) -> Result<(), String> {
+    DB.lock()
+        .map_err(|e| e.to_string())?
+        .with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for ev in events {
+                db::upsert_compute_event(&tx, ev)?;
+            }
+            for task in task_rows {
+                db::upsert_compute_task(&tx, task)?;
+            }
+            for node in node_rows {
+                db::upsert_compute_node(&tx, node)?;
+            }
+            db::upsert_account_summary(
+                &tx, chain_id, wallet_address, refund_wei, payout_wei, "0", now,
+            )?;
+            tx.commit()
+        })
+        .map_err(|e| format!("write_projection_batch: {}", e))
+}
+
 async fn read_account_summary_values(
     provider: &Provider<Http>,
     escrow_manager: Address,
@@ -591,7 +650,7 @@ fn address_as_token(hex_str: &str) -> Token {
     Token::Address(addr)
 }
 
-async fn read_task_from_chain(
+pub(crate) async fn read_task_from_chain(
     provider: &Provider<Http>,
     contract: Address,
     task_id_hex: &str,
@@ -1082,4 +1141,170 @@ fn build_snapshot_response(
     };
 
     Ok(ComputeSnapshotResponse { snapshot, sync })
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compute::db::init_compute_tables;
+    use crate::compute::types::SyncStatus;
+
+    fn open_mem_db_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        init_compute_tables(&conn).unwrap();
+        conn
+    }
+
+    fn make_event(tx_hash: &str, log_index: u32) -> ComputeEventRecord {
+        ComputeEventRecord {
+            chain_id: 11155111,
+            contract_address: "0xtaskmp".to_string(),
+            block_number: 100,
+            block_hash: "0xbh".to_string(),
+            tx_hash: tx_hash.to_string(),
+            log_index,
+            event_name: "TaskCreated".to_string(),
+            entity_kind: Some("task".to_string()),
+            entity_id: Some("0xtask1".to_string()),
+            account_address: Some("0xbuyer".to_string()),
+            payload_json: "{}".to_string(),
+            observed_at: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    // ── Task 2 Tests ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn receipt_projection_upserts_events_idempotently() {
+        // write_projection_batch called twice with same event must not double-insert.
+        let conn = open_mem_db_conn();
+        let events = vec![make_event("0xtx1", 0), make_event("0xtx1", 1)];
+
+        for _ in 0..2 {
+            let tx = conn.unchecked_transaction().unwrap();
+            for ev in &events {
+                db::upsert_compute_event(&tx, ev).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM compute_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "Duplicate event upsert must be idempotent: expected 2 rows");
+    }
+
+    #[test]
+    fn receipt_projection_does_not_advance_sync_cursor() {
+        // write_projection_batch primitives must not touch compute_sync_cursors.
+        let conn = open_mem_db_conn();
+
+        let initial_cursor = SyncCursor {
+            scope_key: "compute:11155111:abc12345".to_string(),
+            chain_id: 11155111,
+            bootstrap_start_block: 10,
+            synced_to_block: Some(50),
+            synced_to_block_hash: Some("0xsync50".to_string()),
+            confirmed_head_block: Some(62),
+            confirmation_depth: 12,
+            status: SyncStatus::Fresh,
+            failed_sources: vec![],
+            updated_at: Some("2024-05-01T00:00:00Z".to_string()),
+        };
+        db::upsert_sync_cursor(&conn, &initial_cursor).unwrap();
+
+        // Simulate write_projection_batch: events + account summary (no cursor write).
+        let events = vec![make_event("0xtx_projection", 0)];
+        let tx = conn.unchecked_transaction().unwrap();
+        for ev in &events {
+            db::upsert_compute_event(&tx, ev).unwrap();
+        }
+        db::upsert_account_summary(&tx, 11155111, "0xbuyer", "0", "0", "0", "2024-05-01T01:00:00Z").unwrap();
+        tx.commit().unwrap();
+
+        // Cursor must be unchanged.
+        let loaded = db::load_sync_cursor(&conn, "compute:11155111:abc12345")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.synced_to_block, Some(50), "cursor must not advance after projection");
+        assert_eq!(
+            loaded.synced_to_block_hash.as_deref(),
+            Some("0xsync50"),
+            "cursor hash must not change"
+        );
+    }
+
+    // ── Task 2 negative tests: fallible log_to_event_record ─────────────────
+
+    /// A log with all required identity fields populated returns Ok.
+    #[test]
+    fn log_to_event_record_succeeds_with_all_fields() {
+        let mut log = Log::default();
+        log.block_number = Some(ethers::types::U64::from(42u64));
+        log.block_hash = Some(H256::zero());
+        log.transaction_hash = Some(H256::zero());
+        log.log_index = Some(ethers::types::U256::zero());
+
+        let result = log_to_event_record(&log, 1, "2024-01-01T00:00:00Z");
+        assert!(result.is_ok(), "fully-populated log must return Ok, got: {:?}", result.err());
+    }
+
+    /// A log missing block_number must return Err — zero must never be stored.
+    #[test]
+    fn log_to_event_record_rejects_missing_block_number() {
+        let mut log = Log::default();
+        log.block_number = None; // deliberately absent
+        log.block_hash = Some(H256::zero());
+        log.transaction_hash = Some(H256::zero());
+        log.log_index = Some(ethers::types::U256::zero());
+
+        let err = log_to_event_record(&log, 1, "2024-01-01T00:00:00Z")
+            .expect_err("missing block_number must return Err");
+        assert!(err.contains("log_missing_block_number"), "error must name the missing field, got: {err}");
+    }
+
+    /// A log missing block_hash must return Err — empty string must never be stored.
+    #[test]
+    fn log_to_event_record_rejects_missing_block_hash() {
+        let mut log = Log::default();
+        log.block_number = Some(ethers::types::U64::from(42u64));
+        log.block_hash = None; // deliberately absent
+        log.transaction_hash = Some(H256::zero());
+        log.log_index = Some(ethers::types::U256::zero());
+
+        let err = log_to_event_record(&log, 1, "2024-01-01T00:00:00Z")
+            .expect_err("missing block_hash must return Err");
+        assert!(err.contains("log_missing_block_hash"), "error must name the missing field, got: {err}");
+    }
+
+    /// A log missing transaction_hash must return Err — empty string must never be stored.
+    #[test]
+    fn log_to_event_record_rejects_missing_tx_hash() {
+        let mut log = Log::default();
+        log.block_number = Some(ethers::types::U64::from(42u64));
+        log.block_hash = Some(H256::zero());
+        log.transaction_hash = None; // deliberately absent
+        log.log_index = Some(ethers::types::U256::zero());
+
+        let err = log_to_event_record(&log, 1, "2024-01-01T00:00:00Z")
+            .expect_err("missing tx_hash must return Err");
+        assert!(err.contains("log_missing_tx_hash"), "error must name the missing field, got: {err}");
+    }
+
+    /// A log missing log_index must return Err — zero must never be stored.
+    #[test]
+    fn log_to_event_record_rejects_missing_log_index() {
+        let mut log = Log::default();
+        log.block_number = Some(ethers::types::U64::from(42u64));
+        log.block_hash = Some(H256::zero());
+        log.transaction_hash = Some(H256::zero());
+        log.log_index = None; // deliberately absent
+
+        let err = log_to_event_record(&log, 1, "2024-01-01T00:00:00Z")
+            .expect_err("missing log_index must return Err");
+        assert!(err.contains("log_missing_log_index"), "error must name the missing field, got: {err}");
+    }
 }

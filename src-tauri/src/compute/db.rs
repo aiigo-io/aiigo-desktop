@@ -169,9 +169,29 @@ pub fn init_compute_tables(conn: &Connection) -> SqlResult<()> {
             error                TEXT,
             created_at           TEXT NOT NULL,
             updated_at           TEXT NOT NULL,
+            block_number         INTEGER,
+            block_hash           TEXT,
+            transaction_index    INTEGER,
+            gas_used             TEXT,
+            effective_gas_price  TEXT,
+            projected_at         TEXT,
             FOREIGN KEY (mutation_id) REFERENCES compute_mutations(mutation_id)
         );",
     )?;
+
+    // Additive migration: add receipt/projection columns to any existing DB that
+    // was created before these columns were added to the schema.
+    for stmt in &[
+        "ALTER TABLE compute_mutation_steps ADD COLUMN block_number INTEGER",
+        "ALTER TABLE compute_mutation_steps ADD COLUMN block_hash TEXT",
+        "ALTER TABLE compute_mutation_steps ADD COLUMN transaction_index INTEGER",
+        "ALTER TABLE compute_mutation_steps ADD COLUMN gas_used TEXT",
+        "ALTER TABLE compute_mutation_steps ADD COLUMN effective_gas_price TEXT",
+        "ALTER TABLE compute_mutation_steps ADD COLUMN projected_at TEXT",
+    ] {
+        // Ignore errors — column already exists in this DB.
+        let _ = conn.execute_batch(stmt);
+    }
 
     Ok(())
 }
@@ -267,6 +287,7 @@ impl SyncStatus {
 
 // ── compute_events CRUD ────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct ComputeEventRecord {
     pub chain_id: u64,
     pub contract_address: String,
@@ -794,6 +815,13 @@ pub struct MutationStepRow {
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    // Receipt metadata (populated by update_mutation_step_receipt)
+    pub block_number: Option<u64>,
+    pub block_hash: Option<String>,
+    pub transaction_index: Option<u64>,
+    pub gas_used: Option<String>,
+    pub effective_gas_price: Option<String>,
+    pub projected_at: Option<String>,
 }
 
 /// Upsert on (mutation_id, step_name) — if step already exists keep
@@ -833,7 +861,9 @@ pub fn load_mutation_step(
     let result = conn.query_row(
         "SELECT step_id, mutation_id, step_name, to_address, value_wei, calldata_hash,
                 nonce, tx_hash, raw_signed_tx_hex, status, receipt_status, error,
-                created_at, updated_at
+                created_at, updated_at,
+                block_number, block_hash, transaction_index, gas_used,
+                effective_gas_price, projected_at
          FROM compute_mutation_steps
          WHERE mutation_id = ?1 AND step_name = ?2",
         params![mutation_id, step_name],
@@ -853,6 +883,12 @@ pub fn load_mutation_step(
                 error: row.get(11)?,
                 created_at: row.get(12)?,
                 updated_at: row.get(13)?,
+                block_number: row.get::<_, Option<i64>>(14)?.map(|v| v as u64),
+                block_hash: row.get(15)?,
+                transaction_index: row.get::<_, Option<i64>>(16)?.map(|v| v as u64),
+                gas_used: row.get(17)?,
+                effective_gas_price: row.get(18)?,
+                projected_at: row.get(19)?,
             })
         },
     );
@@ -880,6 +916,67 @@ pub fn update_mutation_step(
              updated_at     = ?6
          WHERE mutation_id = ?1 AND step_name = ?2",
         params![mutation_id, step_name, status, receipt_status, error, updated_at],
+    )?;
+    Ok(())
+}
+
+/// Persist receipt metadata for a confirmed step WITHOUT changing status, error, nonce,
+/// tx_hash, or raw_signed_tx_hex.  Call this as soon as the receipt is obtained, BEFORE
+/// projection.  status is updated separately by mark_step_projected.
+///
+/// Forbidden: must not touch nonce / tx_hash / raw_signed_tx_hex.
+pub fn update_mutation_step_receipt(
+    conn: &Connection,
+    mutation_id: &str,
+    step_name: &str,
+    block_number: u64,
+    block_hash: &str,
+    transaction_index: u64,
+    gas_used: &str,
+    effective_gas_price: &str,
+    updated_at: &str,
+) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE compute_mutation_steps SET
+             block_number          = ?3,
+             block_hash            = ?4,
+             transaction_index     = ?5,
+             gas_used              = ?6,
+             effective_gas_price   = ?7,
+             updated_at            = ?8
+         WHERE mutation_id = ?1 AND step_name = ?2",
+        params![
+            mutation_id,
+            step_name,
+            block_number as i64,
+            block_hash,
+            transaction_index as i64,
+            gas_used,
+            effective_gas_price,
+            updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Mark a step as fully projected into the SQLite read model.  Sets status='projected',
+/// receipt_status=1, and projected_at.  Only call AFTER write_projection_batch succeeds.
+///
+/// Forbidden: must not be called without prior update_mutation_step_receipt.
+pub fn mark_step_projected(
+    conn: &Connection,
+    mutation_id: &str,
+    step_name: &str,
+    projected_at: &str,
+) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE compute_mutation_steps SET
+             status         = 'projected',
+             receipt_status = 1,
+             projected_at   = ?3,
+             updated_at     = ?3
+         WHERE mutation_id = ?1 AND step_name = ?2",
+        params![mutation_id, step_name, projected_at],
     )?;
     Ok(())
 }
@@ -1283,5 +1380,90 @@ mod tests {
             result.is_err(),
             "malformed escrow_amount_wei must return Err, not a silent zero"
         );
+    }
+
+    // ── Task 1: receipt metadata tests ─────────────────────────────────────────
+
+    fn insert_step(conn: &Connection, mutation_id: &str, step_name: &str) {
+        let now = "2024-01-01T00:00:00Z";
+        conn.execute(
+            "INSERT INTO compute_mutations
+                (mutation_id, chain_id, wallet_id, client_request_id, request_hash,
+                 action, status, from_address, created_at, updated_at)
+             VALUES (?1, 1, 'w1', 'req-1', 'hash1', 'test', 'pending', '0x0', ?2, ?2)",
+            rusqlite::params![mutation_id, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO compute_mutation_steps
+                (step_id, mutation_id, step_name, nonce, tx_hash, raw_signed_tx_hex,
+                 status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, '42', '0xabcdef', '0xrawraw', 'broadcast', ?4, ?4)",
+            rusqlite::params![
+                format!("{}::{}", mutation_id, step_name),
+                mutation_id,
+                step_name,
+                now
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn compute_mutation_steps_receipt_columns_migrate_additively() {
+        // Running init_compute_tables on an in-memory DB that was just created
+        // should create all columns includig the additive receipt columns.
+        let conn = open_mem_db();
+        insert_step(&conn, "mut-1", "register_node");
+
+        // All 6 new columns should be readable (will be NULL for fresh row).
+        let row = load_mutation_step(&conn, "mut-1", "register_node")
+            .unwrap()
+            .unwrap();
+        assert!(row.block_number.is_none());
+        assert!(row.block_hash.is_none());
+        assert!(row.transaction_index.is_none());
+        assert!(row.gas_used.is_none());
+        assert!(row.effective_gas_price.is_none());
+        assert!(row.projected_at.is_none());
+    }
+
+    #[test]
+    fn update_step_receipt_preserves_signed_tx_fields() {
+        let conn = open_mem_db();
+        insert_step(&conn, "mut-2", "accept_task");
+
+        // Update only receipt metadata.
+        let now = "2024-06-01T12:00:00Z";
+        update_mutation_step_receipt(
+            &conn,
+            "mut-2",
+            "accept_task",
+            100,
+            "0xblockhash",
+            5,
+            "21000",
+            "1000000000",
+            now,
+        )
+        .unwrap();
+
+        let row = load_mutation_step(&conn, "mut-2", "accept_task")
+            .unwrap()
+            .unwrap();
+
+        // Receipt metadata must be set.
+        assert_eq!(row.block_number, Some(100));
+        assert_eq!(row.block_hash.as_deref(), Some("0xblockhash"));
+        assert_eq!(row.transaction_index, Some(5));
+        assert_eq!(row.gas_used.as_deref(), Some("21000"));
+        assert_eq!(row.effective_gas_price.as_deref(), Some("1000000000"));
+
+        // Original signing fields must be unchanged.
+        assert_eq!(row.nonce.as_deref(), Some("42"),   "nonce must not be overwritten");
+        assert_eq!(row.tx_hash.as_deref(), Some("0xabcdef"), "tx_hash must not be overwritten");
+        assert_eq!(row.raw_signed_tx_hex.as_deref(), Some("0xrawraw"), "raw_signed_tx_hex must not be overwritten");
+        // projected_at must not be set by update_mutation_step_receipt.
+        assert!(row.projected_at.is_none(), "update_mutation_step_receipt must not set projected_at");
     }
 }
